@@ -30,15 +30,23 @@ function gateLayout(kind: GateKind, props: Record<string, PropValue>, inverted: 
   const bubble = inverted ? GRID : 0; // bubble (2*BUBBLE_R) gets a full grid cell so the outline stays on grid
   const xorGap = kind === "xor" ? GRID : 0; // room for the XOR's extra back curve
 
-  // Minimum body: 2 grid cells between inputs (1 when there are many), output on grid.
+  // Default body height: 2 grid cells per input (1 when there are many) with half-cell
+  // margins — a 2-input gate is 40 tall with inputs at 10/30. Kept even so the output is on grid.
   const spacing = inputs <= 5 ? 2 * GRID : GRID;
-  const minBodyH = ceilEvenGrid(Math.max(4 * GRID, (inputs + 1) * spacing));
+  // (with 1-cell spacing, add a cell so the outer inputs never sit on the body's corners)
+  const minBodyH = ceilEvenGrid(Math.max(4 * GRID, inputs * spacing + (spacing === GRID ? GRID : 0)));
+  // Default body width follows textbook proportions (IEEE distinctive shapes):
+  // AND ≈ as wide as tall (a "D"), OR/XOR ≈ 1.25× as wide as tall; capped for tall gates.
+  const aspect = kind === "and" ? 1 : kind === "buf" ? 1 : 1.25;
+  const maxDefaultW = kind === "and" ? 6 * GRID : 7 * GRID;
+  const defaultW = kind === "buf" ? MIN_BODY_W : Math.min(maxDefaultW, Math.max(MIN_BODY_W, snapGrid(Math.min(minBodyH, 60) * aspect)));
   const resizable = kind !== "buf";
   const reqH = resizable ? requestedSize(props, SIZE_H) : undefined;
   const reqW = resizable ? requestedSize(props, SIZE_W) : undefined;
   const bodyH = reqH !== undefined ? Math.max(minBodyH, ceilEvenGrid(reqH)) : minBodyH;
   const legs = 2 * PIN_LEN + bubble + xorGap;
-  const bodyW = reqW !== undefined ? Math.max(MIN_BODY_W, snapGrid(reqW - legs)) : MIN_BODY_W;
+  // Resizing can grow the gate but never squash it below its default design.
+  const bodyW = reqW !== undefined ? Math.max(defaultW, snapGrid(reqW - legs)) : defaultW;
 
   const x0 = PIN_LEN + xorGap;
   const x1 = x0 + bodyW;

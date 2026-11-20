@@ -52,7 +52,7 @@ describe("wires follow transformed components", () => {
 
   it("rotating a wired gate never leaves a wire running over another pin", () => {
     const d = emptyDocument();
-    d.components.push({ id: "g", type: "and", x: 410, y: 290, rotation: 0, props: { inputs: 2 } });
+    d.components.push({ id: "g", type: "and", x: 410, y: 300, rotation: 0, props: { inputs: 2 } });
     d.wires.push({ id: "w1", points: [{ x: 230, y: 220 }, { x: 320, y: 220 }, { x: 320, y: 310 }, { x: 410, y: 310 }] });
     d.wires.push({ id: "w2", points: [{ x: 230, y: 440 }, { x: 320, y: 440 }, { x: 320, y: 330 }, { x: 410, y: 330 }] });
     const sel = new Set(["g"]);

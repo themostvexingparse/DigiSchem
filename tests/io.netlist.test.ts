@@ -78,7 +78,7 @@ describe("io/netlist", () => {
       id: "g1",
       type: "and",
       x: 20,
-      y: 20,
+      y: 30, // 2-input AND is 40 tall: pins sit 10 below the gate origin + 10
       rotation: 0 as const,
       props: { inputs: 2 },
       label: "U1",
@@ -134,7 +134,7 @@ describe("io/netlist", () => {
       id: "g1",
       type: "and",
       x: 0,
-      y: 0,
+      y: 10,
       rotation: 0 as const,
       props: { inputs: 2 },
       label: "U1",
@@ -209,7 +209,7 @@ describe("io/netlist", () => {
       id: "g_and4",
       type: "and",
       x: 0,
-      y: 0,
+      y: 10,
       rotation: 0 as const,
       props: { inputs: 4 },
       label: "U_AND4",
@@ -268,7 +268,7 @@ describe("io/netlist", () => {
   it("exports human-readable netlist text and valid netlist JSON", () => {
     const doc = emptyDocument("Simple Inverter Chain");
     doc.components.push(
-      { id: "g1", type: "and", x: 0, y: 0, rotation: 0, props: { inputs: 2 }, label: "U1" },
+      { id: "g1", type: "and", x: 0, y: 10, rotation: 0, props: { inputs: 2 }, label: "U1" },
       { id: "g2", type: "not", x: 120, y: 10, rotation: 0, props: {}, label: "U2" },
     );
     // g1.out at (80, 30), g2.in0 at (120, 30)

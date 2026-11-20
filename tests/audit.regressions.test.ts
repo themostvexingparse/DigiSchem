@@ -207,7 +207,7 @@ describe("AUD-07/09/12: moves, rotation identity, collapsed wires", () => {
   it("branch wires follow when the wire they tap moves (T9)", () => {
     const store = new DocumentStore(emptyDocument());
     store.update("setup", (d) => {
-      const g1: ComponentInstance = { id: "g1", type: "and", x: 0, y: 0, rotation: 0, props: { inputs: 2 } };
+      const g1: ComponentInstance = { id: "g1", type: "and", x: 0, y: 10, rotation: 0, props: { inputs: 2 } };
       const g2: ComponentInstance = { id: "g2", type: "not", x: 160, y: 10, rotation: 0, props: {} };
       const g3: ComponentInstance = { id: "g3", type: "not", x: 160, y: 100, rotation: 0, props: {} };
       d.components.push(g1, g2, g3);
