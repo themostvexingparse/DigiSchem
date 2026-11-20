@@ -3,18 +3,20 @@
  * MUX and DEMUX feature classic textbook trapezoid bodies with stubs meeting slanted edges.
  */
 import type { ComponentDef, Geometry, PinDef } from "../../model/component-def";
-import { escapeXml, GRID, propBool, propStr } from "../../model/component-def";
+import { escapeXml, GRID, propBool, propStr, SIZE_H, SIZE_W } from "../../model/component-def";
 import type { PropValue } from "../../model/types";
 import {
   BUBBLE_R,
   ceilEvenGrid,
   clampInt,
+  distributeOnGrid,
   drawBusTick,
   drawPinStub,
   layoutBox,
   minEdgePinSpacing,
   PIN_LEN,
   renderBox,
+  requestedSize,
   snapGrid,
   type PinSpec,
 } from "./helpers";
@@ -49,8 +51,7 @@ function layoutMuxDemux(props: Record<string, PropValue>, isDemux: boolean): Tra
   // Always use 20-unit spacing for data channels so labels stay well separated even for selectBits >= 3.
   const chSpacing = 2 * GRID;
   const rawBodyH = Math.max(8 * GRID, (numChannels + 1) * chSpacing);
-  const bodyH = ceilEvenGrid(rawBodyH);
-  const slope = Math.min(20, Math.max(10, Math.floor((bodyH - 40) / 2)));
+  const computedBodyH = ceilEvenGrid(rawBodyH);
 
   const bottomPinsSpec: PinSpec[] = [];
   if (selectMode === "bus") {
@@ -75,15 +76,29 @@ function layoutMuxDemux(props: Record<string, PropValue>, isDemux: boolean): Tra
   const botNeedW =
     bottomPinsSpec.length > 0 ? (bottomPinsSpec.length - 1) * botSpacing + 2 * 30 : 0;
 
-  const bodyW = ceilEvenGrid(Math.max(80, leftLabelW + centerW + rightLabelW, botNeedW));
+  const computedBodyW = ceilEvenGrid(Math.max(80, leftLabelW + centerW + rightLabelW, botNeedW));
   const bodyX = PIN_LEN;
   const bodyTop = 0;
+
+  const reqW = requestedSize(props, SIZE_W);
+  const reqH = requestedSize(props, SIZE_H);
+  const bodyW = reqW !== undefined ? Math.max(computedBodyW, reqW - 2 * PIN_LEN) : computedBodyW;
+  // Keep bodyH an even multiple of GRID so midY = bodyH / 2 (Y or D pin) stays on GRID.
+  const bodyH = reqH !== undefined ? Math.max(computedBodyH, ceilEvenGrid(reqH - PIN_LEN)) : computedBodyH;
+  const slope = Math.min(20, Math.max(10, Math.floor((bodyH - 40) / 2)));
+
   const totalW = bodyX + bodyW + PIN_LEN;
   const totalH = bodyH + PIN_LEN;
 
   const pins: PinDef[] = [];
-  const chSpan = (numChannels - 1) * chSpacing;
-  const firstChY = Math.max(GRID, snapGrid((bodyH - chSpan) / 2));
+  const chYs =
+    bodyH > computedBodyH
+      ? distributeOnGrid(numChannels, 2 * GRID, bodyH - 2 * GRID)
+      : (() => {
+          const chSpan = (numChannels - 1) * chSpacing;
+          const firstChY = Math.max(GRID, snapGrid((bodyH - chSpan) / 2));
+          return Array.from({ length: numChannels }, (_, i) => firstChY + i * chSpacing);
+        })();
 
   if (!isDemux) {
     for (let i = 0; i < numChannels; i++) {
@@ -91,7 +106,7 @@ function layoutMuxDemux(props: Record<string, PropValue>, isDemux: boolean): Tra
         id: `d${i}`,
         name: `${i}`,
         x: 0,
-        y: firstChY + i * chSpacing,
+        y: chYs[i],
         dir: "in",
         side: "left",
         width: dataWidth,
@@ -121,7 +136,7 @@ function layoutMuxDemux(props: Record<string, PropValue>, isDemux: boolean): Tra
         id: `y${i}`,
         name: `${i}`,
         x: totalW,
-        y: firstChY + i * chSpacing,
+        y: chYs[i],
         dir: "out",
         side: "right",
         width: dataWidth,
@@ -129,14 +144,22 @@ function layoutMuxDemux(props: Record<string, PropValue>, isDemux: boolean): Tra
     }
   }
 
-  const botSpan = (bottomPinsSpec.length - 1) * botSpacing;
-  const firstBotX = bodyX + Math.max(GRID, snapGrid((bodyW - botSpan) / 2));
+  const botXs =
+    bodyW > computedBodyW
+      ? bottomPinsSpec.length === 1
+        ? [bodyX + snapGrid(bodyW / 2)]
+        : distributeOnGrid(bottomPinsSpec.length, bodyX + 30, bodyX + bodyW - 30)
+      : (() => {
+          const botSpan = (bottomPinsSpec.length - 1) * botSpacing;
+          const firstBotX = bodyX + Math.max(GRID, snapGrid((bodyW - botSpan) / 2));
+          return Array.from({ length: bottomPinsSpec.length }, (_, i) => firstBotX + i * botSpacing);
+        })();
   for (let i = 0; i < bottomPinsSpec.length; i++) {
     const bp = bottomPinsSpec[i];
     pins.push({
       id: bp.id,
       name: bp.name,
-      x: firstBotX + i * botSpacing,
+      x: botXs[i],
       y: totalH,
       dir: "in",
       side: "bottom",
@@ -215,6 +238,7 @@ const muxDef: ComponentDef = {
     SELECT_MODE_PROP,
   ],
   defaultProps: { selectBits: 1, dataWidth: 1, enable: false, selectMode: "bits" },
+  resizable: "both",
   geometry: (props) => layoutMuxDemux(props, false).geometry,
   symbol: (props) => renderMuxDemux(props, false),
 };
@@ -232,6 +256,7 @@ const demuxDef: ComponentDef = {
     SELECT_MODE_PROP,
   ],
   defaultProps: { selectBits: 1, dataWidth: 1, enable: false, selectMode: "bits" },
+  resizable: "both",
   geometry: (props) => layoutMuxDemux(props, true).geometry,
   symbol: (props) => renderMuxDemux(props, true),
 };
@@ -252,14 +277,17 @@ function decoderLayout(props: Record<string, PropValue>) {
   }
   const bottom: PinSpec[] = enable ? [{ id: "en", name: "EN", dir: "in" }] : [];
 
-  return layoutBox({
-    left,
-    right,
-    bottom,
-    title: "DEC",
-    subtitle: `${inputs}:${outputs}`,
-    minBodyW: 60,
-  });
+  return layoutBox(
+    {
+      left,
+      right,
+      bottom,
+      title: "DEC",
+      subtitle: `${inputs}:${outputs}`,
+      minBodyW: 60,
+    },
+    props,
+  );
 }
 
 const decoderDef: ComponentDef = {
@@ -274,6 +302,7 @@ const decoderDef: ComponentDef = {
     { key: "activeLowOutputs", label: "Active-Low Outputs", kind: "bool" },
   ],
   defaultProps: { inputs: 2, enable: true, activeLowOutputs: false },
+  resizable: "both",
   geometry: (props) => decoderLayout(props).geometry,
   symbol: (props) => renderBox(decoderLayout(props)),
 };
@@ -298,14 +327,17 @@ function encoderLayout(props: Record<string, PropValue>) {
   }
   const bottom: PinSpec[] = enable ? [{ id: "en", name: "EN", dir: "in" }] : [];
 
-  return layoutBox({
-    left,
-    right,
-    bottom,
-    title: priority ? "PRI ENC" : "ENC",
-    subtitle: `${numIn}:${outBits}`,
-    minBodyW: 70,
-  });
+  return layoutBox(
+    {
+      left,
+      right,
+      bottom,
+      title: priority ? "PRI ENC" : "ENC",
+      subtitle: `${numIn}:${outBits}`,
+      minBodyW: 70,
+    },
+    props,
+  );
 }
 
 const encoderDef: ComponentDef = {
@@ -321,6 +353,7 @@ const encoderDef: ComponentDef = {
     { key: "enable", label: "Enable Pin", kind: "bool" },
   ],
   defaultProps: { outputBits: 2, priority: true, validOut: true, enable: false },
+  resizable: "both",
   geometry: (props) => encoderLayout(props).geometry,
   symbol: (props) => renderBox(encoderLayout(props)),
 };

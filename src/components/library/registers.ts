@@ -33,15 +33,18 @@ function registerLayout(props: Record<string, PropValue>) {
   const right: PinSpec[] = expandPins("q", "Q", width, "out", mode);
   const bottom: PinSpec[] = reset ? [{ id: "rst", name: "RST", dir: "in" }] : [];
 
-  return layoutBox({
-    left,
-    right,
-    bottom,
-    title: "REG",
-    subtitle: `${width}-bit`,
-    minBodyW: 70,
-    minBodyH: 60,
-  });
+  return layoutBox(
+    {
+      left,
+      right,
+      bottom,
+      title: "REG",
+      subtitle: `${width}-bit`,
+      minBodyW: 70,
+      minBodyH: 60,
+    },
+    props,
+  );
 }
 
 const registerDef: ComponentDef = {
@@ -66,6 +69,7 @@ const registerDef: ComponentDef = {
     },
   ],
   defaultProps: { width: 8, pinMode: "bus", enable: true, reset: true, edge: "rising" },
+  resizable: "both",
   geometry: (props) => registerLayout(props).geometry,
   symbol: (props) => renderBox(registerLayout(props)),
 };
@@ -100,15 +104,18 @@ function shiftRegisterLayout(props: Record<string, PropValue>) {
   const bottom: PinSpec[] = reset ? [{ id: "rst", name: "RST", dir: "in" }] : [];
 
   const dirTag = dir === "left" ? "<<" : dir === "bidirectional" ? "<->" : ">>";
-  return layoutBox({
-    left,
-    right,
-    bottom,
-    title: "SHIFT",
-    subtitle: `${width}-bit ${dirTag}`,
-    minBodyW: 80,
-    minBodyH: 60,
-  });
+  return layoutBox(
+    {
+      left,
+      right,
+      bottom,
+      title: "SHIFT",
+      subtitle: `${width}-bit ${dirTag}`,
+      minBodyW: 80,
+      minBodyH: 60,
+    },
+    props,
+  );
 }
 
 const shiftRegisterDef: ComponentDef = {
@@ -142,6 +149,7 @@ const shiftRegisterDef: ComponentDef = {
     pinMode: "bus",
     reset: true,
   },
+  resizable: "both",
   geometry: (props) => shiftRegisterLayout(props).geometry,
   symbol: (props) => renderBox(shiftRegisterLayout(props)),
 };
@@ -169,15 +177,18 @@ function counterLayout(props: Record<string, PropValue>) {
 
   const bottom: PinSpec[] = reset ? [{ id: "rst", name: "RST", dir: "in" }] : [];
 
-  return layoutBox({
-    left,
-    right,
-    bottom,
-    title: "CNT",
-    subtitle: `${bits}-bit`,
-    minBodyW: 70,
-    minBodyH: 60,
-  });
+  return layoutBox(
+    {
+      left,
+      right,
+      bottom,
+      title: "CNT",
+      subtitle: `${bits}-bit`,
+      minBodyW: 70,
+      minBodyH: 60,
+    },
+    props,
+  );
 }
 
 const counterDef: ComponentDef = {
@@ -204,6 +215,7 @@ const counterDef: ComponentDef = {
     reset: true,
     carryOut: true,
   },
+  resizable: "both",
   geometry: (props) => counterLayout(props).geometry,
   symbol: (props) => renderBox(counterLayout(props)),
 };
@@ -256,16 +268,19 @@ function registerFileLayout(props: Record<string, PropValue>) {
     }
   }
 
-  return layoutBox({
-    left,
-    right,
-    top,
-    title: "RegFile",
-    subtitle: `${1 << addrBits}×${dataW}`,
-    minBodyW: 100,
-    minBodyH: 100,
-    tbSpacing: 40,
-  });
+  return layoutBox(
+    {
+      left,
+      right,
+      top,
+      title: "RegFile",
+      subtitle: `${1 << addrBits}×${dataW}`,
+      minBodyW: 100,
+      minBodyH: 100,
+      tbSpacing: 40,
+    },
+    props,
+  );
 }
 
 const registerFileDef: ComponentDef = {
@@ -288,6 +303,7 @@ const registerFileDef: ComponentDef = {
     writePorts: 1,
     pinMode: "bus",
   },
+  resizable: "both",
   geometry: (props) => registerFileLayout(props).geometry,
   symbol: (props) => renderBox(registerFileLayout(props)),
 };

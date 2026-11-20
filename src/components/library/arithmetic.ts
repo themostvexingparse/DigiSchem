@@ -3,16 +3,18 @@
  * Comparator, V-notched ALU (Harris & Harris style), Shifter, and Multiplier.
  */
 import type { ComponentDef, Geometry, PinDef } from "../../model/component-def";
-import { escapeXml, GRID, propBool, propStr } from "../../model/component-def";
+import { escapeXml, GRID, propBool, propStr, SIZE_H, SIZE_W } from "../../model/component-def";
 import type { PropValue } from "../../model/types";
 import {
   ceilEvenGrid,
   clampInt,
+  distributeOnGrid,
   drawPinStub,
   layoutBox,
   PIN_LEN,
   PIN_MODE_PROP,
   renderBox,
+  requestedSize,
   snapGrid,
   type PinSpec,
 } from "./helpers";
@@ -28,20 +30,23 @@ function busOrBits(prefix: string, labelPrefix: string, width: number, dir: "in"
   return [{ id: prefix, name: labelPrefix, dir, width }];
 }
 
-const halfAdderLayout = () =>
-  layoutBox({
-    left: [
-      { id: "a", name: "A", dir: "in" },
-      { id: "b", name: "B", dir: "in" },
-    ],
-    right: [
-      { id: "s", name: "S", dir: "out" },
-      { id: "cout", name: "Cout", dir: "out" },
-    ],
-    title: "HA",
-    minBodyW: 60,
-    minBodyH: 60,
-  });
+const halfAdderLayout = (props: Record<string, PropValue>) =>
+  layoutBox(
+    {
+      left: [
+        { id: "a", name: "A", dir: "in" },
+        { id: "b", name: "B", dir: "in" },
+      ],
+      right: [
+        { id: "s", name: "S", dir: "out" },
+        { id: "cout", name: "Cout", dir: "out" },
+      ],
+      title: "HA",
+      minBodyW: 60,
+      minBodyH: 60,
+    },
+    props,
+  );
 
 const halfAdderDef: ComponentDef = {
   type: "half-adder",
@@ -51,23 +56,27 @@ const halfAdderDef: ComponentDef = {
   description: "1-bit half adder with Sum and Carry-out",
   props: [],
   defaultProps: {},
-  geometry: () => halfAdderLayout().geometry,
-  symbol: () => renderBox(halfAdderLayout()),
+  resizable: "both",
+  geometry: (props) => halfAdderLayout(props).geometry,
+  symbol: (props) => renderBox(halfAdderLayout(props)),
 };
 
-const fullAdderLayout = () =>
-  layoutBox({
-    left: [
-      { id: "a", name: "A", dir: "in" },
-      { id: "b", name: "B", dir: "in" },
-    ],
-    right: [{ id: "s", name: "S", dir: "out" }],
-    top: [{ id: "cin", name: "Cin", dir: "in" }],
-    bottom: [{ id: "cout", name: "Cout", dir: "out" }],
-    title: "FA",
-    minBodyW: 60,
-    minBodyH: 60,
-  });
+const fullAdderLayout = (props: Record<string, PropValue>) =>
+  layoutBox(
+    {
+      left: [
+        { id: "a", name: "A", dir: "in" },
+        { id: "b", name: "B", dir: "in" },
+      ],
+      right: [{ id: "s", name: "S", dir: "out" }],
+      top: [{ id: "cin", name: "Cin", dir: "in" }],
+      bottom: [{ id: "cout", name: "Cout", dir: "out" }],
+      title: "FA",
+      minBodyW: 60,
+      minBodyH: 60,
+    },
+    props,
+  );
 
 const fullAdderDef: ComponentDef = {
   type: "full-adder",
@@ -77,8 +86,9 @@ const fullAdderDef: ComponentDef = {
   description: "1-bit full adder with Carry-in on top and Carry-out on bottom",
   props: [],
   defaultProps: {},
-  geometry: () => fullAdderLayout().geometry,
-  symbol: () => renderBox(fullAdderLayout()),
+  resizable: "both",
+  geometry: (props) => fullAdderLayout(props).geometry,
+  symbol: (props) => renderBox(fullAdderLayout(props)),
 };
 
 function adderLayout(props: Record<string, PropValue>) {
@@ -92,16 +102,19 @@ function adderLayout(props: Record<string, PropValue>) {
   const top: PinSpec[] = carryIn ? [{ id: "cin", name: "Cin", dir: "in" }] : [];
   const bottom: PinSpec[] = carryOut ? [{ id: "cout", name: "Cout", dir: "out" }] : [];
 
-  return layoutBox({
-    left,
-    right,
-    top,
-    bottom,
-    title: "+",
-    subtitle: `${width}-bit`,
-    minBodyW: 60,
-    minBodyH: 60,
-  });
+  return layoutBox(
+    {
+      left,
+      right,
+      top,
+      bottom,
+      title: "+",
+      subtitle: `${width}-bit`,
+      minBodyW: 60,
+      minBodyH: 60,
+    },
+    props,
+  );
 }
 
 const adderDef: ComponentDef = {
@@ -117,6 +130,7 @@ const adderDef: ComponentDef = {
     { key: "carryOut", label: "Carry Out (Cout)", kind: "bool" },
   ],
   defaultProps: { width: 8, pinMode: "bus", carryIn: true, carryOut: true },
+  resizable: "both",
   geometry: (props) => adderLayout(props).geometry,
   symbol: (props) => renderBox(adderLayout(props)),
 };
@@ -132,16 +146,19 @@ function subtractorLayout(props: Record<string, PropValue>) {
   const top: PinSpec[] = borrowIn ? [{ id: "bin", name: "Bin", dir: "in" }] : [];
   const bottom: PinSpec[] = borrowOut ? [{ id: "bout", name: "Bout", dir: "out" }] : [];
 
-  return layoutBox({
-    left,
-    right,
-    top,
-    bottom,
-    title: "SUB",
-    subtitle: `${width}-bit`,
-    minBodyW: 60,
-    minBodyH: 60,
-  });
+  return layoutBox(
+    {
+      left,
+      right,
+      top,
+      bottom,
+      title: "SUB",
+      subtitle: `${width}-bit`,
+      minBodyW: 60,
+      minBodyH: 60,
+    },
+    props,
+  );
 }
 
 const subtractorDef: ComponentDef = {
@@ -157,6 +174,7 @@ const subtractorDef: ComponentDef = {
     { key: "borrowOut", label: "Borrow Out (Bout)", kind: "bool" },
   ],
   defaultProps: { width: 8, pinMode: "bus", borrowIn: false, borrowOut: true },
+  resizable: "both",
   geometry: (props) => subtractorLayout(props).geometry,
   symbol: (props) => renderBox(subtractorLayout(props)),
 };
@@ -175,14 +193,17 @@ function comparatorLayout(props: Record<string, PropValue>) {
   if (showEq) right.push({ id: "eq", name: "A=B", dir: "out" });
   if (showLt) right.push({ id: "lt", name: "A<B", dir: "out" });
 
-  return layoutBox({
-    left,
-    right,
-    title: "CMP",
-    subtitle: `${width}-bit${signed ? " S" : ""}`,
-    minBodyW: 70,
-    minBodyH: 60,
-  });
+  return layoutBox(
+    {
+      left,
+      right,
+      title: "CMP",
+      subtitle: `${width}-bit${signed ? " S" : ""}`,
+      minBodyW: 70,
+      minBodyH: 60,
+    },
+    props,
+  );
 }
 
 const comparatorDef: ComponentDef = {
@@ -200,6 +221,7 @@ const comparatorDef: ComponentDef = {
     { key: "showLt", label: "Show A<B", kind: "bool" },
   ],
   defaultProps: { width: 8, pinMode: "bus", signed: false, showGt: true, showEq: true, showLt: true },
+  resizable: "both",
   geometry: (props) => comparatorLayout(props).geometry,
   symbol: (props) => renderBox(comparatorLayout(props)),
 };
@@ -240,12 +262,19 @@ function layoutAlu(props: Record<string, PropValue>): AluLayout {
   const rightSpacing = 2 * GRID;
   const rightSpan = (rightSpecs.length - 1) * rightSpacing;
   const flatRightH = Math.max(60, rightSpan + 20);
-  const bodyH = ceilEvenGrid(Math.max(120, flatRightH + 2 * slope));
+  const computedBodyH = ceilEvenGrid(Math.max(120, flatRightH + 2 * slope));
 
   const topSpacing = 20;
-  const bodyW = ceilEvenGrid(Math.max(80, (opPinsSpec.length + 1) * topSpacing + 10));
+  const computedBodyW = ceilEvenGrid(Math.max(80, (opPinsSpec.length + 1) * topSpacing + 10));
   const bodyX = PIN_LEN;
   const bodyY = PIN_LEN;
+
+  const reqW = requestedSize(props, SIZE_W);
+  const reqH = requestedSize(props, SIZE_H);
+  const bodyW = reqW !== undefined ? Math.max(computedBodyW, reqW - 2 * PIN_LEN) : computedBodyW;
+  // Keep bodyH an even multiple of GRID so midY = bodyY + bodyH / 2 stays on GRID.
+  const bodyH = reqH !== undefined ? Math.max(computedBodyH, ceilEvenGrid(reqH - PIN_LEN)) : computedBodyH;
+
   const totalW = bodyX + bodyW + PIN_LEN;
   const totalH = bodyY + bodyH;
 
@@ -260,14 +289,22 @@ function layoutAlu(props: Record<string, PropValue>): AluLayout {
   pins.push({ id: "b", name: "B", x: 0, y: yB, dir: "in", side: "left", width: dataW });
 
   // Top op-select pins (F0..Fk-1 or F)
-  const opSpan = (opPinsSpec.length - 1) * topSpacing;
-  const firstOpX = bodyX + Math.max(GRID, snapGrid((bodyW - opSpan) / 2));
+  const opXs =
+    bodyW > computedBodyW
+      ? opPinsSpec.length === 1
+        ? [bodyX + snapGrid(bodyW / 2)]
+        : distributeOnGrid(opPinsSpec.length, bodyX + 20, bodyX + bodyW - 20)
+      : (() => {
+          const opSpan = (opPinsSpec.length - 1) * topSpacing;
+          const firstOpX = bodyX + Math.max(GRID, snapGrid((bodyW - opSpan) / 2));
+          return Array.from({ length: opPinsSpec.length }, (_, i) => firstOpX + i * topSpacing);
+        })();
   for (let i = 0; i < opPinsSpec.length; i++) {
     const op = opPinsSpec[i];
     pins.push({
       id: op.id,
       name: op.name,
-      x: firstOpX + i * topSpacing,
+      x: opXs[i],
       y: 0,
       dir: "in",
       side: "top",
@@ -276,14 +313,22 @@ function layoutAlu(props: Record<string, PropValue>): AluLayout {
   }
 
   // Right outputs (Y + enabled flags) centered on the vertical right edge
-  const firstRY = snapGrid(midY - rightSpan / 2);
+  const rightYs =
+    bodyH > computedBodyH
+      ? rightSpecs.length === 1
+        ? [midY]
+        : distributeOnGrid(rightSpecs.length, bodyY + slope + GRID, bodyY + bodyH - slope - GRID)
+      : (() => {
+          const firstRY = snapGrid(midY - rightSpan / 2);
+          return Array.from({ length: rightSpecs.length }, (_, i) => firstRY + i * rightSpacing);
+        })();
   for (let i = 0; i < rightSpecs.length; i++) {
     const r = rightSpecs[i];
     pins.push({
       id: r.id,
       name: r.name,
       x: totalW,
-      y: firstRY + i * rightSpacing,
+      y: rightYs[i],
       dir: "out",
       side: "right",
       width: r.width,
@@ -377,6 +422,7 @@ const aluDef: ComponentDef = {
     flagC: true,
     flagV: true,
   },
+  resizable: "both",
   geometry: (props) => layoutAlu(props).geometry,
   symbol: renderAlu,
 };
@@ -407,16 +453,19 @@ function shifterLayout(props: Record<string, PropValue>) {
     universal: "SHIFTER",
   };
 
-  return layoutBox({
-    left,
-    right,
-    top,
-    bottom,
-    title: titleMap[kind] ?? "SHIFTER",
-    subtitle: `${width}-bit`,
-    minBodyW: 80,
-    minBodyH: 60,
-  });
+  return layoutBox(
+    {
+      left,
+      right,
+      top,
+      bottom,
+      title: titleMap[kind] ?? "SHIFTER",
+      subtitle: `${width}-bit`,
+      minBodyW: 80,
+      minBodyH: 60,
+    },
+    props,
+  );
 }
 
 const shifterDef: ComponentDef = {
@@ -443,6 +492,7 @@ const shifterDef: ComponentDef = {
     },
   ],
   defaultProps: { width: 8, shiftBits: 3, pinMode: "bus", mode: "universal" },
+  resizable: "both",
   geometry: (props) => shifterLayout(props).geometry,
   symbol: (props) => renderBox(shifterLayout(props)),
 };
@@ -457,14 +507,17 @@ function multiplierLayout(props: Record<string, PropValue>) {
   const left = [...busOrBits("a", "A", width, "in", mode), ...busOrBits("b", "B", width, "in", mode)];
   const right = busOrBits("p", "P", prodW, "out", mode);
 
-  return layoutBox({
-    left,
-    right,
-    title: "×",
-    subtitle: `${width}×${width}${signed ? " S" : ""}`,
-    minBodyW: 70,
-    minBodyH: 60,
-  });
+  return layoutBox(
+    {
+      left,
+      right,
+      title: "×",
+      subtitle: `${width}×${width}${signed ? " S" : ""}`,
+      minBodyW: 70,
+      minBodyH: 60,
+    },
+    props,
+  );
 }
 
 const multiplierDef: ComponentDef = {
@@ -480,6 +533,7 @@ const multiplierDef: ComponentDef = {
     { key: "fullProduct", label: "Full 2N-bit Product", kind: "bool" },
   ],
   defaultProps: { width: 8, pinMode: "bus", signed: false, fullProduct: true },
+  resizable: "both",
   geometry: (props) => multiplierLayout(props).geometry,
   symbol: (props) => renderBox(multiplierLayout(props)),
 };

@@ -43,17 +43,20 @@ function ramLayout(props: Record<string, PropValue>) {
 
   const bottom: PinSpec[] = chipSelect ? [{ id: "cs", name: "CS", dir: "in" }] : [];
 
-  return layoutBox({
-    left,
-    right,
-    top,
-    bottom,
-    title: "RAM",
-    subtitle: `${formatWords(1 << addrBits)}×${dataW}`,
-    minBodyW: 90,
-    minBodyH: 80,
-    tbSpacing: 30,
-  });
+  return layoutBox(
+    {
+      left,
+      right,
+      top,
+      bottom,
+      title: "RAM",
+      subtitle: `${formatWords(1 << addrBits)}×${dataW}`,
+      minBodyW: 90,
+      minBodyH: 80,
+      tbSpacing: 30,
+    },
+    props,
+  );
 }
 
 const ramDef: ComponentDef = {
@@ -84,6 +87,7 @@ const ramDef: ComponentDef = {
     pinMode: "bus",
     chipSelect: false,
   },
+  resizable: "both",
   geometry: (props) => ramLayout(props).geometry,
   symbol: (props) => renderBox(ramLayout(props)),
 };
@@ -98,15 +102,18 @@ function romLayout(props: Record<string, PropValue>) {
   const right: PinSpec[] = expandMemPins("d", "D", dataW, "out", mode);
   const bottom: PinSpec[] = chipSelect ? [{ id: "cs", name: "CS", dir: "in" }] : [];
 
-  return layoutBox({
-    left,
-    right,
-    bottom,
-    title: "ROM",
-    subtitle: `${formatWords(1 << addrBits)}×${dataW}`,
-    minBodyW: 80,
-    minBodyH: 60,
-  });
+  return layoutBox(
+    {
+      left,
+      right,
+      bottom,
+      title: "ROM",
+      subtitle: `${formatWords(1 << addrBits)}×${dataW}`,
+      minBodyW: 80,
+      minBodyH: 60,
+    },
+    props,
+  );
 }
 
 const romDef: ComponentDef = {
@@ -127,6 +134,7 @@ const romDef: ComponentDef = {
     pinMode: "bus",
     chipSelect: false,
   },
+  resizable: "both",
   geometry: (props) => romLayout(props).geometry,
   symbol: (props) => renderBox(romLayout(props)),
 };

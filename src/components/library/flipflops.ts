@@ -85,14 +85,17 @@ function ffLayout(kind: FfKind, props: Record<string, PropValue>) {
     bottom.push({ id: "rst", name: "RST", dir: "in", inverted: low, overbar: low });
   }
 
-  return layoutBox({
-    left,
-    right,
-    top,
-    bottom,
-    minBodyW: 60,
-    minBodyH: 60,
-  });
+  return layoutBox(
+    {
+      left,
+      right,
+      top,
+      bottom,
+      minBodyW: 60,
+      minBodyH: 60,
+    },
+    props,
+  );
 }
 
 function makeFlipFlop(type: string, name: string, kind: FfKind): ComponentDef {
@@ -104,6 +107,7 @@ function makeFlipFlop(type: string, name: string, kind: FfKind): ComponentDef {
     description: `${name} with configurable clock edge, async set/reset, enable, and Q' output`,
     props: FF_PROPS,
     defaultProps: FF_DEFAULT_PROPS,
+    resizable: "both",
     geometry: (props) => ffLayout(kind, props).geometry,
     symbol: (props) => renderBox(ffLayout(kind, props)),
   };

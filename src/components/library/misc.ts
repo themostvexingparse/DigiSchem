@@ -30,13 +30,16 @@ function genericBlockLayout(props: Record<string, PropValue>) {
     right.push({ id: `out${i}`, name, dir: "out" });
   }
 
-  return layoutBox({
-    left,
-    right,
-    title: title || "BLOCK",
-    minBodyW: 80,
-    minBodyH: 50,
-  });
+  return layoutBox(
+    {
+      left,
+      right,
+      title: title || "BLOCK",
+      minBodyW: 80,
+      minBodyH: 50,
+    },
+    props,
+  );
 }
 
 const genericBlockDef: ComponentDef = {
@@ -59,6 +62,7 @@ const genericBlockDef: ComponentDef = {
     inputNames: "A, B",
     outputNames: "Y",
   },
+  resizable: "both",
   geometry: (props) => genericBlockLayout(props).geometry,
   symbol: (props) => renderBox(genericBlockLayout(props)),
 };
