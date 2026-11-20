@@ -96,5 +96,31 @@ window.addEventListener("keydown", (e) => {
   updateSettings({ showPropertiesPanel: !getSettings().showPropertiesPanel });
 });
 
+// Touchpad pinch: WebView2 only delivers it (as Ctrl+wheel) when its zoom control is enabled
+// (tauri.conf.json "zoomHotkeysEnabled"). That would also let the whole window zoom like a web
+// page — block that: Ctrl+wheel anywhere outside the canvas, and Ctrl +/-/0, are kept from the
+// browser; the keys zoom the schematic instead. The canvas handles its own Ctrl+wheel / pinch.
+window.addEventListener(
+  "wheel",
+  (e) => {
+    if (e.ctrlKey || e.metaKey) e.preventDefault();
+  },
+  { passive: false },
+);
+window.addEventListener(
+  "keydown",
+  (e) => {
+    if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+    const k = e.key;
+    if (k === "+" || k === "=" || k === "-" || k === "_" || k === "0") {
+      e.preventDefault();
+      if (document.querySelector("dialog[open]")) return;
+      if (k === "0") editor.zoomBy(1 / editor.getZoom()); // back to 100%
+      else editor.zoomBy(k === "-" || k === "_" ? 1 / 1.2 : 1.2);
+    }
+  },
+  { capture: true },
+);
+
 // Exposed for debugging in devtools.
 (window as any).digischem = { store, editor };

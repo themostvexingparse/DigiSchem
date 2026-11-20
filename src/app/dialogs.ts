@@ -86,6 +86,7 @@ const SHORTCUTS: [string, string][] = [
   ["Space+drag / middle-drag", "Pan the view"],
   ["Wheel / Shift+wheel", "Pan vertically / horizontally"],
   ["Ctrl+wheel / pinch", "Zoom around the cursor"],
+  ["Ctrl + / Ctrl − / Ctrl+0", "Zoom in · Zoom out · 100%"],
   ["F / G / P", "Zoom to fit · Toggle grid · Toggle properties panel"],
   ["Ctrl+N / O / S", "New · Open · Save (Ctrl+Shift+S: Save as)"],
   ["Ctrl+E / Ctrl+Shift+E", "Export SVG / PNG"],
