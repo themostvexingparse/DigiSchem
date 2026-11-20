@@ -153,8 +153,8 @@ export class AppCommands {
           notify(`Compaction skipped: the result broke a layout rule (${problems[0]})`, true);
           return;
         }
-        if (res.areaAfter >= res.areaBefore) {
-          notify("Already compact — nothing to tighten without changing wire shapes or order.");
+        if (!(res.qualityAfter.total < res.qualityBefore.total)) {
+          notify("Already tidy — nothing to improve without changing wire shapes or order.");
           return;
         }
         this.store.update(sel.size > 0 ? "Compact selection" : "Compact layout", (d) => {
@@ -163,7 +163,10 @@ export class AppCommands {
           d.texts = res.doc.texts;
         });
         const pct = Math.round(100 * (1 - res.areaAfter / res.areaBefore));
-        notify(`Compacted: ${pct}% less area (Ctrl+Z to undo)`);
+        const parts = [pct > 0 ? `${pct}% less area` : "same area"];
+        if (res.qualityAfter.spacing < res.qualityBefore.spacing || res.qualityAfter.alignment < res.qualityBefore.alignment) parts.push("aligned & evenly spaced");
+        if (res.qualityAfter.clutter < res.qualityBefore.clutter) parts.push("less clutter");
+        notify(`Compacted: ${parts.join(", ")} (Ctrl+Z to undo)`);
       } catch (e) {
         notify(`Compaction failed: ${(e as Error).message ?? e}`, true);
       }

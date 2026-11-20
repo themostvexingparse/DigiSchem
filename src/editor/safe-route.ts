@@ -163,7 +163,28 @@ export class RouteObstacles {
    */
   routeCost(pts: readonly Point[], self: ReadonlySet<string> = new Set()): number {
     const g = this.grid;
-    return this.crossings(pts, self) * 60 * g + (pts.length - 2) * 40 * g + pathLength(pts) + this.edgeHugLength(pts) * 3;
+    return (
+      this.crossings(pts, self) * 60 * g +
+      (pts.length - 2) * 40 * g +
+      pathLength(pts) +
+      this.edgeHugLength(pts) * 3 +
+      // Running ON another wire (even one of the same net) hides it: strongly discouraged.
+      this.overlapLength(pts, self) * 4 * g
+    );
+  }
+
+  /** Total length along which the path runs collinearly on top of other wires. */
+  overlapLength(pts: readonly Point[], self: ReadonlySet<string> = new Set()): number {
+    let n = 0;
+    for (let i = 0; i + 1 < pts.length; i++) {
+      const a = pts[i], b = pts[i + 1];
+      if (a.y === b.y) {
+        for (const sg of this.hRows.get(a.y) ?? []) if (!self.has(sg.wireId)) n += overlap(a.x, b.x, sg.lo, sg.hi);
+      } else if (a.x === b.x) {
+        for (const sg of this.vCols.get(a.x) ?? []) if (!self.has(sg.wireId)) n += overlap(a.y, b.y, sg.lo, sg.hi);
+      }
+    }
+    return n;
   }
 
   /** Does point p lie on a segment of a wire other than `self`? */
@@ -544,4 +565,55 @@ function pathCrossings(P: readonly Point[], Q: readonly Point[]): number {
       if (x > Math.min(h[0].x, h[1].x) && x < Math.max(h[0].x, h[1].x) && y > Math.min(v[0].y, v[1].y) && y < Math.max(v[0].y, v[1].y)) n++;
     }
   return n;
+}
+
+/**
+ * Split a newly drawn connection at its best branch points: wherever the new wire's start (or
+ * end) runs on top of wires of the SAME net, trim that shared stretch so the wire begins where it
+ * leaves the existing net — a T-junction (Steiner point) instead of a hidden overlapping
+ * duplicate. `netWires` are the wires the new wire is joining. Returns the trimmed polyline.
+ */
+export function trimToBranchPoints(pts: readonly Point[], netWires: readonly { points: readonly Point[] }[]): Point[] {
+  if (pts.length < 2 || netWires.length === 0) return pts.map((p) => ({ ...p }));
+  const onNet = (p: Point) =>
+    netWires.some((w) => w.points.some((q, i) => i + 1 < w.points.length && onSeg(p, q, w.points[i + 1])));
+  const segOnNet = (a: Point, b: Point) => {
+    // A segment is shared if its whole length is covered by one collinear net segment.
+    for (const w of netWires)
+      for (let i = 0; i + 1 < w.points.length; i++) {
+        const c = w.points[i], d = w.points[i + 1];
+        if (onSeg(a, c, d) && onSeg(b, c, d)) return true;
+      }
+    return false;
+  };
+  /** Walk from the start: the furthest point reachable while staying on the net. */
+  const trimStart = (path: Point[]): Point[] => {
+    if (!onNet(path[0])) return path;
+    let i = 0;
+    while (i + 1 < path.length && segOnNet(path[i], path[i + 1])) i++;
+    // Inside segment i (partially shared)? Advance to the last shared grid point on it.
+    if (i + 1 < path.length) {
+      const a = path[i], b = path[i + 1];
+      const step = { x: Math.sign(b.x - a.x) * GRID, y: Math.sign(b.y - a.y) * GRID };
+      let p = { ...a };
+      while (!(p.x === b.x && p.y === b.y)) {
+        const nx = { x: p.x + step.x, y: p.y + step.y };
+        if (!segOnNet(a, nx)) break;
+        p = nx;
+      }
+      if (!(p.x === a.x && p.y === a.y)) return [p, ...path.slice(i + 1)];
+    }
+    return path.slice(i);
+  };
+  let out = trimStart(pts.map((p) => ({ ...p })));
+  out = trimStart(out.slice().reverse()).reverse();
+  return out.length >= 2 && !(out[0].x === out[out.length - 1].x && out[0].y === out[out.length - 1].y)
+    ? out
+    : pts.map((p) => ({ ...p }));
+}
+
+function onSeg(p: Point, a: Point, b: Point): boolean {
+  if (a.x === b.x) return p.x === a.x && p.y >= Math.min(a.y, b.y) && p.y <= Math.max(a.y, b.y);
+  if (a.y === b.y) return p.y === a.y && p.x >= Math.min(a.x, b.x) && p.x <= Math.max(a.x, b.x);
+  return false;
 }

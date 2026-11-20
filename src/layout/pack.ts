@@ -38,6 +38,7 @@ import {
   layoutQuality,
   type QualityBreakdown,
   type QualityWeights,
+  wireNetIndex,
 } from "./quality";
 import {
   documentArea,
@@ -724,7 +725,7 @@ export function packSchematic(doc: SchematicDocument, opts?: PackOptions): PackR
   const maxPasses = Math.max(0, Math.round(opts?.maxPasses ?? 8));
   const timeBudgetMs = Math.max(0, opts?.timeBudgetMs ?? DEFAULT_TIME_BUDGET_MS);
   const ids = opts?.ids;
-  const qWeights: QualityWeights = { componentGap, ...opts?.qualityWeights };
+  const qWeights: QualityWeights = { componentGap, baselineNets: wireNetIndex(doc), ...opts?.qualityWeights };
 
   const areaBefore = ids ? subsetArea(doc, ids) : documentArea(doc);
   const qualityBefore = layoutQuality(doc, qWeights);

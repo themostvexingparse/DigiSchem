@@ -46,7 +46,7 @@ import {
   type AttachedWireSnapshot,
   type SnapTarget,
 } from "./wire-utils";
-import { movedEndContacts, netWiresAt, RouteObstacles, repairWires, safeRoute, sameNetWires } from "./safe-route";
+import { movedEndContacts, netWiresAt, RouteObstacles, repairWires, safeRoute, sameNetWires, trimToBranchPoints } from "./safe-route";
 import { computeGuides, guidePeers, type GuideResult } from "./guides";
 import { getSettings, onSettingsChange, updateSettings } from "../model/settings";
 import {
@@ -1190,8 +1190,17 @@ export class Editor {
   }
 
   private commitWireDraft(points: Point[]): void {
-    const norm = normalizeWirePoints(points);
+    let norm = normalizeWirePoints(points);
     this.wireDraft = null;
+    if (norm.length >= 2) {
+      // Split the connection at its best branch points: if the new wire starts/ends by running
+      // along wires of the net it joins, trim that shared stretch so it branches off with a
+      // T-junction instead of hiding on top of the existing wire.
+      const doc = this.store.doc as Parameters<typeof normalizeDocWires>[0];
+      const netIds = netWiresAt(doc, [norm[0], norm[norm.length - 1]]);
+      const netWires = doc.wires.filter((w) => netIds.has(w.id));
+      norm = normalizeWirePoints(trimToBranchPoints(norm, netWires));
+    }
     if (norm.length >= 2) {
       const wireId = newId("w");
       this.store.update("Add wire", (draft) => {

@@ -11,6 +11,7 @@
 import type { Point, SchematicDocument } from "../model/types";
 import { GRID } from "../model/component-def";
 import { componentBounds, documentBounds, junctionPoints, worldPins, type Rect } from "../model/geometry";
+import { buildNetlist } from "../io/netlist";
 
 const EPS = 1e-6;
 
@@ -42,8 +43,14 @@ export interface QualityBreakdown {
 
 /** Tunable weights and parameters for `layoutQuality`. */
 export interface QualityWeights {
-  /** Cost per collinear overlap between two DIFFERENT wires (default: `Infinity`). */
+  /** Cost per collinear overlap between wires of DIFFERENT nets — a short (default: `Infinity`). */
   overlap?: number;
+  /**
+   * Cost per collinear overlap between two wires of the SAME net (default: `40`). Harmless
+   * electrically but it hides a wire, so it is penalised more than a crossing — finite, so a
+   * hand-drawn redundant overlap doesn't make the whole layout un-packable.
+   */
+  sameNetOverlap?: number;
   /** Cost per component collision or `componentGap` violation (default: `Infinity`). */
   componentCollision?: number;
   /** Mild penalty per plain orthogonal wire crossing (default: `12`). */
@@ -64,6 +71,21 @@ export interface QualityWeights {
   area?: number;
   /** Minimum clearance in grid cells between non-abutting component bodies (default: `2`). */
   componentGap?: number;
+  /**
+   * Wire id → net index of the layout BEFORE editing (e.g. the packer's input). Two wires that
+   * overlap are always one net afterwards (a vertex lies on the other wire), so "different net"
+   * has to be judged against this baseline: an overlap between wires of different baseline nets
+   * is a newly created short (`overlap`, Infinity); one within a baseline net is a hidden
+   * redundant stretch (`sameNetOverlap`, finite). Without a baseline every overlap is `overlap`.
+   */
+  baselineNets?: ReadonlyMap<string, number>;
+}
+
+/** Wire id → net index, for `QualityWeights.baselineNets`. */
+export function wireNetIndex(doc: SchematicDocument): Map<string, number> {
+  const m = new Map<string, number>();
+  buildNetlist(doc).nets.forEach((n, i) => n.wires.forEach((id) => m.set(id, i)));
+  return m;
 }
 
 /**
@@ -74,8 +96,9 @@ export interface QualityWeights {
  *   clutter is strictly superlinear in local event density (pairwise quadratic decay within R = 5 cells)
  *   area weight (0.05 / grid²) keeps layouts compact while letting visual quality win over the last few percent of area.
  */
-export const DEFAULT_QUALITY_WEIGHTS: Readonly<Required<QualityWeights>> = Object.freeze({
+export const DEFAULT_QUALITY_WEIGHTS: Readonly<Required<Omit<QualityWeights, "baselineNets">>> = Object.freeze({
   overlap: Infinity,
+  sameNetOverlap: 40,
   componentCollision: Infinity,
   crossing: 12,
   junction: 5,
@@ -122,8 +145,13 @@ function extractSegments(doc: SchematicDocument): { hSegs: HSeg[]; vSegs: VSeg[]
 }
 
 /** Count collinear overlapping segment stretches between DIFFERENT wires. */
-function countWireOverlaps(hSegs: readonly HSeg[], vSegs: readonly VSeg[]): number {
+function countWireOverlaps(
+  hSegs: readonly HSeg[],
+  vSegs: readonly VSeg[],
+  sameNet: (a: number, b: number) => boolean = () => false,
+): { different: number; same: number } {
   let count = 0;
+  let same = 0;
 
   const byRow = new Map<number, HSeg[]>();
   for (const s of hSegs) {
@@ -139,7 +167,10 @@ function countWireOverlaps(hSegs: readonly HSeg[], vSegs: readonly VSeg[]): numb
       for (let j = i + 1; j < list.length; j++) {
         const b = list[j];
         if (b.lo >= a.hi) break;
-        if (a.wireIdx !== b.wireIdx) count++;
+        if (a.wireIdx !== b.wireIdx) {
+          if (sameNet(a.wireIdx, b.wireIdx)) same++;
+          else count++;
+        }
       }
     }
   }
@@ -158,12 +189,15 @@ function countWireOverlaps(hSegs: readonly HSeg[], vSegs: readonly VSeg[]): numb
       for (let j = i + 1; j < list.length; j++) {
         const b = list[j];
         if (b.lo >= a.hi) break;
-        if (a.wireIdx !== b.wireIdx) count++;
+        if (a.wireIdx !== b.wireIdx) {
+          if (sameNet(a.wireIdx, b.wireIdx)) same++;
+          else count++;
+        }
       }
     }
   }
 
-  return count;
+  return { different: count, same };
 }
 
 /** Find all plain orthogonal wire crossing points (strictly interior to both segments, excluding junctions). */
@@ -398,8 +432,9 @@ function computeAlignmentAndSpacing(
  * Lower `total` is better; hard defects (wire overlaps, component collisions) yield `+Infinity`.
  */
 export function layoutQuality(doc: SchematicDocument, opts?: QualityWeights): QualityBreakdown {
-  const w: Required<QualityWeights> = {
+  const w: Required<Omit<QualityWeights, "baselineNets">> = {
     overlap: opts?.overlap ?? DEFAULT_QUALITY_WEIGHTS.overlap,
+    sameNetOverlap: opts?.sameNetOverlap ?? DEFAULT_QUALITY_WEIGHTS.sameNetOverlap,
     componentCollision: opts?.componentCollision ?? DEFAULT_QUALITY_WEIGHTS.componentCollision,
     crossing: opts?.crossing ?? DEFAULT_QUALITY_WEIGHTS.crossing,
     junction: opts?.junction ?? DEFAULT_QUALITY_WEIGHTS.junction,
@@ -419,8 +454,10 @@ export function layoutQuality(doc: SchematicDocument, opts?: QualityWeights): Qu
   const { hSegs, vSegs } = extractSegments(doc);
 
   // 1. Hard defects (infinite penalty by default)
-  const overlapCount = countWireOverlaps(hSegs, vSegs);
-  const overlaps = overlapCount === 0 ? 0 : overlapCount * w.overlap;
+  const base = opts?.baselineNets;
+  const wireNet = doc.wires.map((x) => base?.get(x.id) ?? -1);
+  const ov = countWireOverlaps(hSegs, vSegs, (a, b) => wireNet[a] >= 0 && wireNet[a] === wireNet[b]);
+  const overlaps = (ov.different === 0 ? 0 : ov.different * w.overlap) + ov.same * w.sameNetOverlap;
 
   const collisionCount = countComponentCollisions(doc, bounds, compGapPx);
   const componentCollisions = collisionCount === 0 ? 0 : collisionCount * w.componentCollision;

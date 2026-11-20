@@ -249,3 +249,20 @@ describe("layout/quality — individual terms", () => {
     expect(qEq.total).toBeLessThan(qUn.total);
   });
 });
+
+describe("overlaps judged against baseline nets", () => {
+  it("same baseline net → finite sameNetOverlap; different baseline nets → Infinity (a new short)", () => {
+    const d = emptyDocument("ov");
+    d.wires.push(
+      { id: "w1", points: [{ x: 0, y: 0 }, { x: 100, y: 0 }] },
+      { id: "w2", points: [{ x: 40, y: 0 }, { x: 140, y: 0 }] },
+    );
+    const same = layoutQuality(d, { baselineNets: new Map([["w1", 0], ["w2", 0]]) });
+    expect(same.overlaps).toBe(DEFAULT_QUALITY_WEIGHTS.sameNetOverlap);
+    expect(Number.isFinite(same.total)).toBe(true);
+    expect(DEFAULT_QUALITY_WEIGHTS.sameNetOverlap).toBeGreaterThan(DEFAULT_QUALITY_WEIGHTS.crossing);
+    const diff = layoutQuality(d, { baselineNets: new Map([["w1", 0], ["w2", 1]]) });
+    expect(diff.overlaps).toBe(Infinity);
+    expect(diff.total).toBe(Infinity);
+  });
+});
