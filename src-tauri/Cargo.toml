@@ -1,4 +1,4 @@
-﻿[package]
+[package]
 name = "digischem"
 version = "0.1.0"
 description = "Digital logic schematic editor"
