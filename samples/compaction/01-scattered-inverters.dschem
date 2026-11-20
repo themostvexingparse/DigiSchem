@@ -1,0 +1,296 @@
+{
+  "format": "digischem",
+  "version": 1,
+  "name": "Scattered inverters",
+  "grid": 10,
+  "components": [
+    {
+      "id": "i0",
+      "type": "input-pin",
+      "x": 0,
+      "y": 10,
+      "rotation": 0,
+      "props": {
+        "name": "A0"
+      },
+      "label": "A0"
+    },
+    {
+      "id": "n0",
+      "type": "not",
+      "x": 300,
+      "y": 0,
+      "rotation": 0,
+      "props": {},
+      "label": "N0"
+    },
+    {
+      "id": "o0",
+      "type": "output-pin",
+      "x": 640,
+      "y": 10,
+      "rotation": 0,
+      "props": {
+        "name": "Y0"
+      },
+      "label": "Y0"
+    },
+    {
+      "id": "i1",
+      "type": "input-pin",
+      "x": 0,
+      "y": 160,
+      "rotation": 0,
+      "props": {
+        "name": "A1"
+      },
+      "label": "A1"
+    },
+    {
+      "id": "n1",
+      "type": "not",
+      "x": 330,
+      "y": 150,
+      "rotation": 0,
+      "props": {},
+      "label": "N1"
+    },
+    {
+      "id": "o1",
+      "type": "output-pin",
+      "x": 640,
+      "y": 160,
+      "rotation": 0,
+      "props": {
+        "name": "Y1"
+      },
+      "label": "Y1"
+    },
+    {
+      "id": "i2",
+      "type": "input-pin",
+      "x": 0,
+      "y": 220,
+      "rotation": 0,
+      "props": {
+        "name": "A2"
+      },
+      "label": "A2"
+    },
+    {
+      "id": "n2",
+      "type": "not",
+      "x": 290,
+      "y": 210,
+      "rotation": 0,
+      "props": {},
+      "label": "N2"
+    },
+    {
+      "id": "o2",
+      "type": "output-pin",
+      "x": 640,
+      "y": 220,
+      "rotation": 0,
+      "props": {
+        "name": "Y2"
+      },
+      "label": "Y2"
+    },
+    {
+      "id": "i3",
+      "type": "input-pin",
+      "x": 0,
+      "y": 430,
+      "rotation": 0,
+      "props": {
+        "name": "A3"
+      },
+      "label": "A3"
+    },
+    {
+      "id": "n3",
+      "type": "not",
+      "x": 320,
+      "y": 420,
+      "rotation": 0,
+      "props": {},
+      "label": "N3"
+    },
+    {
+      "id": "o3",
+      "type": "output-pin",
+      "x": 640,
+      "y": 430,
+      "rotation": 0,
+      "props": {
+        "name": "Y3"
+      },
+      "label": "Y3"
+    },
+    {
+      "id": "i4",
+      "type": "input-pin",
+      "x": 0,
+      "y": 510,
+      "rotation": 0,
+      "props": {
+        "name": "A4"
+      },
+      "label": "A4"
+    },
+    {
+      "id": "n4",
+      "type": "not",
+      "x": 300,
+      "y": 500,
+      "rotation": 0,
+      "props": {},
+      "label": "N4"
+    },
+    {
+      "id": "o4",
+      "type": "output-pin",
+      "x": 640,
+      "y": 510,
+      "rotation": 0,
+      "props": {
+        "name": "Y4"
+      },
+      "label": "Y4"
+    }
+  ],
+  "wires": [
+    {
+      "id": "w0",
+      "points": [
+        {
+          "x": 50,
+          "y": 20
+        },
+        {
+          "x": 300,
+          "y": 20
+        }
+      ]
+    },
+    {
+      "id": "w1",
+      "points": [
+        {
+          "x": 390,
+          "y": 20
+        },
+        {
+          "x": 640,
+          "y": 20
+        }
+      ]
+    },
+    {
+      "id": "w2",
+      "points": [
+        {
+          "x": 50,
+          "y": 170
+        },
+        {
+          "x": 330,
+          "y": 170
+        }
+      ]
+    },
+    {
+      "id": "w3",
+      "points": [
+        {
+          "x": 420,
+          "y": 170
+        },
+        {
+          "x": 640,
+          "y": 170
+        }
+      ]
+    },
+    {
+      "id": "w4",
+      "points": [
+        {
+          "x": 50,
+          "y": 230
+        },
+        {
+          "x": 290,
+          "y": 230
+        }
+      ]
+    },
+    {
+      "id": "w5",
+      "points": [
+        {
+          "x": 380,
+          "y": 230
+        },
+        {
+          "x": 640,
+          "y": 230
+        }
+      ]
+    },
+    {
+      "id": "w6",
+      "points": [
+        {
+          "x": 50,
+          "y": 440
+        },
+        {
+          "x": 320,
+          "y": 440
+        }
+      ]
+    },
+    {
+      "id": "w7",
+      "points": [
+        {
+          "x": 410,
+          "y": 440
+        },
+        {
+          "x": 640,
+          "y": 440
+        }
+      ]
+    },
+    {
+      "id": "w8",
+      "points": [
+        {
+          "x": 50,
+          "y": 520
+        },
+        {
+          "x": 300,
+          "y": 520
+        }
+      ]
+    },
+    {
+      "id": "w9",
+      "points": [
+        {
+          "x": 390,
+          "y": 520
+        },
+        {
+          "x": 640,
+          "y": 520
+        }
+      ]
+    }
+  ],
+  "texts": []
+}

@@ -1004,12 +1004,22 @@ function restoreCenterOfMass(
   const dx0 = snapGrid(target.x - cur.x, grid);
   const dy0 = snapGrid(target.y - cur.y, grid);
   if (dx0 === 0 && dy0 === 0) return packed;
+  // Full shift first; then each axis on its own (for a selection, the order rule can forbid the
+  // small vertical part while the horizontal part is fine, or vice versa); then shorter shifts.
   for (const f of [1, 0.75, 0.5, 0.25]) {
     const dx = snapGrid(dx0 * f, grid);
     const dy = snapGrid(dy0 * f, grid);
-    if (dx === 0 && dy === 0) break;
-    const cand = translated(packed, dx, dy, ids);
-    if (validateAgainstBaseline(baseline, cand).length === 0) return cand;
+    const tries: [number, number][] = [[dx, dy]];
+    if (ids && dx !== 0 && dy !== 0) {
+      // try the larger component first
+      if (Math.abs(dx) >= Math.abs(dy)) tries.push([dx, 0], [0, dy]);
+      else tries.push([0, dy], [dx, 0]);
+    }
+    for (const [tx, ty] of tries) {
+      if (tx === 0 && ty === 0) continue;
+      const cand = translated(packed, tx, ty, ids);
+      if (validateAgainstBaseline(baseline, cand).length === 0) return cand;
+    }
   }
   return packed;
 }
