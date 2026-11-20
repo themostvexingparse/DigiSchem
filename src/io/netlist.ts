@@ -13,7 +13,7 @@
 import type { ComponentInstance, Point, SchematicDocument, Wire } from "../model/types";
 import { propStr } from "../model/component-def";
 import { getDef } from "../model/registry";
-import { pointOnSegment, wireSegments, worldPins, type WorldPin } from "../model/geometry";
+import { effectiveProps, pointOnSegment, wireSegments, worldPins, type WorldPin } from "../model/geometry";
 
 export interface NetPin {
   componentId: string;
@@ -291,7 +291,7 @@ export function exportNetlistText(doc: SchematicDocument): string {
       map = new Map<string, string>();
       const def = getDef(comp.type);
       if (def) {
-        const g = def.geometry({ ...def.defaultProps, ...comp.props });
+        const g = def.geometry(effectiveProps(comp));
         for (const p of g.pins) map.set(p.id, p.name);
       }
       pinNameCache.set(comp.id, map);

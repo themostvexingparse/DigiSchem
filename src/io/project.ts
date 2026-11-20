@@ -145,6 +145,7 @@ function canonicalComponent(c: ComponentInstance): ComponentInstance {
     ...(out.mirror !== undefined ? { mirror: out.mirror } : {}),
     props: out.props,
     ...(out.label !== undefined ? { label: out.label } : {}),
+    ...(c.size ? { size: { w: normalizeZero(c.size.w), h: normalizeZero(c.size.h) } } : {}),
   };
   return ordered;
 }
@@ -339,6 +340,18 @@ function sanitizeComponents(
       }
     }
 
+    let size: { w: number; h: number } | undefined;
+    if (item.size !== undefined) {
+      const sz = item.size as { w?: unknown; h?: unknown } | null;
+      const w = coerceFiniteNumber(sz?.w);
+      const h = coerceFiniteNumber(sz?.h);
+      if (w && h && w.value > 0 && h.value > 0) {
+        size = { w: Math.max(grid, Math.round(w.value / grid) * grid), h: Math.max(grid, Math.round(h.value / grid) * grid) };
+      } else {
+        warnings.push(`${ctx} (${type}): ignored invalid size`);
+      }
+    }
+
     const id = claimUniqueId(item.id, "c", `${ctx} (${type})`, usedIds, warnings);
     const comp: ComponentInstance = {
       id,
@@ -349,6 +362,7 @@ function sanitizeComponents(
       ...(mirror !== undefined ? { mirror } : {}),
       props,
       ...(label !== undefined ? { label } : {}),
+      ...(size ? { size } : {}),
     };
     components.push(comp);
   }

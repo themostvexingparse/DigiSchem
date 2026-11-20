@@ -1,7 +1,7 @@
 /** CORE CONTRACT — geometry helpers shared by renderer, editor and exporters. */
-import type { ComponentInstance, Point, SchematicDocument, Wire } from "./types";
+import type { ComponentInstance, Point, PropValue, SchematicDocument, Wire } from "./types";
 import type { Geometry, PinDef } from "./component-def";
-import { GRID } from "./component-def";
+import { GRID, SIZE_H, SIZE_W } from "./component-def";
 import { getDef } from "./registry";
 
 export interface Rect {
@@ -21,10 +21,25 @@ export function snapPoint(p: Point, grid = GRID): Point {
 
 const FALLBACK_GEOMETRY: Geometry = { width: 40, height: 40, pins: [] };
 
+/**
+ * The props a def's geometry()/symbol() must be called with for an instance:
+ * defaults, then instance props, then the resize request as `_w` / `_h`.
+ * ALWAYS use this instead of merging props by hand.
+ */
+export function effectiveProps(inst: Pick<ComponentInstance, "type" | "props" | "size">): Record<string, PropValue> {
+  const def = getDef(inst.type);
+  const p: Record<string, PropValue> = { ...(def?.defaultProps ?? {}), ...inst.props };
+  if (inst.size && def?.resizable) {
+    if (def.resizable !== "height") p[SIZE_W] = inst.size.w;
+    if (def.resizable !== "width") p[SIZE_H] = inst.size.h;
+  }
+  return p;
+}
+
 export function geometryOf(inst: ComponentInstance): Geometry {
   const def = getDef(inst.type);
   if (!def) return FALLBACK_GEOMETRY;
-  return def.geometry({ ...def.defaultProps, ...inst.props });
+  return def.geometry(effectiveProps(inst));
 }
 
 /** Local → world transform: mirror (about x=width/2), then rotate clockwise about origin, then translate. */

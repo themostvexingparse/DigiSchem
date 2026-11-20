@@ -42,3 +42,10 @@ N individual 1-bit pins) are encouraged where it makes sense (`width` on PinDef)
 
 Public APIs of stub modules (`Editor`, `mountPalette`, `mountProperties`, `serializeProject`,
 `parseProject`, `exportSvgString`, `exportPngBlob`) are fixed — implement them, keep signatures.
+
+## Resizing (contract)
+`ComponentInstance.size?: {w,h}` = user-requested body size in LOCAL units (multiples of GRID).
+Defs opt in with `resizable: "both" | "width" | "height"`. `effectiveProps(inst)` (geometry.ts) passes
+the request to `geometry()/symbol()` as props `_w` / `_h` (constants `SIZE_W` / `SIZE_H`). Treat them as
+minimums; spread pins over the larger body; keep pins on grid and pin ids unchanged.
+**Never merge `{...def.defaultProps, ...inst.props}` by hand — always call `effectiveProps(inst)`.**

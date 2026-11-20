@@ -59,6 +59,13 @@ export interface ComponentDef {
   labelPrefix?: string;
   props: PropDef[];
   defaultProps: Record<string, PropValue>;
+  /**
+   * Whether the user may resize the body with handles. geometry()/symbol() then receive
+   * the requested body size as props `_w` / `_h` (local units, multiples of GRID; absent
+   * when not resized) and must treat them as minimums, spreading pins over the larger
+   * body while keeping every pin on the grid and pin ids unchanged.
+   */
+  resizable?: "both" | "width" | "height";
   geometry(props: Record<string, PropValue>): Geometry;
   /**
    * Returns an SVG fragment (string) drawn in LOCAL coordinates.
@@ -74,6 +81,10 @@ export interface ComponentDef {
    */
   symbol(props: Record<string, PropValue>): string;
 }
+
+/** Reserved prop keys carrying a resized body's requested width / height (see ComponentDef.resizable). */
+export const SIZE_W = "_w";
+export const SIZE_H = "_h";
 
 export function escapeXml(s: string): string {
   return s

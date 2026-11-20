@@ -30,6 +30,12 @@ export interface ComponentInstance {
   props: Record<string, PropValue>;
   /** Optional user label drawn near the component (e.g. "U1", "A", "CLK"). */
   label?: string;
+  /**
+   * Optional user-requested body size in LOCAL units (unrotated), multiples of GRID.
+   * Only meaningful for defs with `resizable`. Acts as a MINIMUM: the def may grow
+   * beyond it to fit pins/labels. Passed to geometry()/symbol() as props `_w` / `_h`.
+   */
+  size?: { w: number; h: number };
 }
 
 /**

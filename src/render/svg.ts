@@ -5,7 +5,7 @@
 import type { ComponentInstance, SchematicDocument, TextNote, Wire } from "../model/types";
 import { escapeXml } from "../model/component-def";
 import { getDef } from "../model/registry";
-import { documentBounds, geometryOf, junctionPoints, localToWorld, svgTransform, type Rect } from "../model/geometry";
+import { documentBounds, effectiveProps, geometryOf, junctionPoints, localToWorld, svgTransform, type Rect } from "../model/geometry";
 
 export interface Theme {
   name: string;
@@ -87,7 +87,7 @@ export function renderComponent(inst: ComponentInstance): string {
   const g = geometryOf(inst);
   const tf = svgTransform(inst, g);
   const inner = def
-    ? def.symbol({ ...def.defaultProps, ...inst.props })
+    ? def.symbol(effectiveProps(inst))
     : `<rect class="ds-unknown" x="0" y="0" width="${g.width}" height="${g.height}"/><text class="ds-text" x="4" y="14">?${escapeXml(inst.type)}</text>`;
   const label = inst.label ? renderLabel(inst) : "";
   return `<g class="ds-comp" data-id="${escapeXml(inst.id)}"><g transform="${tf}">${inner}</g>${label}</g>`;
