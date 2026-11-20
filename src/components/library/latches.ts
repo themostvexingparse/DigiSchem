@@ -20,14 +20,17 @@ function srLatchLayout(props: Record<string, PropValue>) {
     right.push({ id: "qn", name: "Q", dir: "out", inverted: true, overbar: true });
   }
 
-  return layoutBox({
-    left,
-    right,
-    title: "SR",
-    subtitle: "Latch",
-    minBodyW: 60,
-    minBodyH: 60,
-  });
+  return layoutBox(
+    {
+      left,
+      right,
+      title: "SR",
+      subtitle: "Latch",
+      minBodyW: 60,
+      minBodyH: 60,
+    },
+    props,
+  );
 }
 
 const srLatchDef: ComponentDef = {
@@ -41,6 +44,7 @@ const srLatchDef: ComponentDef = {
     { key: "showQBar", label: "Show Q' Output", kind: "bool" },
   ],
   defaultProps: { activeLow: false, showQBar: true },
+  resizable: "both",
   geometry: (props) => srLatchLayout(props).geometry,
   symbol: (props) => renderBox(srLatchLayout(props)),
 };
@@ -59,14 +63,17 @@ function dLatchLayout(props: Record<string, PropValue>) {
     right.push({ id: "qn", name: "Q", dir: "out", width, inverted: true, overbar: true });
   }
 
-  return layoutBox({
-    left,
-    right,
-    title: "D",
-    subtitle: width > 1 ? `${width}-bit` : "Latch",
-    minBodyW: 60,
-    minBodyH: 60,
-  });
+  return layoutBox(
+    {
+      left,
+      right,
+      title: "D",
+      subtitle: width > 1 ? `${width}-bit` : "Latch",
+      minBodyW: 60,
+      minBodyH: 60,
+    },
+    props,
+  );
 }
 
 const dLatchDef: ComponentDef = {
@@ -81,6 +88,7 @@ const dLatchDef: ComponentDef = {
     { key: "showQBar", label: "Show Q' Output", kind: "bool" },
   ],
   defaultProps: { width: 1, activeLowEnable: false, showQBar: true },
+  resizable: "both",
   geometry: (props) => dLatchLayout(props).geometry,
   symbol: (props) => renderBox(dLatchLayout(props)),
 };
@@ -99,14 +107,17 @@ function gatedSrLatchLayout(props: Record<string, PropValue>) {
     right.push({ id: "qn", name: "Q", dir: "out", inverted: true, overbar: true });
   }
 
-  return layoutBox({
-    left,
-    right,
-    title: "SR",
-    subtitle: "Gated",
-    minBodyW: 60,
-    minBodyH: 70,
-  });
+  return layoutBox(
+    {
+      left,
+      right,
+      title: "SR",
+      subtitle: "Gated",
+      minBodyW: 60,
+      minBodyH: 70,
+    },
+    props,
+  );
 }
 
 const gatedSrLatchDef: ComponentDef = {
@@ -120,6 +131,7 @@ const gatedSrLatchDef: ComponentDef = {
     { key: "showQBar", label: "Show Q' Output", kind: "bool" },
   ],
   defaultProps: { activeLowEnable: false, showQBar: true },
+  resizable: "both",
   geometry: (props) => gatedSrLatchLayout(props).geometry,
   symbol: (props) => renderBox(gatedSrLatchLayout(props)),
 };

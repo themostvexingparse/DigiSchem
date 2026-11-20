@@ -4,7 +4,7 @@
  * multiples of GRID (10) so rotation and mirroring preserve grid alignment.
  */
 import type { Geometry, PinDef, PinDir, PropDef, Side } from "../../model/component-def";
-import { escapeXml, GRID, propNum } from "../../model/component-def";
+import { escapeXml, GRID, propNum, SIZE_H, SIZE_W } from "../../model/component-def";
 import type { PropValue } from "../../model/types";
 
 export const PIN_LEN = 20;
@@ -20,6 +20,36 @@ export function ceilGrid(v: number): number {
 
 export function ceilEvenGrid(v: number): number {
   return Math.ceil(v / (2 * GRID)) * (2 * GRID);
+}
+
+/** Read an optional requested resize dimension (`_w` / `_h`) from props, snapped to GRID. */
+export function requestedSize(
+  props: Record<string, PropValue> | undefined,
+  key: string,
+): number | undefined {
+  if (!props || props[key] === undefined) return undefined;
+  const n = propNum(props, key, NaN);
+  if (!Number.isFinite(n) || n <= 0) return undefined;
+  return snapGrid(n);
+}
+
+/**
+ * Evenly distribute `count` pin coordinates on the 10-unit grid across `[lo, hi]`
+ * (where `lo` and `hi` are multiples of GRID). Guarantees adjacent spacing is at
+ * least `minSpacing` whenever `hi - lo >= (count - 1) * minSpacing` and `minSpacing`
+ * is a multiple of GRID.
+ */
+export function distributeOnGrid(count: number, lo: number, hi: number): number[] {
+  if (count <= 0) return [];
+  if (count === 1) return [lo + snapGrid((hi - lo) / 2)];
+  const steps = Math.round((hi - lo) / GRID);
+  const denom = count - 1;
+  const out: number[] = [];
+  for (let i = 0; i < count; i++) {
+    const offsetSteps = Math.floor((2 * steps * i + denom) / (2 * denom));
+    out.push(lo + offsetSteps * GRID);
+  }
+  return out;
 }
 
 export function clampInt(
@@ -108,19 +138,26 @@ export function minEdgePinSpacing(pins: PinSpec[], minSpacing = 2 * GRID): numbe
   return spacing;
 }
 
-function horizontalEdgeNeedW(pins: PinSpec[], spacing: number): number {
-  if (pins.length === 0) return 0;
+function horizontalEdgePad(pins: PinSpec[]): number {
+  if (pins.length === 0) return GRID;
   const firstPad = Math.max(GRID, ceilGrid((pins[0].name.length * 6 + 4) / 2));
   const lastPad = Math.max(GRID, ceilGrid((pins[pins.length - 1].name.length * 6 + 4) / 2));
-  const edgePad = Math.max(firstPad, lastPad);
+  return Math.max(firstPad, lastPad);
+}
+
+function horizontalEdgeNeedW(pins: PinSpec[], spacing: number): number {
+  if (pins.length === 0) return 0;
+  const edgePad = horizontalEdgePad(pins);
   return (pins.length - 1) * spacing + 2 * edgePad;
 }
 
 /**
  * Compute grid-aligned bounding box and pin coordinates for a rectangular IC / block.
  * Pin stubs extend outward from the body rectangle to the exact bounding box edge.
+ * When `props` carries `_w` / `_h` resize requests, treats them as minimum total
+ * local dimensions (width/height) and distributes pins evenly along enlarged edges.
  */
-export function layoutBox(spec: BoxSpec): BoxLayout {
+export function layoutBox(spec: BoxSpec, props?: Record<string, PropValue>): BoxLayout {
   const left = spec.left ?? [];
   const right = spec.right ?? [];
   const top = spec.top ?? [];
@@ -148,7 +185,7 @@ export function layoutBox(spec: BoxSpec): BoxLayout {
   const centerGap = titleInHeader ? 14 : Math.max(14, headerW);
 
   const minBodyW = spec.minBodyW ?? 60;
-  const bodyW = ceilGrid(Math.max(minBodyW, maxLeftW + maxRightW + centerGap, headerW, topNeedW, botNeedW));
+  const computedBodyW = ceilGrid(Math.max(minBodyW, maxLeftW + maxRightW + centerGap, headerW, topNeedW, botNeedW));
 
   const topHasClock = top.some((p) => p.clock);
   const botHasClock = bottom.some((p) => p.clock);
@@ -156,12 +193,22 @@ export function layoutBox(spec: BoxSpec): BoxLayout {
   const botPad = bottom.length > 0 ? (botHasClock ? 30 : 20) : 10;
   const lrSpan = maxLR > 0 ? (maxLR - 1) * sideSpacing : 0;
   const minBodyH = spec.minBodyH ?? 40;
-  const bodyH = ceilGrid(Math.max(minBodyH, topPad + lrSpan + botPad));
+  const computedBodyH = ceilGrid(Math.max(minBodyH, topPad + lrSpan + botPad));
 
   const bodyX = left.length > 0 ? margin : 0;
+  const rightMargin = right.length > 0 ? margin : 0;
   const bodyY = top.length > 0 ? margin : 0;
-  const width = bodyX + bodyW + (right.length > 0 ? margin : 0);
-  const height = bodyY + bodyH + (bottom.length > 0 ? margin : 0);
+  const bottomMargin = bottom.length > 0 ? margin : 0;
+
+  const reqW = requestedSize(props, SIZE_W);
+  const reqH = requestedSize(props, SIZE_H);
+  const bodyW = reqW !== undefined ? Math.max(computedBodyW, reqW - bodyX - rightMargin) : computedBodyW;
+  const bodyH = reqH !== undefined ? Math.max(computedBodyH, reqH - bodyY - bottomMargin) : computedBodyH;
+  const widened = bodyW > computedBodyW;
+  const heightened = bodyH > computedBodyH;
+
+  const width = bodyX + bodyW + rightMargin;
+  const height = bodyY + bodyH + bottomMargin;
 
   const pins: PinDef[] = [];
   const pinSpecs = new Map<string, PinSpec>();
@@ -169,9 +216,15 @@ export function layoutBox(spec: BoxSpec): BoxLayout {
   const placeVertical = (list: PinSpec[], side: "left" | "right", x: number) => {
     if (list.length === 0) return;
     const availTop = bodyY + topPad;
-    const availH = bodyH - topPad - botPad;
-    const span = (list.length - 1) * sideSpacing;
-    const startY = availTop + snapGrid(Math.max(0, (availH - span) / 2));
+    const availBot = bodyY + bodyH - botPad;
+    const availH = availBot - availTop;
+    const ys = heightened
+      ? distributeOnGrid(list.length, availTop, availBot)
+      : (() => {
+          const span = (list.length - 1) * sideSpacing;
+          const startY = availTop + snapGrid(Math.max(0, (availH - span) / 2));
+          return Array.from({ length: list.length }, (_, i) => startY + i * sideSpacing);
+        })();
     for (let i = 0; i < list.length; i++) {
       const p = list[i];
       pinSpecs.set(p.id, p);
@@ -179,7 +232,7 @@ export function layoutBox(spec: BoxSpec): BoxLayout {
         id: p.id,
         name: p.name,
         x,
-        y: startY + i * sideSpacing,
+        y: ys[i],
         dir: p.dir,
         side,
         inverted: p.inverted,
@@ -191,15 +244,25 @@ export function layoutBox(spec: BoxSpec): BoxLayout {
 
   const placeHorizontal = (list: PinSpec[], side: "top" | "bottom", y: number, spacing: number) => {
     if (list.length === 0) return;
-    const span = (list.length - 1) * spacing;
-    const startX = bodyX + Math.max(GRID, snapGrid((bodyW - span) / 2));
+    const xs = widened
+      ? list.length === 1
+        ? [bodyX + snapGrid(bodyW / 2)]
+        : (() => {
+            const edgePad = horizontalEdgePad(list);
+            return distributeOnGrid(list.length, bodyX + edgePad, bodyX + bodyW - edgePad);
+          })()
+      : (() => {
+          const span = (list.length - 1) * spacing;
+          const startX = bodyX + Math.max(GRID, snapGrid((bodyW - span) / 2));
+          return Array.from({ length: list.length }, (_, i) => startX + i * spacing);
+        })();
     for (let i = 0; i < list.length; i++) {
       const p = list[i];
       pinSpecs.set(p.id, p);
       pins.push({
         id: p.id,
         name: p.name,
-        x: startX + i * spacing,
+        x: xs[i],
         y,
         dir: p.dir,
         side,

@@ -5,27 +5,35 @@
  * OR/XOR input stubs reach the exact concave curve or wing.
  */
 import type { ComponentDef, Geometry, PinDef } from "../../model/component-def";
-import { GRID } from "../../model/component-def";
+import { GRID, SIZE_H } from "../../model/component-def";
 import type { PropValue } from "../../model/types";
-import { BUBBLE_R, ceilEvenGrid, clampInt, PIN_LEN, snapGrid } from "./helpers";
+import { BUBBLE_R, ceilEvenGrid, clampInt, distributeOnGrid, PIN_LEN, requestedSize, snapGrid } from "./helpers";
 
 type GateKind = "and" | "or" | "xor" | "buf";
 
-function gateGeometry(inputs: number, invertedOut: boolean): Geometry {
+function gateGeometry(inputs: number, invertedOut: boolean, props?: Record<string, PropValue>): Geometry {
   const spacing = inputs <= 5 ? 2 * GRID : GRID;
   const rawH = Math.max(4 * GRID, (inputs + 1) * spacing);
   // Even multiple of GRID ensures midY = bodyH / 2 is always on the 10-unit grid.
-  const bodyH = ceilEvenGrid(rawH);
+  const minBodyH = ceilEvenGrid(rawH);
+  const reqH = inputs > 1 ? requestedSize(props, SIZE_H) : undefined;
+  const bodyH = reqH !== undefined ? Math.max(minBodyH, ceilEvenGrid(reqH)) : minBodyH;
   const bodyW = 4 * GRID;
   const pins: PinDef[] = [];
-  const span = (inputs - 1) * spacing;
-  const firstY = Math.max(GRID, snapGrid((bodyH - span) / 2));
+  const ys =
+    bodyH > minBodyH && inputs >= 2
+      ? distributeOnGrid(inputs, GRID, bodyH - GRID)
+      : (() => {
+          const span = (inputs - 1) * spacing;
+          const firstY = Math.max(GRID, snapGrid((bodyH - span) / 2));
+          return Array.from({ length: inputs }, (_, i) => firstY + i * spacing);
+        })();
   for (let i = 0; i < inputs; i++) {
     pins.push({
       id: `in${i}`,
       name: `I${i}`,
       x: 0,
-      y: firstY + i * spacing,
+      y: ys[i],
       dir: "in",
       side: "left",
     });
@@ -45,7 +53,7 @@ function gateGeometry(inputs: number, invertedOut: boolean): Geometry {
 
 function gateSymbol(kind: GateKind, props: Record<string, PropValue>, inverted: boolean): string {
   const inputs = kind === "buf" ? 1 : clampInt(props, "inputs", 2, 2, 16);
-  const g = gateGeometry(inputs, inverted);
+  const g = gateGeometry(inputs, inverted, props);
   const h = g.height;
   const x0 = PIN_LEN;
   const x1 = PIN_LEN + 4 * GRID;
@@ -142,7 +150,8 @@ function makeGate(type: string, name: string, kind: GateKind, inverted: boolean)
     description: isBuf ? `${name} gate` : `${name} gate with configurable number of inputs`,
     props: isBuf ? [] : [{ key: "inputs", label: "Inputs", kind: "int", min: 2, max: 16 }],
     defaultProps: isBuf ? {} : { inputs: 2 },
-    geometry: (props) => gateGeometry(isBuf ? 1 : clampInt(props, "inputs", 2, 2, 16), inverted),
+    ...(isBuf ? {} : { resizable: "height" as const }),
+    geometry: (props) => gateGeometry(isBuf ? 1 : clampInt(props, "inputs", 2, 2, 16), inverted, props),
     symbol: (props) => gateSymbol(kind, props, inverted),
   };
 }
