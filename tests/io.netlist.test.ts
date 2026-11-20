@@ -19,7 +19,7 @@ const testTunnelDef: ComponentDef = {
   geometry: () => ({
     width: 40,
     height: 20,
-    pins: [{ id: "p", name: "P", x: 0, y: 10, dir: "inout", side: "left" }],
+    pins: [{ id: "net", name: "P", x: 0, y: 10, dir: "inout", side: "left" }],
   }),
   symbol: (props) => {
     const name = propStr(props, "name", "NET");
@@ -193,10 +193,10 @@ describe("io/netlist", () => {
     expect(clkNet!.wires).toEqual(["w_left", "w_right"]);
     expect(clkNet!.pins).toContainEqual({ componentId: "g1", pinId: "out" });
     expect(clkNet!.pins).toContainEqual({ componentId: "g2", pinId: "in0" });
-    expect(clkNet!.pins).toContainEqual({ componentId: "tun1", pinId: "p" });
-    expect(clkNet!.pins).toContainEqual({ componentId: "tun2", pinId: "p" });
+    expect(clkNet!.pins).toContainEqual({ componentId: "tun1", pinId: "net" });
+    expect(clkNet!.pins).toContainEqual({ componentId: "tun2", pinId: "net" });
 
-    const rstNet = findNetWithPin(nets, "tun3", "p");
+    const rstNet = findNetWithPin(nets, "tun3", "net");
     expect(rstNet).toBeDefined();
     expect(rstNet!.name).toBe("RST");
     expect(rstNet!.id).not.toBe(clkNet!.id);
