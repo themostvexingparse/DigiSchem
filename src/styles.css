@@ -43,7 +43,8 @@ html, body { margin: 0; height: 100%; overflow: hidden; }
   grid-area: toolbar; display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
   padding: 6px 10px; background: var(--panel); border-bottom: 1px solid var(--panel-border);
 }
-#toolbar .brand { font-weight: 700; margin-right: 6px; color: var(--accent); }
+#toolbar .brand { font-weight: 700; margin-right: 6px; color: var(--accent); display: inline-flex; align-items: center; gap: 6px; }
+#toolbar .brand svg { color: var(--text, currentColor); flex: none; }
 .tb-group { display: flex; align-items: center; gap: 2px; padding-right: 8px; border-right: 1px solid var(--panel-border); }
 .tb-group:last-child, .tb-group.tb-right { border-right: none; }
 .tb-group[hidden] { display: none; }

@@ -83,7 +83,16 @@ export function mountToolbar(host: HTMLElement, cmds: AppCommands, editor: Edito
   host.innerHTML = "";
   const brand = document.createElement("span");
   brand.className = "brand";
-  brand.textContent = "DigiSchem";
+  // New logo mark (assets/logo/logo-mark.svg) + name
+  brand.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="20" height="20" role="img" aria-label="DigiSchem">
+  <g fill="none" stroke="#2463d1" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M2 9H5M2 15H5"/>
+    <path d="M15 12H19"/>
+    <path d="M22 7H19V17H22"/>
+  </g>
+  <path d="M5 6H9A6 6 0 0 1 9 18H5Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
+  <circle cx="19" cy="12" r="1.75" fill="#2463d1"/>
+</svg><span>DigiSchem</span>`;
 
   // --- File
   const exportBtn = button({ icon: ICONS.export, label: "Export", title: "Export image or netlist", action: () => toggleExportMenu() });
