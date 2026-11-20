@@ -1073,8 +1073,8 @@ export class Editor {
       return;
     }
 
-    // 1. Pan: middle-drag, space+drag, or pan tool
-    if (e.button === 1 || this.spaceDown || this.tool === "pan") {
+    // 1. Pan: middle-drag, space+drag, or pan tool (a pending placement wins over the pan tool)
+    if (e.button === 1 || this.spaceDown || (this.tool === "pan" && !this.placing)) {
       e.preventDefault();
       this.interaction = {
         kind: "pan",
@@ -1708,14 +1708,34 @@ export class Editor {
     }
   }
 
+  /**
+   * Wheel bindings (standard for design tools):
+   *  - Ctrl+wheel, or a touchpad pinch (reported as a ctrl+wheel event) → zoom around cursor
+   *  - wheel → pan vertically;  Shift+wheel or horizontal wheel/touchpad swipe → pan horizontally
+   */
   private onWheel(e: WheelEvent): void {
     e.preventDefault();
-    const s = this.clientToScreen(e.clientX, e.clientY);
-    let dy = e.deltaY;
-    if (e.deltaMode === 1) dy *= 20;
-    else if (e.deltaMode === 2) dy *= 200;
-    const factor = Math.exp(-clamp(dy, -240, 240) * 0.0018);
-    this.zoomAtScreenPoint(s.x, s.y, factor);
+    const unit = e.deltaMode === 1 ? 20 : e.deltaMode === 2 ? 200 : 1;
+    let dx = e.deltaX * unit;
+    let dy = e.deltaY * unit;
+    if (e.ctrlKey || e.metaKey) {
+      const s = this.clientToScreen(e.clientX, e.clientY);
+      // Pinch gestures send many small deltas; mouse wheels send ~100 per notch.
+      const k = e.deltaMode === 0 && Math.abs(dy) < 50 ? 0.01 : 0.0018;
+      const factor = Math.exp(-clamp(dy, -240, 240) * k);
+      this.zoomAtScreenPoint(s.x, s.y, factor);
+      return;
+    }
+    if (e.shiftKey && dx === 0) {
+      dx = dy;
+      dy = 0;
+    }
+    this.panX -= dx;
+    this.panY -= dy;
+    this.updateViewport();
+    this.updateCursorFromClient(e.clientX, e.clientY);
+    this.renderOverlay();
+    this.emitState();
   }
 
   // ---- HTML5 Drag & Drop from Palette ----

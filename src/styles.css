@@ -7,6 +7,10 @@
   --accent: #2463d1;
   --accent-soft: #e3ecfb;
   --canvas: #ffffff;
+  --hover: #eceff4;          /* neutral hover, keeps text contrast */
+  --active-bg: #dde7f8;      /* selected tool / toggled state */
+  --active-fg: #17428f;
+  --active-border: #9db8e6;
   font-family: "Segoe UI", system-ui, sans-serif;
   font-size: 13px;
   color: var(--text);
@@ -21,6 +25,10 @@
   --accent: #5fa0ff;
   --accent-soft: #24344f;
   --canvas: #1b1e24;
+  --hover: #2a303b;
+  --active-bg: #263a5c;
+  --active-fg: #cfe0ff;
+  --active-border: #3f5f94;
 }
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; overflow: hidden; }
@@ -45,9 +53,10 @@ button, select, input {
   border: 1px solid var(--panel-border); border-radius: 4px; padding: 3px 8px;
 }
 button { cursor: pointer; }
-button:hover:not(:disabled) { background: var(--accent-soft); }
+button:hover:not(:disabled) { background: var(--hover); }
 button:disabled { opacity: 0.4; cursor: default; }
-button.active, button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+button.active { background: var(--active-bg); color: var(--active-fg); border-color: var(--active-border); }
 /* Toolbar buttons: icons are flex-centered so they sit exactly on the vertical center line. */
 .tb-btn {
   display: inline-flex; align-items: center; justify-content: center; gap: 5px;
@@ -57,7 +66,7 @@ button.active, button.primary { background: var(--accent); color: #fff; border-c
 .tb-btn.icon-only { width: 30px; padding: 0; }
 .tb-btn .ico { display: block; flex: none; }
 .tb-btn:hover:not(:disabled) { border-color: var(--panel-border); }
-.tb-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.tb-btn.active, .tb-btn.active:hover:not(:disabled) { background: var(--active-bg); color: var(--active-fg); border-color: var(--active-border); font-weight: 600; }
 .tb-btn.danger:hover:not(:disabled) { background: #fde8e8; color: #b42318; border-color: #f5c2c0; }
 :root[data-theme="dark"] .tb-btn.danger:hover:not(:disabled) { background: #4a1f1f; color: #ffb4ab; }
 .segmented { gap: 0; }
