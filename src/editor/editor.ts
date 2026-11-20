@@ -9,6 +9,7 @@ import { escapeXml, GRID } from "../model/component-def";
 import { getDef } from "../model/registry";
 import {
   componentBounds,
+  pointInRect,
   documentBounds,
   geometryOf,
   unconnectedPins,
@@ -46,6 +47,8 @@ import {
   type SnapTarget,
 } from "./wire-utils";
 import { movedEndContacts, RouteObstacles, repairWires, safeRoute } from "./safe-route";
+import { computeGuides, guidePeers, type GuideResult } from "./guides";
+import { getSettings, onSettingsChange, updateSettings } from "../model/settings";
 import {
   centeredOriginForPlacement,
   copySelectionFromDoc,
@@ -142,6 +145,9 @@ type Interaction =
       moved: boolean;
       narrowToIdOnClick: string | null;
       pointerId: number;
+      /** Smart-guide anchor (component grabbed) and its same-type/same-size peers. */
+      guide: { anchorOrig: Rect; peers: Rect[] } | null;
+      guides: GuideResult | null;
     }
   | {
       kind: "drag-wire-segment";
@@ -300,6 +306,14 @@ export class Editor {
       }
     });
 
+    // Live-apply preference changes from the Settings dialog.
+    this.gridVisible = getSettings().showGrid;
+    this.updateGrid();
+    onSettingsChange((s) => {
+      if (s.showGrid !== this.gridVisible) this.setGridVisible(s.showGrid);
+      this.rebuildScene();
+    });
+
     this.installEvents();
   }
 
@@ -354,6 +368,7 @@ export class Editor {
 
   setGridVisible(v: boolean): void {
     this.gridVisible = v;
+    if (getSettings().showGrid !== v) updateSettings({ showGrid: v }); // G key / toolbar persist too
     this.updateGrid();
     this.emitState();
   }
@@ -419,7 +434,7 @@ export class Editor {
   }
 
   deleteSelection(): void {
-    deleteSelectionInStore(this.store);
+    deleteSelectionInStore(this.store, { sweepOrphans: getSettings().sweepOrphanWires });
   }
 
   copySelection(): void {
@@ -590,6 +605,8 @@ export class Editor {
         `.ds-pin-tag-text{fill:${this.theme.text};font-family:"Segoe UI",Arial,sans-serif;font-size:10px;font-weight:600}`,
         `.ds-marquee{fill:${accentSoft};stroke:${accent};stroke-width:1.2;stroke-dasharray:4 3;vector-effect:non-scaling-stroke}`,
         `.ds-unconn-pin{fill:${this.theme.background};stroke:${unconnStroke};stroke-width:1.3}`,
+        `.ds-guide{stroke:#e0338a;stroke-width:1;stroke-dasharray:4 3;vector-effect:non-scaling-stroke;fill:none}`,
+        `.ds-spacing{stroke:#e0338a;stroke-width:1.5;vector-effect:non-scaling-stroke;fill:none}`,
         `.ds-resize-handle{fill:${this.theme.background};stroke:${accent};stroke-width:1.5;vector-effect:non-scaling-stroke}`,
         `.ds-resize-handle-active{fill:${accent};stroke:${this.theme.background};stroke-width:1.5;vector-effect:non-scaling-stroke}`,
         `.ds-ghost{opacity:0.65}`,
@@ -652,7 +669,7 @@ export class Editor {
     this.cachedPins = doc.components.flatMap((comp) => worldPins(comp));
 
     // Render unconnected pin markers
-    const unconn = unconnectedPins(doc);
+    const unconn = getSettings().showUnconnectedPins ? unconnectedPins(doc) : [];
     this.unconnectedGroup.innerHTML = unconn
       .map((p) => `<circle class="ds-unconn-pin" cx="${p.x}" cy="${p.y}" r="2.5"/>`)
       .join("");
@@ -756,6 +773,21 @@ export class Editor {
         const pos = this.hover.pos;
         const r = clamp(4.5 / this.zoom, 3, 7);
         parts.push(`<circle class="ds-pin-target" cx="${pos.x}" cy="${pos.y}" r="${r}"/>`);
+      }
+    }
+
+    // 2b. Smart guides while moving (alignment lines + equal-spacing bars)
+    if (this.interaction?.kind === "move-selection" && this.interaction.guides) {
+      const g = this.interaction.guides;
+      const tick = 4 / Math.max(this.zoom, 0.25);
+      for (const l of g.lines) {
+        parts.push(`<line class="ds-guide" x1="${l.x1}" y1="${l.y1}" x2="${l.x2}" y2="${l.y2}"/>`);
+      }
+      for (const b of g.spacings) {
+        const horiz = b.y1 === b.y2;
+        const t1 = horiz ? `M${b.x1} ${b.y1 - tick} V${b.y1 + tick}` : `M${b.x1 - tick} ${b.y1} H${b.x1 + tick}`;
+        const t2 = horiz ? `M${b.x2} ${b.y2 - tick} V${b.y2 + tick}` : `M${b.x2 - tick} ${b.y2} H${b.x2 + tick}`;
+        parts.push(`<path class="ds-spacing" d="M${b.x1} ${b.y1} L${b.x2} ${b.y2} ${t1} ${t2}"/>`);
       }
     }
 
@@ -1321,9 +1353,24 @@ export class Editor {
 
     const attachedWires = captureAttachedWires(this.store.doc, movedCompIds, selWireIds);
 
+    // Smart guides follow the component that was grabbed (or the only selected one).
+    let guide: { anchorOrig: Rect; peers: Rect[] } | null = null;
+    if (getSettings().showGuides) {
+      const selComps = this.store.doc.components.filter((c) => movedCompIds.has(c.id));
+      const grabbed =
+        selComps.find((c) => pointInRect(this.cursorWorldExact, componentBounds(c))) ??
+        (selComps.length === 1 ? selComps[0] : undefined);
+      if (grabbed) {
+        const peers = guidePeers(this.store.doc, grabbed, movedCompIds);
+        if (peers.length > 0) guide = { anchorOrig: componentBounds(grabbed), peers };
+      }
+    }
+
     this.store.beginGesture();
     this.interaction = {
       kind: "move-selection",
+      guide,
+      guides: null,
       startWorldSnapped: { ...this.cursorWorldSnapped },
       lastDelta: { x: 0, y: 0 },
       origComponents,
@@ -1376,6 +1423,16 @@ export class Editor {
             x: this.cursorWorldSnapped.x - this.interaction.startWorldSnapped.x,
             y: this.cursorWorldSnapped.y - this.interaction.startWorldSnapped.y,
           };
+          if (this.interaction.guide) {
+            const st = getSettings();
+            const snapDist = st.snapToGuides ? st.guideSnapCells * this.grid() : 0;
+            const g = computeGuides(this.interaction.guide.anchorOrig, this.interaction.guide.peers, delta, snapDist);
+            delta.x += g.adjust.x;
+            delta.y += g.adjust.y;
+            const changed = JSON.stringify(g) !== JSON.stringify(this.interaction.guides);
+            this.interaction.guides = g;
+            if (changed && pointsEqual(delta, this.interaction.lastDelta)) this.renderOverlay();
+          }
           if (!pointsEqual(delta, this.interaction.lastDelta)) {
             this.interaction.lastDelta = delta;
             this.interaction.moved = true;

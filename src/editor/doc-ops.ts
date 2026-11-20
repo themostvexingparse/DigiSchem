@@ -18,6 +18,8 @@ import {
   componentBounds,
   geometryOf,
   snap,
+  pointOnSegment,
+  SegmentIndex,
   worldPins,
   unionRect,
   type Rect,
@@ -261,14 +263,57 @@ export function mirrorSelectionInStore(store: DocumentStore): void {
   );
 }
 
-export function deleteSelectionInStore(store: DocumentStore): void {
+export function deleteSelectionInStore(store: DocumentStore, opts: { sweepOrphans?: boolean } = {}): void {
   if (store.selection.size === 0) return;
   const sel = new Set(store.selection);
   store.update("Delete", (draft) => {
+    // Pin positions of the deleted components: wires ending there lose their "parent".
+    const seeds: Point[] = [];
+    if (opts.sweepOrphans) {
+      for (const c of draft.components) if (sel.has(c.id)) for (const wp of worldPins(c)) seeds.push(wp.pos);
+    }
     draft.components = draft.components.filter((c) => !sel.has(c.id));
     draft.wires = draft.wires.filter((w) => !sel.has(w.id));
     draft.texts = draft.texts.filter((t) => !sel.has(t.id));
+    if (seeds.length > 0) sweepOrphanWires(draft, seeds);
   });
+}
+
+/**
+ * Remove wires orphaned by a deletion, cascading: a wire is removed when one of its ends is
+ * at a seed point (a deleted pin) or on a wire removed earlier in the sweep, AND that end is
+ * now dangling (no pin, no other wire touches it). Wires that still connect two surviving
+ * things are kept, so nets between other components are never cut. Returns removed wire ids.
+ */
+export function sweepOrphanWires(doc: SchematicDocument, seeds: readonly Point[]): string[] {
+  const key = (p: Point) => `${p.x},${p.y}`;
+  const frontier = new Set(seeds.map(key));
+  const removedSegs: [Point, Point][] = [];
+  const removed: string[] = [];
+  const touchesRemoved = (p: Point) => removedSegs.some(([a, b]) => pointOnSegment(p, a, b));
+  for (let guard = 0; guard < 10000; guard++) {
+    const pinKeys = new Set<string>();
+    for (const c of doc.components) for (const wp of worldPins(c)) pinKeys.add(key(wp.pos));
+    const idx = new SegmentIndex(doc.wires);
+    const dangling = (wi: number, p: Point) => {
+      if (pinKeys.has(key(p))) return false;
+      for (const other of idx.wiresAt(p)) if (other !== wi) return false;
+      return true;
+    };
+    const victim = doc.wires.findIndex((w, wi) => {
+      if (w.points.length < 2) return true;
+      return [w.points[0], w.points[w.points.length - 1]].some(
+        (e) => (frontier.has(key(e)) || touchesRemoved(e)) && dangling(wi, e),
+      );
+    });
+    if (victim < 0) break;
+    const w = doc.wires[victim];
+    doc.wires.splice(victim, 1);
+    removed.push(w.id);
+    for (let i = 0; i + 1 < w.points.length; i++) removedSegs.push([w.points[i], w.points[i + 1]]);
+    for (const p of w.points) frontier.add(key(p));
+  }
+  return removed;
 }
 
 /**

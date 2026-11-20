@@ -8,6 +8,8 @@ import type { Editor, Tool } from "../editor/editor";
 import { getDef } from "../model/registry";
 import { THEMES } from "../render/svg";
 import { ICONS } from "./icons";
+import { showSettingsDialog, showShortcutsDialog } from "./dialogs";
+import { getSettings, onSettingsChange, updateSettings } from "../model/settings";
 import type { AppCommands } from "./commands";
 
 interface Btn {
@@ -139,8 +141,15 @@ export function mountToolbar(host: HTMLElement, cmds: AppCommands, editor: Edito
   ctxGroup.className = "tb-group tb-context";
 
   // --- View
-  const zoomLabel = document.createElement("span");
+  const zoomLabel = document.createElement("button");
+  zoomLabel.type = "button";
   zoomLabel.className = "tb-zoom";
+  zoomLabel.title = "Reset zoom to 100%";
+  zoomLabel.addEventListener("click", () => editor.zoomBy(1 / editor.getZoom()));
+  const gridBtn = button({ icon: ICONS.grid, title: "Toggle grid (G)", action: () => updateSettings({ showGrid: !getSettings().showGrid }) });
+  const syncGrid = () => gridBtn.classList.toggle("on", getSettings().showGrid);
+  onSettingsChange(syncGrid);
+  syncGrid();
   const themeSel = document.createElement("select");
   themeSel.title = "Canvas theme";
   themeSel.innerHTML = `<option value="light">Light</option><option value="dark">Dark</option><option value="print">Print</option>`;
@@ -153,7 +162,10 @@ export function mountToolbar(host: HTMLElement, cmds: AppCommands, editor: Edito
     zoomLabel,
     button({ icon: ICONS.zoomIn, title: "Zoom in", action: () => editor.zoomBy(1.25) }),
     button({ icon: ICONS.fit, title: "Zoom to fit (F)", action: () => editor.zoomToFit() }),
+    gridBtn,
     themeSel,
+    button({ icon: ICONS.settings, title: "Settings", action: () => showSettingsDialog() }),
+    button({ icon: ICONS.help, title: "Keyboard shortcuts (?)", action: () => showShortcutsDialog() }),
   );
   viewGroup.classList.add("tb-right");
 

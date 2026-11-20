@@ -108,3 +108,31 @@ dialog.export-dialog {
 dialog.export-dialog form { display: flex; flex-direction: column; gap: 10px; }
 dialog.export-dialog h3 { margin: 0 0 4px; }
 dialog.export-dialog menu { display: flex; justify-content: flex-end; gap: 6px; margin: 6px 0 0; padding: 0; }
+
+/* ---- Settings / help dialogs ---- */
+dialog.app-dialog {
+  border: 1px solid var(--panel-border); border-radius: 10px; background: var(--panel); color: var(--text);
+  padding: 0; min-width: 380px; max-width: 560px; box-shadow: 0 12px 40px rgba(0, 0, 0, .25);
+}
+dialog.app-dialog::backdrop { background: rgba(15, 20, 30, .35); }
+dialog.app-dialog header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 16px; border-bottom: 1px solid var(--panel-border);
+}
+dialog.app-dialog h3 { margin: 0; font-size: 15px; }
+dialog.app-dialog .dlg-close { border: none; background: transparent; font-size: 20px; line-height: 1; padding: 2px 8px; }
+.settings-list { padding: 4px 16px 14px; display: flex; flex-direction: column; }
+.settings-list h4 {
+  margin: 12px 0 4px; font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted);
+}
+.settings-row { display: flex; gap: 10px; align-items: flex-start; padding: 7px 0; cursor: pointer; }
+.settings-row input { margin-top: 3px; }
+.settings-row span { display: flex; flex-direction: column; gap: 2px; }
+.settings-row small { color: var(--muted); }
+.shortcut-table { border-collapse: collapse; margin: 6px 16px 14px; }
+.shortcut-table th { text-align: left; white-space: nowrap; padding: 5px 18px 5px 0; font-weight: 600; font-family: Consolas, monospace; font-size: 12px; }
+.shortcut-table td { padding: 5px 0; color: var(--text); }
+.shortcut-table tr + tr { border-top: 1px solid var(--panel-border); }
+button.tb-zoom { border: none; background: transparent; padding: 0 4px; height: 30px; }
+button.tb-zoom:hover { text-decoration: underline; background: transparent; }
+.tb-btn.on { color: var(--accent); }

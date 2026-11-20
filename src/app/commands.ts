@@ -7,6 +7,7 @@ import { exportNetlistText } from "../io/netlist";
 import { PROJECT_EXTENSION, parseProject, serializeProject } from "../io/project";
 import { exportPngBlob, exportSvgString } from "../io/export";
 import { openText, saveBinary, saveText } from "../platform/files";
+import { showShortcutsDialog } from "./dialogs";
 
 const PROJECT_FILTER = [{ name: "DigiSchem Project", extensions: [PROJECT_EXTENSION, "json"] }];
 
@@ -161,6 +162,14 @@ export class AppCommands {
 
 /** Global shortcuts for file operations. Editing shortcuts are handled by the Editor. */
 export function installGlobalShortcuts(cmds: AppCommands) {
+  window.addEventListener("keydown", (e) => {
+    if (e.key !== "?" || e.ctrlKey || e.metaKey || e.altKey) return;
+    const t = e.target as HTMLElement | null;
+    if (t && (t.tagName === "TEXTAREA" || (t.tagName === "INPUT" && !["checkbox", "radio"].includes((t as HTMLInputElement).type)))) return;
+    if (document.querySelector("dialog[open]")) return;
+    e.preventDefault();
+    showShortcutsDialog();
+  });
   window.addEventListener("keydown", (e) => {
     if (!(e.ctrlKey || e.metaKey)) return;
     // Don't open/replace documents or stack dialogs behind an open modal dialog.
