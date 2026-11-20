@@ -112,12 +112,40 @@ export function textNoteBounds(t: { x: number; y: number; text: string; fontSize
   return { x: t.x, y: t.y - fs, w: Math.max(fs, maxLen * fs * 0.6), h: (lines.length - 1) * fs * 1.25 + fs * 1.35 };
 }
 
-/** Approximate bounds of a component's upright label (drawn centered above the body). */
+export type LabelPlacement = "above" | "below" | "corner";
+
+/**
+ * Where a component's label goes so it never sits on a wire leaving a pin:
+ * above the body by default, below it when pins leave from the top edge, and at the
+ * top-right corner (outside the body) when pins leave from both top and bottom.
+ */
+export function labelPlacement(inst: ComponentInstance): LabelPlacement {
+  const b = componentBounds(inst);
+  const pins = worldPins(inst);
+  const top = pins.some((p) => p.pos.y === b.y);
+  const bottom = pins.some((p) => p.pos.y === b.y + b.h);
+  return top ? (bottom ? "corner" : "below") : "above";
+}
+
+/** Anchor point + text-anchor of a component's label (world space). */
+export function labelAnchor(inst: ComponentInstance): { x: number; y: number; anchor: "middle" | "start" } {
+  const b = componentBounds(inst);
+  switch (labelPlacement(inst)) {
+    case "below":
+      return { x: b.x + b.w / 2, y: b.y + b.h + 15, anchor: "middle" };
+    case "corner":
+      return { x: b.x + b.w + 4, y: b.y - 4, anchor: "start" };
+    default:
+      return { x: b.x + b.w / 2, y: b.y - 6, anchor: "middle" };
+  }
+}
+
+/** Approximate bounds of a component's upright label (see labelAnchor). */
 export function labelBounds(inst: ComponentInstance): Rect | null {
   if (!inst.label) return null;
-  const b = componentBounds(inst);
+  const a = labelAnchor(inst);
   const w = inst.label.length * 6.5 + 8;
-  return { x: b.x + b.w / 2 - w / 2, y: b.y - 20, w, h: 16 };
+  return { x: a.anchor === "middle" ? a.x - w / 2 : a.x, y: a.y - 14, w, h: 16 };
 }
 
 /** Bounding box of everything in the document (components + labels, wires, texts). Null if empty. */

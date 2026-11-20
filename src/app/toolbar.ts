@@ -115,8 +115,8 @@ export function mountToolbar(host: HTMLElement, cmds: AppCommands, editor: Edito
   );
 
   // --- History
-  const undoBtn = button({ icon: ICONS.undo, title: "Undo (Ctrl+Z)", action: () => store.undo() });
-  const redoBtn = button({ icon: ICONS.redo, title: "Redo (Ctrl+Y)", action: () => store.redo() });
+  const undoBtn = button({ icon: ICONS.undo, title: "Undo (Ctrl+Z)", action: () => { editor.cancelTransient(); store.undo(); } });
+  const redoBtn = button({ icon: ICONS.redo, title: "Redo (Ctrl+Y)", action: () => { editor.cancelTransient(); store.redo(); } });
   const historyGroup = group(undoBtn, redoBtn);
 
   // --- Tools
@@ -124,6 +124,7 @@ export function mountToolbar(host: HTMLElement, cmds: AppCommands, editor: Edito
     ["select", ICONS.select, "Select", "Select / move (V)"],
     ["wire", ICONS.wire, "Wire", "Draw wire (W)"],
     ["text", ICONS.text, "Text", "Add text note (T)"],
+    ["pan", ICONS.pan, "Pan", "Pan the view (H) — or Space+drag / middle-drag in any tool"],
   ];
   const toolBtns = toolDefs.map(([tool, icon, label, title]) => {
     const b = button({ icon, label, title, action: () => editor.setTool(tool), cls: "tool" });

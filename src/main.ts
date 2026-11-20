@@ -20,7 +20,7 @@ installGlobalShortcuts(cmds);
 
 const status = document.getElementById("statusbar")!;
 const updateStatus = () => {
-  const name = store.filePath ? store.filePath.split(/[\/]/).pop() : store.doc.name;
+  const name = store.filePath ? store.filePath.split(/[\\/]/).pop() : store.doc.name;
   status.textContent = `${name}${store.dirty ? " •" : ""}   |   ${store.doc.components.length} components, ${store.doc.wires.length} wires   |   ${editor.statusText()}`;
   document.title = `${name}${store.dirty ? " •" : ""} — DigiSchem`;
 };

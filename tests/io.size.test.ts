@@ -23,6 +23,6 @@ describe("component size (resize) persistence", () => {
     expect(warnings.some((w) => /invalid size/.test(w))).toBe(true);
   });
   it("effectiveProps only passes _w/_h for resizable defs", () => {
-    expect(effectiveProps({ type: "and", props: {}, size: { w: 100, h: 100 } })._w).toBeUndefined();
+    expect(effectiveProps({ type: "not", props: {}, size: { w: 100, h: 100 } })._w).toBeUndefined();
   });
 });

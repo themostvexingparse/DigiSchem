@@ -436,10 +436,24 @@ function sanitizeWires(
       }
     }
 
+    // Drop zero-length segments / duplicate points; a wire that collapses is meaningless.
+    const cleaned: Point[] = [];
+    for (const p of points) {
+      const last = cleaned[cleaned.length - 1];
+      if (!last || last.x !== p.x || last.y !== p.y) cleaned.push(p);
+    }
+    if (cleaned.length < 2) {
+      warnings.push(`${ctx}: dropped zero-length wire`);
+      continue;
+    }
+    if (cleaned.some((p, j) => j > 0 && p.x !== cleaned[j - 1].x && p.y !== cleaned[j - 1].y)) {
+      warnings.push(`${ctx}: wire has a diagonal segment (kept as drawn)`);
+    }
+
     const id = claimUniqueId(item.id, "w", ctx, usedIds, warnings);
     wires.push({
       id,
-      points,
+      points: cleaned,
       ...(width !== undefined ? { width } : {}),
     });
   }
@@ -608,6 +622,12 @@ export function parseProjectWithWarnings(text: string): ParseProjectResult {
       }
       grid = gNum.value;
     }
+  }
+  // Every component pin sits on the 10-unit grid; snapping a file to any other grid would
+  // pull wire ends off their pins and silently disconnect the circuit.
+  if (grid !== GRID) {
+    warnings.push(`Unsupported grid size ${grid}; using ${GRID} (component pins are on a ${GRID}-unit grid)`);
+    grid = GRID;
   }
 
   const usedIds = new Set<string>();

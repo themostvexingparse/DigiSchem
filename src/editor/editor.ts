@@ -30,6 +30,7 @@ import {
   findPinAt,
   findSnapTarget,
   hitTestDocument,
+  hitTestWire,
   isPointAnchored,
   itemsInRect,
   normalizeDocWires,
@@ -44,6 +45,7 @@ import {
   type AttachedWireSnapshot,
   type SnapTarget,
 } from "./wire-utils";
+import { movedEndContacts, RouteObstacles, repairWires, safeRoute } from "./safe-route";
 import {
   centeredOriginForPlacement,
   copySelectionFromDoc,
@@ -97,7 +99,12 @@ function setsEqual(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
 function isEditableElement(el: EventTarget | null): boolean {
   if (!(el instanceof HTMLElement)) return false;
   const tag = el.tagName;
-  return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || el.isContentEditable;
+  if (tag === "INPUT") {
+    const t = (el as HTMLInputElement).type;
+    return !["checkbox", "radio", "button", "submit", "reset", "range", "color", "file"].includes(t);
+  }
+  // <select> keeps arrow keys for itself, but must not swallow the editor's letter/Ctrl shortcuts.
+  return tag === "TEXTAREA" || el.isContentEditable;
 }
 
 type HoverState =
@@ -372,6 +379,15 @@ export class Editor {
     this.emitState();
   }
 
+  /** Abandon transient editor state (placement ghost, wire draft, inline text editor). */
+  cancelTransient(): void {
+    this.placing = null;
+    this.wireDraft = null;
+    this.closeTextEditor(true);
+    this.renderOverlay();
+    this.emitState();
+  }
+
   /** Current zoom factor (1 = 100%). */
   getZoom(): number {
     return this.zoom;
@@ -416,9 +432,21 @@ export class Editor {
     this.deleteSelection();
   }
 
+  private lastWireClick: { t: number; x: number; y: number } | null = null;
+  private lastPaste: { x: number; y: number; n: number } | null = null;
   paste(): void {
     if (!this.clipboard) return;
-    const target = this.hasCursor ? this.cursorWorldSnapped : undefined;
+    let target = this.hasCursor ? { ...this.cursorWorldSnapped } : undefined;
+    // Pasting again at the same spot (or right on top of the copied originals) would stack
+    // copies exactly over each other — and geometric connectivity would short every pin.
+    // Cascade each repeated paste by two grid cells instead.
+    const g = this.grid();
+    const base = target ?? this.clipboard.anchor;
+    const same = this.lastPaste && this.lastPaste.x === base.x && this.lastPaste.y === base.y;
+    const onAnchor = base.x === this.clipboard.anchor.x && base.y === this.clipboard.anchor.y;
+    const n = same ? this.lastPaste!.n + 1 : onAnchor ? 1 : 0;
+    this.lastPaste = { x: base.x, y: base.y, n };
+    if (n > 0) target = { x: base.x + 2 * g * n, y: base.y + 2 * g * n };
     pasteClipboardIntoStore(this.store, this.clipboard, target);
   }
 
@@ -802,9 +830,33 @@ export class Editor {
     const last = pts[pts.length - 1];
     const fromExit = pts.length === 1 ? (draft.startExit ?? null) : null;
     const toExit = snapTarget && pointsEqual(snapTarget.pos, target) ? this.snapExit(snapTarget) : null;
-    if (!fromExit && !toExit) return buildWirePreview(pts, target, draft.horizontalFirst);
-    const leg = routePinAware(last, fromExit, target, toExit, !!draft.flipped, this.store.doc.grid || 10);
+    let leg: Point[];
+    if (!fromExit && !toExit) {
+      leg = buildWirePreview([last], target, draft.horizontalFirst);
+    } else {
+      leg = routePinAware(last, fromExit, target, toExit, !!draft.flipped, this.store.doc.grid || 10);
+    }
+    // If the simple route would touch a pin/wire it isn't meant to, or cut through a
+    // component, search for a clean one (only when the draft ends on a real target, so
+    // free-space drafting stays predictable).
+    if (snapTarget && leg.length >= 2) {
+      const obs = this.routeObstacles();
+      if (obs.routeIsBad(leg)) {
+        const safe = safeRoute(obs, last, target, { fromExit, toExit, prefer: leg });
+        if (safe) leg = safe;
+      }
+    }
     return normalizeWirePoints([...pts, ...leg.slice(1)]);
+  }
+
+  private obstacleCache: { doc: unknown; obs: RouteObstacles } | null = null;
+  /** Route obstacles for the current document (cached until the document changes). */
+  private routeObstacles(): RouteObstacles {
+    const doc = this.store.doc;
+    if (!this.obstacleCache || this.obstacleCache.doc !== doc) {
+      this.obstacleCache = { doc, obs: new RouteObstacles(doc as Parameters<typeof normalizeDocWires>[0]) };
+    }
+    return this.obstacleCache.obs;
   }
 
   private currentWireTargetPoint(): Point {
@@ -979,9 +1031,15 @@ export class Editor {
     // Ignore non-primary/non-middle buttons
     if (e.button !== 0 && e.button !== 1) return;
 
+    const wasEditingText = this.activeTextEditor !== null;
     this.closeTextEditor(true);
     this.svg.focus({ preventScroll: true });
     this.updateCursorFromClient(e.clientX, e.clientY);
+    // In the Text tool, a click while a note is being edited just finishes that note.
+    if (wasEditingText && this.tool === "text" && e.button === 0) {
+      e.preventDefault();
+      return;
+    }
 
     // 1. Pan: middle-drag, space+drag, or pan tool
     if (e.button === 1 || this.spaceDown || this.tool === "pan") {
@@ -1030,6 +1088,7 @@ export class Editor {
       e.preventDefault();
       const noteId = newId("t");
       const pos = { ...this.cursorWorldSnapped };
+      this.store.beginGesture(); // closed by the inline editor (commit = end, cancel = cancel)
       this.store.update("Add text note", (draft) => {
         draft.texts.push({ id: noteId, x: pos.x, y: pos.y, text: "Text", fontSize: 14 });
       });
@@ -1042,7 +1101,11 @@ export class Editor {
     // 4. Wire tool
     if (this.tool === "wire") {
       e.preventDefault();
-      this.handleWireToolClick(e.detail >= 2);
+      const now = performance.now();
+      const prev = this.lastWireClick;
+      const isDouble = !!prev && now - prev.t < 400 && Math.hypot(e.clientX - prev.x, e.clientY - prev.y) < 6;
+      this.lastWireClick = isDouble ? null : { t: now, x: e.clientX, y: e.clientY };
+      this.handleWireToolClick(isDouble);
       return;
     }
 
@@ -1138,7 +1201,14 @@ export class Editor {
 
     // Dragging from any pin in select mode starts a wire (unless modifier held for selection toggle)
     if (!toggleMod) {
-      const pin = findPinAt(this.store.doc, this.cursorWorldExact, this.pinToleranceWorld(), this.cachedPins);
+      let pin = findPinAt(this.store.doc, this.cursorWorldExact, this.pinToleranceWorld(), this.cachedPins);
+      if (pin) {
+        // A click on a short wire between two pins would otherwise always grab a pin:
+        // prefer the wire when the cursor is on it and not right at the pin tip.
+        const dPin = Math.hypot(this.cursorWorldExact.x - pin.pos.x, this.cursorWorldExact.y - pin.pos.y);
+        const wireHit = hitTestWire(this.store.doc, this.cursorWorldExact, this.wireToleranceWorld());
+        if (wireHit && dPin > Math.min(3, this.pinToleranceWorld() / 2)) pin = null;
+      }
       if (pin) {
         e.preventDefault();
         this.interaction = {
@@ -1337,6 +1407,8 @@ export class Editor {
                 // Keep wire alive during intermediate drag; normalize on end
                 w.points = stretchWireForMove(aw.origPoints, aw.startAttached, aw.endAttached, delta, true);
               }
+              // Never let a stretched wire run over another pin/wire or through a body.
+              repairWires(draft, inter.attachedWires.map((aw) => aw.wireId), movedEndContacts(draft, inter.attachedWires));
             });
           }
           if (snappedChanged) this.emitState();
@@ -1498,7 +1570,10 @@ export class Editor {
         break;
       case "drag-wire-segment":
         if (inter.moved) {
-          this.store.update("Move wire segment", (draft) => normalizeDocWires(draft));
+          this.store.update("Move wire segment", (draft) => {
+            repairWires(draft, [inter.wireId]);
+            normalizeDocWires(draft);
+          });
         }
         this.store.endGesture();
         break;
@@ -1640,7 +1715,21 @@ export class Editor {
       const val = ta.value;
       ta.remove();
       if (this.activeTextEditor === ta) this.activeTextEditor = null;
-      if (commit) {
+      if (isNew) {
+        // The note was added inside a gesture: commit text into the same undo step,
+        // or roll the whole creation back (Esc / empty text) leaving no trace.
+        if (commit && val.trim() !== "") {
+          if (val !== note.text) {
+            this.store.update("Add text note", (draft) => {
+              const target = draft.texts.find((t) => t.id === note.id);
+              if (target) target.text = val;
+            });
+          }
+          this.store.endGesture();
+        } else {
+          this.store.cancelGesture();
+        }
+      } else if (commit) {
         if (val.trim() === "") {
           this.store.update("Delete empty text", (draft) => {
             draft.texts = draft.texts.filter((t) => t.id !== note.id);
@@ -1651,12 +1740,14 @@ export class Editor {
             if (target) target.text = val;
           });
         }
-      } else if (isNew && val.trim() === "") {
-        this.store.update("Cancel text", (draft) => {
-          draft.texts = draft.texts.filter((t) => t.id !== note.id);
-        });
       }
       this.svg.focus({ preventScroll: true });
+    };
+    // Disposal without touching the store (used when the document is replaced).
+    this.disposeTextEditor = () => {
+      finished = true;
+      ta.remove();
+      if (this.activeTextEditor === ta) this.activeTextEditor = null;
     };
 
     ta.addEventListener("blur", () => finish(true));
@@ -1689,14 +1780,18 @@ export class Editor {
     ta.style.fontSize = `${clamp(fs * this.zoom, 11, 48)}px`;
   }
 
+  private disposeTextEditor: (() => void) | null = null;
+
   private closeTextEditor(commit: boolean): void {
     const ta = this.activeTextEditor;
     if (!ta) return;
     if (commit) {
       ta.blur();
     } else {
-      this.activeTextEditor = null;
-      ta.remove();
+      // Disarm the blur handler first: removing a focused textarea fires blur, which
+      // would otherwise commit the old note into the newly opened/replaced document.
+      this.disposeTextEditor?.();
+      this.disposeTextEditor = null;
     }
   }
 
@@ -1755,9 +1850,11 @@ export class Editor {
       e.preventDefault();
       if (this.placing) {
         this.placing = null;
-      } else if (this.wireDraft) {
+      } else if (this.wireDraft && this.interaction?.kind !== "pin-wire-drag") {
         this.wireDraft = null;
       } else if (this.interaction) {
+        if (this.interaction.kind === "pin-wire-drag") this.wireDraft = null;
+        if (this.interaction.kind === "marquee") this.store.setSelection(this.interaction.initialSelection);
         const inter = this.interaction;
         this.interaction = null;
         this.releasePointer(inter.pointerId);
@@ -1828,6 +1925,11 @@ export class Editor {
     if (k === "t") {
       e.preventDefault();
       this.setTool("text");
+      return;
+    }
+    if (k === "h") {
+      e.preventDefault();
+      this.setTool("pan");
       return;
     }
     if (k === "f") {

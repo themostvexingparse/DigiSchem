@@ -15,6 +15,7 @@ import {
   rotateSelectionInStore,
   setComponentRotationInDoc,
   keepWiresAttached,
+  mirrorSelectionInDoc,
 } from "../editor/doc-ops";
 import { resetComponentSizeInDoc, setComponentSizeInDoc } from "../editor/resize";
 
@@ -196,10 +197,11 @@ export function mountProperties(host: HTMLElement, store: DocumentStore): void {
       const checked = mirrorChk.checked;
       runSelfUpdate(() => {
         store.update("Mirror component", (draft) => {
-          keepWiresAttached(draft, new Set([compId]), () => {
-            const c = draft.components.find((x) => x.id === compId);
-            if (c) c.mirror = checked || undefined;
-          });
+          // Same world-space horizontal flip as the M key / toolbar Mirror button.
+          const c = draft.components.find((x) => x.id === compId);
+          if (!c || !!c.mirror === checked) return;
+          const sel = new Set([compId]);
+          keepWiresAttached(draft, sel, () => mirrorSelectionInDoc(draft, sel));
         });
       });
     });

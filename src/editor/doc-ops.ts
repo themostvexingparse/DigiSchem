@@ -31,12 +31,9 @@ import {
   stretchWireForMove,
   stretchWireStart,
   normalizeWirePoints,
-  pinExitVector,
-  routePinAware,
   textBounds,
 } from "./wire-utils";
-import type { PinDef } from "../model/component-def";
-import { pointOnSegment } from "../model/geometry";
+import { movedEndContacts, repairWires } from "./safe-route";
 
 /**
  * Run `mutate` (which may rotate / mirror / re-parameterize components) and then
@@ -70,24 +67,7 @@ export function keepWiresAttached(
     if (!componentIds.has(c.id)) continue;
     for (const wp of worldPins(c)) after.set(`${c.id}:${wp.pin.id}`, wp.pos);
   }
-  // All pins after the mutation, for exit directions and "passes over a pin" checks.
-  const pinAt = new Map<string, { inst: ComponentInstance; side: PinDef["side"] }>();
-  for (const c of doc.components)
-    for (const wp of worldPins(c)) pinAt.set(key(wp.pos), { inst: c, side: wp.pin.side });
-  const exitAt = (p: Point): Point | null => {
-    const hit = pinAt.get(key(p));
-    return hit ? pinExitVector(hit.inst, hit.side) : null;
-  };
-  const crossesPin = (pts: Point[]): boolean => {
-    const s = key(pts[0]), e = key(pts[pts.length - 1]);
-    for (const [k] of pinAt) {
-      if (k === s || k === e) continue;
-      const [x, y] = k.split(",").map(Number);
-      for (let i = 0; i + 1 < pts.length; i++) if (pointOnSegment({ x, y }, pts[i], pts[i + 1])) return true;
-    }
-    return false;
-  };
-
+  const changed: string[] = [];
   for (const a of attached) {
     const orig = a.wire.points.map((p) => ({ ...p }));
     let pts = orig;
@@ -98,16 +78,11 @@ export function keepWiresAttached(
     if (!startMoved && !endMoved) continue;
     if (startMoved) pts = stretchWireStart(pts, ns!);
     if (endMoved) pts = stretchWireStart([...pts].reverse(), ne!).reverse();
-    pts = normalizeWirePoints(pts);
-    if (crossesPin(pts)) {
-      // Stretching would run over another pin (geometric short) — re-route the wire pin-aware.
-      const s = ns ?? orig[0];
-      const e = ne ?? orig[orig.length - 1];
-      const rerouted = routePinAware(s, exitAt(s), e, exitAt(e), false, doc.grid || GRID);
-      if (!crossesPin(rerouted)) pts = rerouted;
-    }
-    a.wire.points = pts;
+    a.wire.points = normalizeWirePoints(pts);
+    changed.push(a.wire.id);
   }
+  // Stretching may run a wire over another pin / wire or through a body: re-route those.
+  repairWires(doc, changed);
   // A pin may have moved onto the wire's other end: drop wires that collapsed (< 2 points).
   doc.wires = doc.wires.filter((w) => w.points.length >= 2);
 }
@@ -342,6 +317,7 @@ export function nudgeSelectionInStore(store: DocumentStore, dx: number, dy: numb
         true,
       );
     }
+    repairWires(draft, attached.map((a) => a.wireId), movedEndContacts(draft, attached));
     normalizeDocWires(draft);
   });
 }

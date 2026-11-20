@@ -1,134 +1,108 @@
 /**
- * Parametric logic gates (IEEE/ANSI & Harris & Harris textbook style).
- * When inputs > 5 (or pins extend beyond the gate core height), straight vertical
- * "wings" extend the gate's back edge so the body keeps crisp proportions, and
- * OR/XOR input stubs reach the exact concave curve or wing.
+ * Parametric logic gates (IEEE/ANSI distinctive shapes, Harris & Harris textbook style).
+ *
+ * Resizing: `_w` / `_h` are the requested TOTAL outline (pin legs included, as the editor's
+ * corner handles measure it). The gate BODY scales to fill it — taller bodies spread the
+ * inputs evenly along the back edge, wider bodies stretch the shape — while the input/output
+ * legs keep their fixed length and every pin stays on the 10-unit grid.
  */
 import type { ComponentDef, Geometry, PinDef } from "../../model/component-def";
-import { GRID, SIZE_H } from "../../model/component-def";
+import { GRID, SIZE_H, SIZE_W } from "../../model/component-def";
 import type { PropValue } from "../../model/types";
 import { BUBBLE_R, ceilEvenGrid, clampInt, distributeOnGrid, PIN_LEN, requestedSize, snapGrid } from "./helpers";
 
 type GateKind = "and" | "or" | "xor" | "buf";
 
-function gateGeometry(inputs: number, invertedOut: boolean, props?: Record<string, PropValue>): Geometry {
+const MIN_BODY_W = 4 * GRID;
+
+interface GateLayout {
+  inputs: number;
+  bodyW: number;
+  bodyH: number;
+  x0: number; // body back edge
+  x1: number; // body front tip
+  inYs: number[];
+  geom: Geometry;
+}
+
+function gateLayout(kind: GateKind, props: Record<string, PropValue>, inverted: boolean): GateLayout {
+  const inputs = kind === "buf" ? 1 : clampInt(props, "inputs", 2, 2, 16);
+  const bubble = inverted ? GRID : 0; // bubble (2*BUBBLE_R) gets a full grid cell so the outline stays on grid
+  const xorGap = kind === "xor" ? GRID : 0; // room for the XOR's extra back curve
+
+  // Minimum body: 2 grid cells between inputs (1 when there are many), output on grid.
   const spacing = inputs <= 5 ? 2 * GRID : GRID;
-  const rawH = Math.max(4 * GRID, (inputs + 1) * spacing);
-  // Even multiple of GRID ensures midY = bodyH / 2 is always on the 10-unit grid.
-  const minBodyH = ceilEvenGrid(rawH);
-  const reqH = inputs > 1 ? requestedSize(props, SIZE_H) : undefined;
+  const minBodyH = ceilEvenGrid(Math.max(4 * GRID, (inputs + 1) * spacing));
+  const resizable = kind !== "buf";
+  const reqH = resizable ? requestedSize(props, SIZE_H) : undefined;
+  const reqW = resizable ? requestedSize(props, SIZE_W) : undefined;
   const bodyH = reqH !== undefined ? Math.max(minBodyH, ceilEvenGrid(reqH)) : minBodyH;
-  const bodyW = 4 * GRID;
-  const pins: PinDef[] = [];
-  const ys =
-    bodyH > minBodyH && inputs >= 2
-      ? distributeOnGrid(inputs, GRID, bodyH - GRID)
-      : (() => {
-          const span = (inputs - 1) * spacing;
-          const firstY = Math.max(GRID, snapGrid((bodyH - span) / 2));
-          return Array.from({ length: inputs }, (_, i) => firstY + i * spacing);
-        })();
-  for (let i = 0; i < inputs; i++) {
-    pins.push({
-      id: `in${i}`,
-      name: `I${i}`,
-      x: 0,
-      y: ys[i],
-      dir: "in",
-      side: "left",
-    });
+  const legs = 2 * PIN_LEN + bubble + xorGap;
+  const bodyW = reqW !== undefined ? Math.max(MIN_BODY_W, snapGrid(reqW - legs)) : MIN_BODY_W;
+
+  const x0 = PIN_LEN + xorGap;
+  const x1 = x0 + bodyW;
+  let inYs: number[];
+  if (inputs === 1) inYs = [bodyH / 2];
+  else if (bodyH > minBodyH) {
+    // Even spacing with equal margins (≈ h/(n+1)), like a drawn gate — not pushed to the corners.
+    const margin = Math.max(GRID, snapGrid(bodyH / (inputs + 1)));
+    inYs = distributeOnGrid(inputs, margin, bodyH - margin);
   }
-  const outX = PIN_LEN + bodyW + (invertedOut ? GRID : 0) + PIN_LEN;
-  pins.push({
-    id: "out",
-    name: "Y",
-    x: outX,
-    y: bodyH / 2,
-    dir: "out",
-    side: "right",
-    inverted: invertedOut,
-  });
-  return { width: outX, height: bodyH, pins };
+  else {
+    const span = (inputs - 1) * spacing;
+    const first = Math.max(GRID, snapGrid((bodyH - span) / 2));
+    inYs = Array.from({ length: inputs }, (_, i) => first + i * spacing);
+  }
+
+  const pins: PinDef[] = inYs.map((y, i) => ({ id: `in${i}`, name: `I${i}`, x: 0, y, dir: "in", side: "left" }));
+  const outX = x1 + bubble + PIN_LEN;
+  pins.push({ id: "out", name: "Y", x: outX, y: bodyH / 2, dir: "out", side: "right", inverted });
+  return { inputs, bodyW, bodyH, x0, x1, inYs, geom: { width: outX, height: bodyH, pins } };
 }
 
 function gateSymbol(kind: GateKind, props: Record<string, PropValue>, inverted: boolean): string {
-  const inputs = kind === "buf" ? 1 : clampInt(props, "inputs", 2, 2, 16);
-  const g = gateGeometry(inputs, inverted, props);
-  const h = g.height;
-  const x0 = PIN_LEN;
-  const x1 = PIN_LEN + 4 * GRID;
+  const L = gateLayout(kind, props, inverted);
+  const { x0, x1, bodyW } = L;
+  const h = L.bodyH;
   const midY = h / 2;
 
-  // Keep the gate body at clean textbook proportions; extend back with vertical wings if taller.
-  const coreH = inputs <= 2 ? 4 * GRID : 6 * GRID;
-  const coreTop = midY - coreH / 2;
-  const coreBot = midY + coreH / 2;
-
-  const inPins = g.pins.filter((p) => p.dir === "in");
-  const topPinY = inPins.length > 0 ? Math.min(...inPins.map((p) => p.y)) : coreTop;
-  const botPinY = inPins.length > 0 ? Math.max(...inPins.map((p) => p.y)) : coreBot;
-
   let body: string;
-  let wings = "";
   let inputEdgeX = (_y: number) => x0;
 
   if (kind === "and") {
-    const ry = coreH / 2;
-    const rx = Math.min(ry, 24);
-    body = `<path class="ds-body" d="M${x0} ${coreTop} H${x1 - rx} A${rx} ${ry} 0 0 1 ${x1 - rx} ${coreBot} H${x0} Z"/>`;
-    if (topPinY < coreTop) {
-      wings += `<line class="ds-line" x1="${x0}" y1="${topPinY}" x2="${x0}" y2="${coreTop}"/>`;
-    }
-    if (botPinY > coreBot) {
-      wings += `<line class="ds-line" x1="${x0}" y1="${coreBot}" x2="${x0}" y2="${botPinY}"/>`;
-    }
+    // Flat back, straight top/bottom, elliptical front that scales with the body.
+    const rx = Math.min(h / 2, bodyW * 0.6);
+    body = `<path class="ds-body" d="M${x0} 0 H${x1 - rx} A${rx} ${h / 2} 0 0 1 ${x1 - rx} ${h} H${x0} Z"/>`;
   } else if (kind === "buf") {
-    body = `<path class="ds-body" d="M${x0} ${midY - 2 * GRID} L${x1} ${midY} L${x0} ${midY + 2 * GRID} Z"/>`;
+    const half = Math.min(2 * GRID, h / 2);
+    body = `<path class="ds-body" d="M${x0} ${midY - half} L${x1} ${midY} L${x0} ${midY + half} Z"/>`;
   } else {
-    // OR / XOR: concave quadratic back from (x0, coreTop) via (x0+12, midY) to (x0, coreBot).
-    // Because midY = (coreTop + coreBot) / 2, y(t) is linear in t = (y - coreTop) / coreH.
-    const curveDepth = 12;
+    // OR / XOR: concave back curve (depth grows gently with size), pointed front.
+    const depth = Math.min(bodyW * 0.35, 6 + h * 0.15);
+    const ctrl = x0 + bodyW * 0.65;
     body =
-      `<path class="ds-body" d="M${x0} ${coreTop} ` +
-      `Q${x0 + 26} ${coreTop} ${x1} ${midY} ` +
-      `Q${x0 + 26} ${coreBot} ${x0} ${coreBot} ` +
-      `Q${x0 + curveDepth} ${midY} ${x0} ${coreTop} Z"/>`;
-
+      `<path class="ds-body" d="M${x0} 0 Q${ctrl} 0 ${x1} ${midY} Q${ctrl} ${h} ${x0} ${h} ` +
+      `Q${x0 + depth} ${midY} ${x0} 0 Z"/>`;
+    // Point on the back curve at height y (quadratic is linear in t = y / h here).
+    const curveX = (bx: number) => (y: number) => {
+      const t = y / h;
+      return +(bx + 2 * (1 - t) * t * depth).toFixed(2);
+    };
+    inputEdgeX = curveX(x0);
     if (kind === "xor") {
-      const xorX = x0 - 6;
-      body = `<path class="ds-line" d="M${xorX} ${coreTop} Q${xorX + curveDepth} ${midY} ${xorX} ${coreBot}"/>` + body;
-      inputEdgeX = (y: number) => {
-        if (y < coreTop || y > coreBot) return xorX;
-        const t = (y - coreTop) / coreH;
-        return +(xorX + 2 * (1 - t) * t * curveDepth).toFixed(2);
-      };
-      if (topPinY < coreTop) {
-        wings += `<line class="ds-line" x1="${xorX}" y1="${topPinY}" x2="${xorX}" y2="${coreTop}"/>`;
-      }
-      if (botPinY > coreBot) {
-        wings += `<line class="ds-line" x1="${xorX}" y1="${coreBot}" x2="${xorX}" y2="${botPinY}"/>`;
-      }
-    } else {
-      inputEdgeX = (y: number) => {
-        if (y < coreTop || y > coreBot) return x0;
-        const t = (y - coreTop) / coreH;
-        return +(x0 + 2 * (1 - t) * t * curveDepth).toFixed(2);
-      };
-      if (topPinY < coreTop) {
-        wings += `<line class="ds-line" x1="${x0}" y1="${topPinY}" x2="${x0}" y2="${coreTop}"/>`;
-      }
-      if (botPinY > coreBot) {
-        wings += `<line class="ds-line" x1="${x0}" y1="${coreBot}" x2="${x0}" y2="${botPinY}"/>`;
-      }
+      const bx = x0 - GRID * 0.6;
+      body = `<path class="ds-line" d="M${bx} 0 Q${bx + depth} ${midY} ${bx} ${h}"/>` + body;
+      inputEdgeX = curveX(bx);
     }
   }
 
   let stubs = "";
-  for (const p of inPins) {
+  for (const p of L.geom.pins) {
+    if (p.dir !== "in") continue;
     stubs += `<line class="ds-pin" x1="${p.x}" y1="${p.y}" x2="${inputEdgeX(p.y)}" y2="${p.y}"/>`;
   }
-
-  const out = g.pins.find((p) => p.id === "out")!;
+  const out = L.geom.pins.find((p) => p.id === "out")!;
   let outStart = x1;
   let bubble = "";
   if (inverted) {
@@ -136,8 +110,7 @@ function gateSymbol(kind: GateKind, props: Record<string, PropValue>, inverted: 
     outStart = x1 + 2 * BUBBLE_R;
   }
   stubs += `<line class="ds-pin" x1="${outStart}" y1="${out.y}" x2="${out.x}" y2="${out.y}"/>`;
-
-  return wings + body + bubble + stubs;
+  return body + bubble + stubs;
 }
 
 function makeGate(type: string, name: string, kind: GateKind, inverted: boolean): ComponentDef {
@@ -150,8 +123,8 @@ function makeGate(type: string, name: string, kind: GateKind, inverted: boolean)
     description: isBuf ? `${name} gate` : `${name} gate with configurable number of inputs`,
     props: isBuf ? [] : [{ key: "inputs", label: "Inputs", kind: "int", min: 2, max: 16 }],
     defaultProps: isBuf ? {} : { inputs: 2 },
-    ...(isBuf ? {} : { resizable: "height" as const }),
-    geometry: (props) => gateGeometry(isBuf ? 1 : clampInt(props, "inputs", 2, 2, 16), inverted, props),
+    ...(isBuf ? {} : { resizable: "both" as const }),
+    geometry: (props) => gateLayout(kind, props, inverted).geom,
     symbol: (props) => gateSymbol(kind, props, inverted),
   };
 }

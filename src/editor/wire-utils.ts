@@ -317,7 +317,7 @@ export function captureAttachedWires(
   movedComponentIds: ReadonlySet<string>,
   selectedWireIds: ReadonlySet<string>,
 ): AttachedWireSnapshot[] {
-  if (movedComponentIds.size === 0) return [];
+  if (movedComponentIds.size === 0 && selectedWireIds.size === 0) return [];
   const movedPinKeys = new Set<string>();
   for (const c of doc.components) {
     if (!movedComponentIds.has(c.id)) continue;
@@ -325,23 +325,36 @@ export function captureAttachedWires(
       movedPinKeys.add(pointKey(wp.pos));
     }
   }
-  if (movedPinKeys.size === 0) return [];
 
-  const result: AttachedWireSnapshot[] = [];
+  const byId = new Map<string, AttachedWireSnapshot>();
   for (const w of doc.wires) {
     if (selectedWireIds.has(w.id) || w.points.length < 2) continue;
     const startAttached = movedPinKeys.has(pointKey(w.points[0]));
     const endAttached = movedPinKeys.has(pointKey(w.points[w.points.length - 1]));
     if (startAttached || endAttached) {
-      result.push({
-        wireId: w.id,
-        origPoints: w.points.map((p) => ({ ...p })),
-        startAttached,
-        endAttached,
-      });
+      byId.set(w.id, { wireId: w.id, origPoints: w.points.map((p) => ({ ...p })), startAttached, endAttached });
     }
   }
-  return result;
+
+  // Wires that translate rigidly with the selection: selected wires, and wires whose both
+  // ends ride on moved pins. Branch wires T-junctioned onto them (an endpoint on one of
+  // their segments) must follow, or the junction silently breaks.
+  const rigid = doc.wires.filter(
+    (w) => selectedWireIds.has(w.id) || (byId.get(w.id)?.startAttached && byId.get(w.id)?.endAttached),
+  );
+  if (rigid.length > 0) {
+    const onRigid = (p: Point) =>
+      rigid.some((rw) => rw.points.some((_, i) => i + 1 < rw.points.length && pointOnSegment(p, rw.points[i], rw.points[i + 1])));
+    for (const w of doc.wires) {
+      if (selectedWireIds.has(w.id) || w.points.length < 2) continue;
+      const snap0 = byId.get(w.id);
+      if (snap0?.startAttached && snap0?.endAttached) continue;
+      const s = snap0?.startAttached || onRigid(w.points[0]);
+      const e = snap0?.endAttached || onRigid(w.points[w.points.length - 1]);
+      if (s || e) byId.set(w.id, { wireId: w.id, origPoints: w.points.map((p) => ({ ...p })), startAttached: s, endAttached: e });
+    }
+  }
+  return [...byId.values()];
 }
 
 /**

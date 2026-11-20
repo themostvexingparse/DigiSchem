@@ -276,16 +276,23 @@ describe("parametric count props change pin counts", () => {
 });
 
 describe("specific textbook component behaviors", () => {
-  it("gates > 5 inputs draw vertical wing lines and OR/XOR stubs reach curved back", () => {
+  it("many-input gates grow their body to cover every input; OR/XOR stubs reach the curved back", () => {
     const and8 = getDef("and")!;
-    const svgAnd8 = and8.symbol({ inputs: 8 });
-    expect(svgAnd8).toContain('class="ds-line"');
+    const g8 = and8.geometry({ inputs: 8 });
+    // The body path spans the full height, so every input leg ends on the body (no wing bars).
+    expect(and8.symbol({ inputs: 8 })).toMatch(new RegExp(`class="ds-body" d="[^"]* ${g8.height}[ "]`));
 
     const xor3 = getDef("xor")!;
     const gXor = xor3.geometry({ inputs: 3 });
-    const midPin = gXor.pins.find((p) => p.id === "in1")!;
-    // At midY, the XOR back curve reaches x = x0 - 6 + 6 = x0 (20)
-    expect(xor3.symbol({ inputs: 3 })).toContain(`x1="0" y1="${midPin.y}" x2="20" y2="${midPin.y}"`);
+    const svg = xor3.symbol({ inputs: 3 });
+    const stubEnd = (id: string) => {
+      const p = gXor.pins.find((q) => q.id === id)!;
+      const m = new RegExp(`x1="0" y1="${p.y}" x2="([0-9.]+)" y2="${p.y}"`).exec(svg);
+      return Number(m![1]);
+    };
+    // Concave back: the middle input's leg reaches further right than the outer ones.
+    expect(stubEnd("in1")).toBeGreaterThan(stubEnd("in0"));
+    expect(stubEnd("in1")).toBeGreaterThan(stubEnd("in2") - 0.01);
   });
 
   it("MUX derives 2^n data inputs and n select pins", () => {

@@ -12,6 +12,7 @@ export const ICONS = {
   redo: wrap(`<path d="M15 14l5-5-5-5"/><path d="M20 9H9a5 5 0 0 0 0 10h3"/>`),
   select: wrap(`<path d="M5 3l14 8-6 2-3 6z"/>`),
   wire: wrap(`<circle cx="5" cy="19" r="2"/><circle cx="19" cy="5" r="2"/><path d="M7 19h6V5h4"/>`),
+  pan: wrap(`<path d="M8 13V5.5a1.5 1.5 0 0 1 3 0V12"/><path d="M11 11.5v-8a1.5 1.5 0 0 1 3 0V12"/><path d="M14 5.5a1.5 1.5 0 0 1 3 0V12"/><path d="M17 8.5a1.5 1.5 0 0 1 3 0V15a6 6 0 0 1-6 6h-1.6a6 6 0 0 1-4.9-2.5L4.4 15a1.6 1.6 0 0 1 2.5-2L8 14"/>`),
   text: wrap(`<path d="M5 6V4h14v2"/><path d="M12 4v16"/><path d="M9 20h6"/>`),
   rotate: wrap(`<path d="M20 12a8 8 0 1 1-2.34-5.66"/><path d="M20 4v5h-5"/>`),
   mirror: wrap(`<path d="M12 3v18" stroke-dasharray="2 2"/><path d="M9 7L3 17h6z"/><path d="M15 7l6 10h-6z"/>`),

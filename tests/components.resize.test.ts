@@ -84,7 +84,8 @@ function assertStubsReachPins(svg: string, pins: PinDef[], ctx: string): void {
 }
 
 describe("component resizability classification", () => {
-  const HEIGHT_ONLY = new Set(["and", "nand", "or", "nor", "xor", "xnor"]);
+  // Gates resize in both directions (corner handles): the body itself scales.
+  const HEIGHT_ONLY = new Set<string>([]);
   const NON_RESIZABLE = new Set([
     "buf",
     "not",
@@ -343,7 +344,7 @@ describe("component-specific resize geometry", () => {
     );
   });
 
-  it("gates spread input pins with straight wings when resized taller", () => {
+  it("gates scale their body when resized (taller spreads inputs, wider stretches the shape)", () => {
     for (const type of ["and", "nand", "or", "nor", "xor", "xnor"]) {
       const def = getDef(type)!;
       for (const inputs of [2, 3, 5]) {
@@ -367,8 +368,15 @@ describe("component-specific resize geometry", () => {
         expect(out.y).toBe(tallG.height / 2);
         expect(out.y % GRID).toBe(0);
 
-        // Straight back-edge wing lines drawn when pins extend beyond gate core
-        expect(svg, `${type}(inputs=${inputs}) wings`).toContain('<line class="ds-line"');
+        // The body fills the new height (no separate wing bars): its path reaches y = height.
+        expect(svg, `${type}(inputs=${inputs}) body spans height`).toMatch(new RegExp(`class="ds-body" d="[^"]* ${tallG.height}[ "]`));
+
+        // Wider request stretches the body; legs keep their length, outline stays on grid.
+        const wide = def.geometry({ ...base, [SIZE_W]: defG.width + 60 });
+        expect(wide.width).toBe(defG.width + 60);
+        expect(wide.width % GRID).toBe(0);
+        const wideOut = wide.pins.find((p) => p.id === "out")!;
+        expect(wideOut.x).toBe(wide.width);
       }
     }
   });

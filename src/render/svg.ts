@@ -5,7 +5,7 @@
 import type { ComponentInstance, SchematicDocument, TextNote, Wire } from "../model/types";
 import { escapeXml } from "../model/component-def";
 import { getDef } from "../model/registry";
-import { documentBounds, effectiveProps, geometryOf, junctionPoints, localToWorld, svgTransform, type Rect } from "../model/geometry";
+import { documentBounds, effectiveProps, geometryOf, labelAnchor, junctionPoints, svgTransform, type Rect } from "../model/geometry";
 
 export interface Theme {
   name: string;
@@ -77,7 +77,7 @@ export function schematicCss(t: Theme): string {
     `.ds-bus{fill:none;stroke:${t.bus};stroke-width:4;stroke-linecap:round;stroke-linejoin:round}`,
     `.ds-bus-text{fill:${t.bus};font-family:${FONT};font-size:9px}`,
     `.ds-junction{fill:${t.junction};stroke:none}`,
-    `.ds-unknown{fill:#ffecec;stroke:#c00;stroke-width:2;stroke-dasharray:4 3}`,
+    `.ds-unknown{fill:${t.name === "dark" ? "#3a1e1e" : "#ffecec"};stroke:#d33;stroke-width:2;stroke-dasharray:4 3}`,
   ].join("\n");
 }
 
@@ -90,18 +90,55 @@ export function renderComponent(inst: ComponentInstance): string {
     ? def.symbol(effectiveProps(inst))
     : `<rect class="ds-unknown" x="0" y="0" width="${g.width}" height="${g.height}"/><text class="ds-text" x="4" y="14">?${escapeXml(inst.type)}</text>`;
   const label = inst.label ? renderLabel(inst) : "";
-  return `<g class="ds-comp" data-id="${escapeXml(inst.id)}"><g transform="${tf}">${inner}</g>${label}</g>`;
+  return `<g class="ds-comp" data-id="${escapeXml(inst.id)}"><g transform="${tf}">${uprightText(inner, inst)}</g>${label}</g>`;
 }
 
-/** Labels are drawn upright in world space, centered above the body's world bounding box. */
+type M2 = [number, number, number, number]; // [a, b, c, d]: x' = a x + c y, y' = b x + d y
+const mul = (m: M2, n: M2): M2 => [m[0] * n[0] + m[2] * n[1], m[1] * n[0] + m[3] * n[1], m[0] * n[2] + m[2] * n[3], m[1] * n[2] + m[3] * n[3]];
+const ROT: Record<number, M2> = { 0: [1, 0, 0, 1], 90: [0, 1, -1, 0], 180: [-1, 0, 0, -1], 270: [0, -1, 1, 0] };
+const FLIP_X: M2 = [-1, 0, 0, 1];
+
+/**
+ * Keep symbol text readable whatever the instance's rotation/mirror: each <text> gets a
+ * counter-transform about its own glyph center so it ends up left-to-right (0°/180°) or
+ * bottom-to-top (90°/270°), never mirrored or upside-down. text-anchor is swapped when the
+ * reading direction reverses so the text keeps occupying the same side of its anchor.
+ */
+function uprightText(inner: string, inst: ComponentInstance): string {
+  const rot = inst.rotation ?? 0;
+  const t: M2 = inst.mirror ? mul(ROT[rot], FLIP_X) : ROT[rot];
+  const desired: M2 = rot === 90 || rot === 270 ? ROT[270] : ROT[0];
+  // counter C = T^-1 * D  (T is orthonormal: inverse = transpose)
+  const tInv: M2 = [t[0], t[2], t[1], t[3]];
+  const c = mul(tInv, desired);
+  if (c[0] === 1 && c[1] === 0 && c[2] === 0 && c[3] === 1) return inner;
+  // Reading direction in world before vs after: T*(1,0) vs D*(1,0)
+  const reversed = t[0] * desired[0] + t[1] * desired[1] < 0;
+  // Attribute names are matched after whitespace so `x=` never matches inside `dx=` etc.
+  return inner.replace(/<text(\s[^>]*)?>/g, (whole, attrs: string = "") => {
+    if (/\stransform=/.test(attrs)) return whole;
+    const x = Number(/\sx="(-?[\d.]+)"/.exec(attrs)?.[1] ?? 0);
+    const y = Number(/\sy="(-?[\d.]+)"/.exec(attrs)?.[1] ?? 0);
+    const fs = /ds-title/.test(attrs) ? 12 : /ds-label/.test(attrs) ? 11 : 10;
+    const cy = y - fs * 0.35; // approx. vertical glyph center (y is the baseline)
+    let a = attrs;
+    if (reversed) {
+      const anchor = /text-anchor="(\w+)"/.exec(a)?.[1] ?? "start";
+      const swapped = anchor === "start" ? "end" : anchor === "end" ? "start" : anchor;
+      a = /text-anchor=/.test(a) ? a.replace(/text-anchor="\w+"/, `text-anchor="${swapped}"`) : `${a} text-anchor="${swapped}"`;
+    }
+    const tf = `translate(${x} ${cy}) matrix(${c[0]} ${c[1]} ${c[2]} ${c[3]} 0 0) translate(${-x} ${-cy})`;
+    return `<text${a} transform="${tf}">`;
+  });
+}
+
+/**
+ * Labels are drawn upright in world space, centered above the body — or below it when
+ * pins/wires leave from the top edge, so the label never sits on a wire.
+ */
 function renderLabel(inst: ComponentInstance): string {
-  const g = geometryOf(inst);
-  const corners = [
-    { x: 0, y: 0 }, { x: g.width, y: 0 }, { x: 0, y: g.height }, { x: g.width, y: g.height },
-  ].map((p) => localToWorld(inst, p, g));
-  const minY = Math.min(...corners.map((c) => c.y));
-  const cx = (Math.min(...corners.map((c) => c.x)) + Math.max(...corners.map((c) => c.x))) / 2;
-  return `<text class="ds-label" x="${cx}" y="${minY - 6}" text-anchor="middle">${escapeXml(inst.label!)}</text>`;
+  const a = labelAnchor(inst);
+  return `<text class="ds-label" x="${a.x}" y="${a.y}" text-anchor="${a.anchor}">${escapeXml(inst.label!)}</text>`;
 }
 
 export function renderWire(w: Wire): string {
@@ -122,9 +159,9 @@ export function renderText(t: TextNote): string {
   const fs = t.fontSize ?? 14;
   const tspans = t.text
     .split("\n")
-    .map((l, i) => `<tspan x="${t.x}" dy="${i === 0 ? 0 : fs * 1.25}">${escapeXml(l)}</tspan>`)
+    .map((l, i) => `<tspan x="${t.x}" dy="${i === 0 ? 0 : fs * 1.25}">${l === "" ? "&#160;" : escapeXml(l)}</tspan>`)
     .join("");
-  return `<text class="ds-note" data-id="${escapeXml(t.id)}" x="${t.x}" y="${t.y}" font-size="${fs}">${tspans}</text>`;
+  return `<text class="ds-note" data-id="${escapeXml(t.id)}" x="${t.x}" y="${t.y}" font-size="${fs}" xml:space="preserve">${tspans}</text>`;
 }
 
 export function renderJunctions(doc: SchematicDocument): string {
@@ -160,14 +197,20 @@ export function renderDocumentSvg(doc: SchematicDocument, opts: SvgExportOptions
   const theme = opts.theme ?? LIGHT_THEME;
   const pad = opts.padding ?? 20;
   const b = opts.region ?? documentBounds(doc) ?? { x: 0, y: 0, w: 200, h: 100 };
-  const vx = b.x - pad, vy = b.y - pad, vw = b.w + 2 * pad, vh = b.h + 2 * pad;
+  // Degenerate (zero-width/height) content, e.g. a single straight wire with padding 0,
+  // still yields a valid, visible image.
+  const minSide = 10;
+  const bw = Math.max(b.w, minSide - 2 * pad), bh = Math.max(b.h, minSide - 2 * pad);
+  const vx = b.x - (bw - b.w) / 2 - pad, vy = b.y - (bh - b.h) / 2 - pad;
+  const vw = bw + 2 * pad, vh = bh + 2 * pad;
   const bg = opts.background === false ? "" : `<rect x="${vx}" y="${vy}" width="${vw}" height="${vh}" fill="${theme.background}"/>`;
   let grid = "";
   if (opts.grid) {
     const gs = doc.grid || 10;
     grid =
-      `<defs><pattern id="ds-grid" x="0" y="0" width="${gs}" height="${gs}" patternUnits="userSpaceOnUse">` +
-      `<circle cx="0" cy="0" r="0.9" fill="${theme.grid}"/></pattern></defs>` +
+      // Dot centered in the tile (offset by half a cell) so it is not clipped into a quarter.
+      `<defs><pattern id="ds-grid" x="${-gs / 2}" y="${-gs / 2}" width="${gs}" height="${gs}" patternUnits="userSpaceOnUse">` +
+      `<circle cx="${gs / 2}" cy="${gs / 2}" r="0.9" fill="${theme.grid}"/></pattern></defs>` +
       `<rect x="${vx}" y="${vy}" width="${vw}" height="${vh}" fill="url(#ds-grid)"/>`;
   }
   return (

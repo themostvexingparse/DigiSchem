@@ -258,7 +258,16 @@ export function exportNetlistText(doc: SchematicDocument): string {
       const def = getDef(comp.type);
       if (def) {
         const g = def.geometry(effectiveProps(comp));
-        for (const p of g.pins) map.set(p.id, p.name);
+        const used = new Set<string>();
+        for (const p of g.pins) {
+          // Unnamed pins (e.g. a clock drawn only as a triangle) fall back to their id;
+          // an inverted pin sharing its name with another (Q and Q-bar) gets a prime.
+          let n = p.name?.trim() ? p.name.trim() : p.clock ? "CLK" : p.id.toUpperCase();
+          if (used.has(n) && p.inverted) n = `${n}'`;
+          if (used.has(n)) n = p.id;
+          used.add(n);
+          map.set(p.id, n);
+        }
       }
       pinNameCache.set(comp.id, map);
     }

@@ -272,10 +272,8 @@ interface SliceInfo {
 function computeSlices(totalWidth: number, fanOut: number): SliceInfo[] {
   const slices: SliceInfo[] = [];
   if (fanOut >= totalWidth) {
-    for (let i = 0; i < fanOut; i++) {
-      const bit = Math.min(i, totalWidth - 1);
-      slices.push({ lo: bit, hi: bit, width: 1, label: String(i) });
-    }
+    // A W-bit bus splits into at most W one-bit slices; extra fan-out is ignored.
+    for (let i = 0; i < totalWidth; i++) slices.push({ lo: i, hi: i, width: 1, label: String(i) });
     return slices;
   }
   const base = Math.floor(totalWidth / fanOut);
@@ -293,7 +291,8 @@ function computeSlices(totalWidth: number, fanOut: number): SliceInfo[] {
 
 function splitterGeometry(props: Record<string, PropValue>): Geometry {
   const busW = clampInt(props, "width", 4, 2, 32);
-  const fanOut = clampInt(props, "fanOut", 4, 2, 32);
+  // A W-bit bus cannot split into more than W slices.
+  const fanOut = Math.min(clampInt(props, "fanOut", 4, 2, 32), busW);
   const slices = computeSlices(busW, fanOut);
   const spacing = fanOut <= 8 ? 2 * GRID : GRID;
   const rawH = Math.max(4 * GRID, (fanOut + 1) * spacing);

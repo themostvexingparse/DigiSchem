@@ -246,35 +246,35 @@ describe("io/project", () => {
     const { doc, warnings } = parseProjectWithWarnings(JSON.stringify(dirty));
 
     expect(doc.name).toBe("Untitled");
-    expect(doc.grid).toBe(20);
+    expect(doc.grid).toBe(10); // non-10 grids are coerced (pins live on the 10-unit grid)
     expect(doc.components).toHaveLength(2);
     expect(doc.wires).toHaveLength(1);
     expect(doc.texts).toHaveLength(1);
 
-    // Coordinates snapped to doc.grid (20) & rotations forced into {0, 90, 180, 270}
+    // "20" grid is coerced to the 10-unit pin grid; coordinates snap to 10 & rotations forced into {0, 90, 180, 270}
     const [c0, c1] = doc.components;
-    expect(c0.x).toBe(20);
-    expect(c0.y).toBe(40);
+    expect(c0.x).toBe(30); // "26" -> 30
+    expect(c0.y).toBe(30); // 34 -> 30
     expect(c0.rotation).toBe(270);
     expect(c0.mirror).toBe(true);
     expect(c0.props).toEqual({ inputs: 4 });
     expect(c0.label).toBe("42");
 
-    expect(c1.x).toBe(20);
-    expect(c1.y).toBe(-20);
+    expect(c1.x).toBe(10); // 11 -> 10
+    expect(c1.y).toBe(-10); // -12 -> -10
     expect(c1.rotation).toBe(90);
     expect(c1.props).toEqual({});
 
     const [w0] = doc.wires;
     expect(w0.points).toEqual([
-      { x: 0, y: 20 },
-      { x: 60, y: 20 },
+      { x: 10, y: 20 },
+      { x: 50, y: 20 },
     ]);
     expect(w0.width).toBe(4);
 
     const [t0] = doc.texts;
-    expect(t0.x).toBe(20);
-    expect(t0.y).toBe(60);
+    expect(t0.x).toBe(20); // 19 -> 20
+    expect(t0.y).toBe(60); // 61 -> 60
     expect(t0.fontSize).toBe(14);
 
     // Every surviving entity has a unique ID across components, wires, and texts

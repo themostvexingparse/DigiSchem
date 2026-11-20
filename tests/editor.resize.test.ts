@@ -223,21 +223,22 @@ function assertOrthogonal(pts: Point[]): void {
 describe("resize handles & cursors", () => {
   it("returns allowed handles matching def.resizable", () => {
     expect(allowedHandles(undefined)).toEqual([]);
-    expect(allowedHandles("both")).toEqual(["nw", "n", "ne", "e", "se", "s", "sw", "w"]);
-    expect(allowedHandles("width")).toEqual(["w", "e"]);
-    expect(allowedHandles("height")).toEqual(["n", "s"]);
+    // Handles are strictly at the four corners (user requirement), whatever axes are resizable.
+    expect(allowedHandles("both")).toEqual(["nw", "ne", "se", "sw"]);
+    expect(allowedHandles("width")).toEqual(["nw", "ne", "se", "sw"]);
+    expect(allowedHandles("height")).toEqual(["nw", "ne", "se", "sw"]);
 
     const nonResizable: ComponentInstance = { id: "g1", type: "not", x: 0, y: 0, rotation: 0, props: {} };
     expect(resizeHandles(nonResizable)).toEqual([]);
 
     const wComp: ComponentInstance = { id: "c1", type: TEST_WIDTH, x: 100, y: 100, rotation: 0, props: {} };
-    expect(resizeHandles(wComp).map((h) => h.id)).toEqual(["w", "e"]);
+    expect(resizeHandles(wComp).map((h) => h.id)).toEqual(["nw", "ne", "se", "sw"]);
 
     const hComp: ComponentInstance = { id: "c2", type: TEST_HEIGHT, x: 100, y: 100, rotation: 0, props: {} };
-    expect(resizeHandles(hComp).map((h) => h.id)).toEqual(["n", "s"]);
+    expect(resizeHandles(hComp).map((h) => h.id)).toEqual(["nw", "ne", "se", "sw"]);
 
     const bComp: ComponentInstance = { id: "c3", type: TEST_BOTH, x: 100, y: 100, rotation: 0, props: {} };
-    expect(resizeHandles(bComp)).toHaveLength(8);
+    expect(resizeHandles(bComp)).toHaveLength(4);
   });
 
   it("computes handle positions via localToWorld for all 4 rotations × mirror (using real geometry)", () => {
@@ -258,7 +259,7 @@ describe("resize handles & cursors", () => {
         expect(g.width).toBe(60);
         expect(g.height).toBe(40);
         const handles = resizeHandles(inst);
-        expect(handles).toHaveLength(8);
+        expect(handles).toHaveLength(4);
         for (const h of handles) {
           const { hx, hy } = HANDLE_FRAC[h.id];
           const expected = localToWorld(inst, { x: hx * g.width, y: hy * g.height }, g);

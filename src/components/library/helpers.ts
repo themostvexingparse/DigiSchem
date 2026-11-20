@@ -219,7 +219,14 @@ export function layoutBox(spec: BoxSpec, props?: Record<string, PropValue>): Box
     const availBot = bodyY + bodyH - botPad;
     const availH = availBot - availTop;
     const ys = heightened
-      ? distributeOnGrid(list.length, availTop, availBot)
+      ? (() => {
+          // Spread with equal margins (≈ availH/(n+1)) instead of pinning the outer pins to
+          // the body corners; fall back to the full span if margins would crowd the pins.
+          const n = list.length;
+          const margin = snapGrid(availH / (n + 1));
+          const lo = availTop + margin, hi = availBot - margin;
+          return n > 1 && hi - lo >= (n - 1) * sideSpacing ? distributeOnGrid(n, lo, hi) : distributeOnGrid(n, availTop, availBot);
+        })()
       : (() => {
           const span = (list.length - 1) * sideSpacing;
           const startY = availTop + snapGrid(Math.max(0, (availH - span) / 2));

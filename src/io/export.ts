@@ -118,8 +118,8 @@ export function exportSvgString(doc: SchematicDocument, opts: ExportSvgOptions =
   }
 
   const baseBounds: Rect = opts.region ?? documentBounds(doc) ?? { x: 0, y: 0, w: 200, h: 100 };
-  const pad = opts.padding ?? 20;
-  const minContentW = Math.max(baseBounds.w, TITLE_BLOCK_MIN_WIDTH - 2 * pad);
+  // The title block needs its minimum width regardless of padding (large padding must not collapse it).
+  const minContentW = Math.max(baseBounds.w, TITLE_BLOCK_MIN_WIDTH);
   const expandedRegion: Rect = {
     x: baseBounds.x,
     y: baseBounds.y,
@@ -303,7 +303,8 @@ export async function exportJpegBlob(
   const quality = Number.isFinite(qualityRaw) ? Math.max(0, Math.min(1, qualityRaw)) : 0.92;
   // Render without an SVG background rect so the forced white canvas fill is always used.
   const svg = exportSvgString(doc, { ...opts, background: false });
-  return rasterizeSvg(svg, "image/jpeg", opts.scale ?? 2, "#ffffff", quality);
+  // JPEG has no alpha: fill with the theme background (dark themes stay readable).
+  return rasterizeSvg(svg, "image/jpeg", opts.scale ?? 2, opts.theme?.background ?? "#ffffff", quality);
 }
 
 /**

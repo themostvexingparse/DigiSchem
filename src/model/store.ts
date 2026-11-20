@@ -60,6 +60,9 @@ export class DocumentStore {
     const before = this._doc;
     const draft = clone(before);
     mutator(draft);
+    // No-op edits (re-setting the same value, a drag back to its start) must not create
+    // undo entries or mark the document dirty.
+    if (JSON.stringify(draft) === JSON.stringify(before)) return;
     if (this.gestureDepth === 0 || !this.gestureRecorded) {
       this.undoStack.push({ label, doc: before });
       if (this.undoStack.length > MAX_HISTORY) this.undoStack.shift();
@@ -91,7 +94,18 @@ export class DocumentStore {
   }
 
   endGesture(): void {
-    if (this.gestureDepth > 0) this.gestureDepth--;
+    if (this.gestureDepth === 0) return;
+    if (--this.gestureDepth === 0 && this.gestureRecorded) {
+      // A gesture that ended where it started (e.g. dragged away and back) leaves no history.
+      const top = this.undoStack[this.undoStack.length - 1];
+      if (top && JSON.stringify(top.doc) === JSON.stringify(this._doc)) {
+        this.undoStack.pop();
+        this.redoStack = this.gesturePrevRedo;
+        this.dirty = this.gesturePrevDirty;
+        this.emit("selection");
+      }
+      this.gestureRecorded = false;
+    }
   }
 
   /** Abort the current gesture, restoring the document state from before it. */

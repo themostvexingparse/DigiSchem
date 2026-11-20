@@ -48,15 +48,13 @@ const HANDLE_SPECS: Record<ResizeHandleId, HandleSpec> = {
   w:  { hx: 0, hy: 0.5, dirX: -1, dirY: 0 },
 };
 
-const ALL_HANDLES: readonly ResizeHandleId[] = ["nw", "n", "ne", "e", "se", "s", "sw", "w"];
-const WIDTH_HANDLES: readonly ResizeHandleId[] = ["w", "e"];
-const HEIGHT_HANDLES: readonly ResizeHandleId[] = ["n", "s"];
+const CORNER_HANDLES: readonly ResizeHandleId[] = ["nw", "ne", "se", "sw"];
 
 /** Return the resize handles permitted by a ComponentDef's `resizable` mode. */
 export function allowedHandles(resizable: ComponentDef["resizable"]): ResizeHandleId[] {
-  if (resizable === "both") return [...ALL_HANDLES];
-  if (resizable === "width") return [...WIDTH_HANDLES];
-  if (resizable === "height") return [...HEIGHT_HANDLES];
+  // Handles are strictly at the four corners; a corner drag changes whichever axes the
+  // component allows (both, or only width / height).
+  if (resizable === "both" || resizable === "width" || resizable === "height") return [...CORNER_HANDLES];
   return [];
 }
 

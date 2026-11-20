@@ -11,9 +11,11 @@ import { openText, saveBinary, saveText } from "../platform/files";
 const PROJECT_FILTER = [{ name: "DigiSchem Project", extensions: [PROJECT_EXTENSION, "json"] }];
 
 function baseName(path: string | null, fallback: string): string {
-  if (!path) return fallback;
-  const n = path.split(/[\\/]/).pop() ?? fallback;
-  return n.replace(/\.[^.]+$/, "");
+  const raw = path ? (path.split(/[\\/]/).pop() ?? fallback).replace(/\.[^.]+$/, "") : fallback;
+  // Names like "4:1 MUX" or "D/JK Flip-Flop" contain characters Windows forbids in file names.
+  // eslint-disable-next-line no-control-regex
+  const safe = raw.replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_").trim().replace(/[. ]+$/, "");
+  return safe || "Untitled";
 }
 
 export function notify(msg: string, isError = false): void {
@@ -161,6 +163,8 @@ export class AppCommands {
 export function installGlobalShortcuts(cmds: AppCommands) {
   window.addEventListener("keydown", (e) => {
     if (!(e.ctrlKey || e.metaKey)) return;
+    // Don't open/replace documents or stack dialogs behind an open modal dialog.
+    if (document.querySelector("dialog[open]")) return;
     const k = e.key.toLowerCase();
     let handled = true;
     if (k === "n") cmds.newDocument();
