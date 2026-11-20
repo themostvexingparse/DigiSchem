@@ -709,7 +709,7 @@ describe("layout/packSchematic", () => {
       const input = fx.build();
       const snapshot = JSON.stringify(input);
 
-      const res = packSchematic(input);
+      const res = packSchematic(input, { realign: false }); // the 9 shape-preserving rules (realign has its own tests)
 
       // Input must never be mutated
       expect(JSON.stringify(input)).toBe(snapshot);
@@ -726,7 +726,7 @@ describe("layout/packSchematic", () => {
       assertAllNineRules(input, res.doc);
 
       // Idempotence: packing twice gives same or smaller area/quality and remains valid
-      const res2 = packSchematic(res.doc);
+      const res2 = packSchematic(res.doc, { realign: false });
       expect(res2.areaAfter).toBeLessThanOrEqual(res.areaAfter);
       expect(res2.qualityAfter.total).toBeLessThanOrEqual(res.qualityAfter.total);
       assertAllNineRules(res.doc, res2.doc);
@@ -738,7 +738,7 @@ describe("layout/packSchematic", () => {
     const input = makeAlreadyTightDoc();
     const snapshot = JSON.stringify(input);
 
-    const res = packSchematic(input);
+    const res = packSchematic(input, { realign: false });
 
     expect(JSON.stringify(input)).toBe(snapshot);
     expect(res.areaAfter).toBe(res.areaBefore);
@@ -807,7 +807,7 @@ describe("layout/packSchematic", () => {
     expect(doc.wires.length).toBe(400);
 
     const t0 = performance.now();
-    const res = packSchematic(doc, { timeBudgetMs: 1500, beamWidth: 0 }); // core pipeline speed (the UI runs the beam in a worker)
+    const res = packSchematic(doc, { timeBudgetMs: 1500, beamWidth: 0, realign: false }); // core pipeline speed (the UI runs the beam in a worker)
     const elapsedMs = performance.now() - t0;
 
     expect(elapsedMs).toBeLessThan(2000);
@@ -892,7 +892,7 @@ describe("layout/packSchematic", () => {
     );
 
     const ids = new Set(["mL", "mR", "wL", "wR"]);
-    const res = packSchematic(doc, { ids });
+    const res = packSchematic(doc, { ids, realign: false });
     expect(res.areaAfter).toBeLessThan(res.areaBefore);
     assertAllNineRules(doc, res.doc, { ids });
     const fAfter = res.doc.components.find((c) => c.id === "fM")!;

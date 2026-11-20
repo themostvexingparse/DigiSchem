@@ -727,7 +727,10 @@ export function validateAgainstBaseline(
     }
 
     // Rule 3: segment orientation, direction, min length >= grid
-    for (let i = 0; i + 1 < w.points.length; i++) {
+    if (w.points.length !== wb.points.length) {
+      violations.push(`Rule 3: wire ${w.id} vertex count changed (${wb.points.length} -> ${w.points.length})`);
+    }
+    for (let i = 0; i + 1 < w.points.length && i + 1 < wb.points.length; i++) {
       const dx0 = wb.points[i + 1].x - wb.points[i].x;
       const dy0 = wb.points[i + 1].y - wb.points[i].y;
       const dx1 = w.points[i + 1].x - w.points[i].x;
@@ -762,6 +765,10 @@ export function validateAgainstBaseline(
       for (const rec of exits) {
         const ep = w.points[rec.endIdx];
         const ap = w.points[rec.adjIdx];
+        if (!ep || !ap) {
+          violations.push(`Rule 8: wire ${w.id} pin leg at vertex ${rec.endIdx} shortened or bent`);
+          continue;
+        }
         const dx = ap.x - ep.x;
         const dy = ap.y - ep.y;
         const len = Math.abs(dx) + Math.abs(dy);
@@ -788,6 +795,10 @@ export function validateAgainstBaseline(
     if (vPinMap) {
       for (const [vi, pinKeys] of vPinMap) {
         const p = w.points[vi];
+        if (!p) {
+          violations.push(`Rule 4: wire ${w.id} vertex ${vi} detached (wire has fewer vertices)`);
+          continue;
+        }
         for (const pk of pinKeys) {
           const pinPos = afterPinPos.get(pk);
           if (!pinPos || pinPos.x !== p.x || pinPos.y !== p.y) {
@@ -800,6 +811,10 @@ export function validateAgainstBaseline(
     if (vWireMap) {
       for (const [vi, refs] of vWireMap) {
         const p = w.points[vi];
+        if (!p) {
+          violations.push(`Rule 4: wire ${w.id} vertex ${vi} detached (wire has fewer vertices)`);
+          continue;
+        }
         for (const ref of refs) {
           const host = afterWireById.get(ref.hostWireId);
           if (!host || ref.hostSegIdx + 1 >= host.points.length) {

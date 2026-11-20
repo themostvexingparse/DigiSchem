@@ -31,6 +31,8 @@ export interface QualityBreakdown {
   componentCollisions: number;
   /** Junction dot penalty (>= 0, strictly lower per event than crossings). */
   junctions: number;
+  /** Wire bend penalty (>= 0; lower per bend than a junction). Constant under shape-preserving packing. */
+  bends: number;
   /** Superlinear local density penalty over (crossings ∪ junctions) (>= 0). */
   clutter: number;
   /** Alignment reward (<= 0) for same-type, same-size components sharing a row or column. */
@@ -53,10 +55,16 @@ export interface QualityWeights {
   sameNetOverlap?: number;
   /** Cost per component collision or `componentGap` violation (default: `Infinity`). */
   componentCollision?: number;
+  /** Cost per collision that the baseline layout already had (default: `400`). */
+  preexistingCollision?: number;
+  /** Component-id pairs ("a|b", sorted) colliding in the layout BEFORE editing (see `collidingPairs`). */
+  baselineCollisions?: ReadonlySet<string>;
   /** Mild penalty per plain orthogonal wire crossing (default: `12`). */
   crossing?: number;
   /** Penalty per junction dot — strictly lower than `crossing` (default: `5`). */
   junction?: number;
+  /** Penalty per wire bend (default: `3`, below a junction). */
+  bend?: number;
   /** Weight multiplying the superlinear pairwise clutter density (default: `8`). */
   clutter?: number;
   /** Neighborhood radius in grid cells within which event pairs contribute to clutter (default: `5`). */
@@ -96,12 +104,14 @@ export function wireNetIndex(doc: SchematicDocument): Map<string, number> {
  *   clutter is strictly superlinear in local event density (pairwise quadratic decay within R = 5 cells)
  *   area weight (0.05 / grid²) keeps layouts compact while letting visual quality win over the last few percent of area.
  */
-export const DEFAULT_QUALITY_WEIGHTS: Readonly<Required<Omit<QualityWeights, "baselineNets">>> = Object.freeze({
+export const DEFAULT_QUALITY_WEIGHTS: Readonly<Required<Omit<QualityWeights, "baselineNets" | "baselineCollisions">>> = Object.freeze({
   overlap: Infinity,
   sameNetOverlap: 40,
   componentCollision: Infinity,
+  preexistingCollision: 400,
   crossing: 12,
   junction: 5,
+  bend: 3,
   clutter: 8,
   clutterRadius: 5,
   alignment: 6,
@@ -293,9 +303,9 @@ function countComponentCollisions(
   doc: SchematicDocument,
   bounds: readonly Rect[],
   compGapPx: number,
-): number {
+): string[] {
   const n = doc.components.length;
-  if (n < 2) return 0;
+  if (n < 2) return [];
 
   // Identify direct pin-to-pin abutting component pairs
   const pinOwners = new Map<string, number[]>();
@@ -320,7 +330,11 @@ function countComponentCollisions(
     (a, b) => bounds[a].x - bounds[b].x || bounds[a].y - bounds[b].y,
   );
 
-  let collisions = 0;
+  const pairs: string[] = [];
+  const idPair = (a: number, b: number) => {
+    const x = doc.components[a].id, y = doc.components[b].id;
+    return x < y ? `${x}|${y}` : `${y}|${x}`;
+  };
   for (let ii = 0; ii < n; ii++) {
     const i = order[ii];
     const bi = bounds[i];
@@ -332,13 +346,13 @@ function countComponentCollisions(
       const sep = rectSeparation(bi, bj);
       if (sep < -EPS) {
         // Interior overlap is always a collision, even if pins coincide
-        collisions++;
+        pairs.push(idPair(i, j));
       } else if (compGapPx > 0 && sep < compGapPx - EPS) {
-        if (!abutting.has(pairKey(i, j))) collisions++;
+        if (!abutting.has(pairKey(i, j))) pairs.push(idPair(i, j));
       }
     }
   }
-  return collisions;
+  return pairs;
 }
 
 /**
@@ -432,12 +446,14 @@ function computeAlignmentAndSpacing(
  * Lower `total` is better; hard defects (wire overlaps, component collisions) yield `+Infinity`.
  */
 export function layoutQuality(doc: SchematicDocument, opts?: QualityWeights): QualityBreakdown {
-  const w: Required<Omit<QualityWeights, "baselineNets">> = {
+  const w: Required<Omit<QualityWeights, "baselineNets" | "baselineCollisions">> = {
     overlap: opts?.overlap ?? DEFAULT_QUALITY_WEIGHTS.overlap,
     sameNetOverlap: opts?.sameNetOverlap ?? DEFAULT_QUALITY_WEIGHTS.sameNetOverlap,
     componentCollision: opts?.componentCollision ?? DEFAULT_QUALITY_WEIGHTS.componentCollision,
+    preexistingCollision: opts?.preexistingCollision ?? DEFAULT_QUALITY_WEIGHTS.preexistingCollision,
     crossing: opts?.crossing ?? DEFAULT_QUALITY_WEIGHTS.crossing,
     junction: opts?.junction ?? DEFAULT_QUALITY_WEIGHTS.junction,
+    bend: opts?.bend ?? DEFAULT_QUALITY_WEIGHTS.bend,
     clutter: opts?.clutter ?? DEFAULT_QUALITY_WEIGHTS.clutter,
     clutterRadius: opts?.clutterRadius ?? DEFAULT_QUALITY_WEIGHTS.clutterRadius,
     alignment: opts?.alignment ?? DEFAULT_QUALITY_WEIGHTS.alignment,
@@ -459,8 +475,12 @@ export function layoutQuality(doc: SchematicDocument, opts?: QualityWeights): Qu
   const ov = countWireOverlaps(hSegs, vSegs, (a, b) => wireNet[a] >= 0 && wireNet[a] === wireNet[b]);
   const overlaps = (ov.different === 0 ? 0 : ov.different * w.overlap) + ov.same * w.sameNetOverlap;
 
-  const collisionCount = countComponentCollisions(doc, bounds, compGapPx);
-  const componentCollisions = collisionCount === 0 ? 0 : collisionCount * w.componentCollision;
+  // A collision the INPUT already had (e.g. a part dropped too close to a neighbour by hand)
+  // is a large finite cost — fixing it is rewarded — instead of making every layout Infinity.
+  const colliding = countComponentCollisions(doc, bounds, compGapPx);
+  const pre = opts?.baselineCollisions;
+  let componentCollisions = 0;
+  for (const pk of colliding) componentCollisions += pre?.has(pk) ? w.preexistingCollision : w.componentCollision;
 
   // 2. Junctions & plain orthogonal crossings
   const jPts = junctionPoints(doc);
@@ -469,6 +489,9 @@ export function layoutQuality(doc: SchematicDocument, opts?: QualityWeights): Qu
 
   const crossings = normZero(crossingPts.length === 0 ? 0 : crossingPts.length * w.crossing);
   const junctions = normZero(jPts.length === 0 ? 0 : jPts.length * w.junction);
+  let bendCount = 0;
+  for (const wire of doc.wires) bendCount += Math.max(0, wire.points.length - 2);
+  const bends = normZero(bendCount * w.bend);
 
   // 3. Superlinear local density / clutter over crossings ∪ junctions
   const events: Point[] = [...crossingPts, ...jPts];
@@ -488,7 +511,7 @@ export function layoutQuality(doc: SchematicDocument, opts?: QualityWeights): Qu
   const total =
     overlaps === Infinity || componentCollisions === Infinity
       ? Infinity
-      : normZero(overlaps + componentCollisions + crossings + junctions + clutter + alignment + spacing + area);
+      : normZero(overlaps + componentCollisions + crossings + junctions + bends + clutter + alignment + spacing + area);
 
   return {
     area,
@@ -496,9 +519,16 @@ export function layoutQuality(doc: SchematicDocument, opts?: QualityWeights): Qu
     overlaps,
     componentCollisions,
     junctions,
+    bends,
     clutter,
     alignment,
     spacing,
     total,
   };
+}
+
+/** Component pairs that collide (or violate `componentGap`) in `doc`, for `baselineCollisions`. */
+export function collidingPairs(doc: SchematicDocument, componentGap = DEFAULT_QUALITY_WEIGHTS.componentGap): Set<string> {
+  const grid = doc.grid || GRID;
+  return new Set(countComponentCollisions(doc, doc.components.map((c) => componentBounds(c)), componentGap * grid));
 }

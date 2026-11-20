@@ -2,8 +2,7 @@
  * Runs the packer in a Web Worker (falls back to the UI thread if workers are unavailable).
  */
 import type { SchematicDocument } from "../model/types";
-import { packSchematic, type PackResult } from "./pack";
-import { validatePacking } from "./validate";
+import { packSchematic, validateCompaction, type PackResult } from "./pack";
 
 export interface PackOutcome {
   res: PackResult;
@@ -47,7 +46,7 @@ let workerBroken = false;
 function packHere(doc: SchematicDocument, ids?: ReadonlySet<string>): PackOutcome {
   const opts = ids ? { ids } : {};
   const res = packSchematic(doc, opts);
-  return { res, problems: validatePacking(doc, res.doc, opts) };
+  return { res, problems: validateCompaction(doc, res, opts) };
 }
 
 /** Pack `doc` (optionally only `ids`) off the UI thread. */

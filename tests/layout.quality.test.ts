@@ -37,6 +37,7 @@ describe("layout/quality — default weights & invariants", () => {
       overlaps: 0,
       componentCollisions: 0,
       junctions: 0,
+      bends: 0,
       clutter: 0,
       alignment: 0,
       spacing: 0,

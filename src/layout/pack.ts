@@ -39,12 +39,15 @@ import {
   type QualityBreakdown,
   type QualityWeights,
   wireNetIndex,
+  collidingPairs,
 } from "./quality";
+import { realignProblems, realignWithReroute } from "./realign";
 import {
   documentArea,
   prepareValidationBaseline,
   subsetArea,
   validateAgainstBaseline,
+  validatePacking,
   type ValidationBaseline,
 } from "./validate";
 
@@ -68,6 +71,11 @@ export interface PackOptions {
   beamWidth?: number;
   /** Keep the layout's centre of mass where it was (default true). */
   preserveCenter?: boolean;
+  /**
+   * Realign stage (default true): move parts back onto the row/column of their same-type peers,
+   * re-routing their wires. The only stage allowed to change wire shapes (never adding bends).
+   */
+  realign?: boolean;
 }
 
 export interface PackResult {
@@ -82,6 +90,14 @@ export interface PackResult {
   centerAfter: { x: number; y: number } | null;
   /** Beam statistics (depth reached, states expanded). */
   beam: { depth: number; expanded: number };
+  /**
+   * The layout after the realign stage (parts moved back into line, their wires re-routed), when
+   * that stage changed anything. The shape-preserving compaction then started from it.
+   */
+  realigned?: SchematicDocument;
+  /** Components the realign stage moved, and the wires it re-routed. */
+  realignedParts: string[];
+  rerouted: string[];
 }
 
 const EPS = 1e-6;
@@ -1030,7 +1046,7 @@ function restoreCenterOfMass(
  * shape, connectivity, clearances, ordering, and non-increasing bounding-box area).
  * Pure function: never mutates the input document.
  */
-export function packSchematic(doc: SchematicDocument, opts?: PackOptions): PackResult {
+function packCore(doc: SchematicDocument, opts?: PackOptions): PackResult {
   const componentGap = Math.max(0, Math.round(opts?.componentGap ?? 2));
   const wireGap = Math.max(0, Math.round(opts?.wireGap ?? 1));
   const maxPasses = Math.max(0, Math.round(opts?.maxPasses ?? 8));
@@ -1042,7 +1058,12 @@ export function packSchematic(doc: SchematicDocument, opts?: PackOptions): PackR
   const preserveCenter = opts?.preserveCenter ?? true;
   const ids = opts?.ids;
   const centerBefore = centerOfMass(doc, ids);
-  const qWeights: QualityWeights = { componentGap, baselineNets: wireNetIndex(doc), ...opts?.qualityWeights };
+  const qWeights: QualityWeights = {
+    componentGap,
+    baselineNets: wireNetIndex(doc),
+    baselineCollisions: collidingPairs(doc, componentGap),
+    ...opts?.qualityWeights,
+  };
 
   const areaBefore = ids ? subsetArea(doc, ids) : documentArea(doc);
   const qualityBefore = layoutQuality(doc, qWeights);
@@ -1063,6 +1084,8 @@ export function packSchematic(doc: SchematicDocument, opts?: PackOptions): PackR
       centerBefore,
       centerAfter: centerBefore,
       beam: { depth: 0, expanded: 0 },
+      realignedParts: [],
+      rerouted: [],
     };
   }
 
@@ -1169,6 +1192,8 @@ export function packSchematic(doc: SchematicDocument, opts?: PackOptions): PackR
       centerBefore,
       centerAfter: centerBefore,
       beam: { depth: 0, expanded: 0 },
+      realignedParts: [],
+      rerouted: [],
     };
   }
 
@@ -1184,5 +1209,53 @@ export function packSchematic(doc: SchematicDocument, opts?: PackOptions): PackR
     centerBefore,
     centerAfter: centerOfMass(out, ids),
     beam: beamStats,
+    realignedParts: [],
+    rerouted: [],
   };
+}
+
+/**
+ * Pack components, wires, and text notes to minimise the weighted visual quality objective.
+ * Stage 0 (realign) may move single parts back into line with their same-type peers and re-route
+ * their wires; the remaining stages preserve every wire's shape (rules 1–9). Pure function.
+ */
+export function packSchematic(doc: SchematicDocument, opts?: PackOptions): PackResult {
+  if (opts?.realign === false || (opts?.maxPasses ?? 8) === 0) return packCore(doc, opts);
+  const componentGap = Math.max(0, Math.round(opts?.componentGap ?? 2));
+  const qWeights: QualityWeights = {
+    componentGap,
+    baselineNets: wireNetIndex(doc),
+    baselineCollisions: collidingPairs(doc, componentGap),
+    ...opts?.qualityWeights,
+  };
+  const budget = opts?.timeBudgetMs ?? Math.min(4000, DEFAULT_TIME_BUDGET_MS + 25 * doc.components.length);
+  const qualityBefore = layoutQuality(doc, qWeights);
+  const ra = realignWithReroute(doc, qWeights, { ids: opts?.ids, deadline: performance.now() + budget * 0.3 });
+  if (ra.moved.length === 0) return packCore(doc, opts);
+  const res = packCore(ra.doc, { ...opts, realign: false });
+  // The core reports "unchanged" relative to the realigned layout; the realigned layout is
+  // itself the improvement in that case.
+  const packed = res.passes > 0 ? res.doc : ra.doc;
+  return {
+    ...res,
+    doc: packed,
+    areaBefore: opts?.ids ? subsetArea(doc, opts.ids) : documentArea(doc),
+    qualityBefore,
+    qualityAfter: layoutQuality(packed, qWeights),
+    passes: res.passes + ra.moved.length,
+    centerBefore: centerOfMass(doc, opts?.ids),
+    realigned: ra.doc,
+    realignedParts: ra.moved,
+    rerouted: ra.rerouted,
+  };
+}
+
+/**
+ * Validate a packing result against the original document: the realign stage is checked with
+ * its own rules (same connectivity, no new bends / collisions / shorts, fixed parts untouched),
+ * the shape-preserving stages with rules 1–9 relative to the realigned layout.
+ */
+export function validateCompaction(before: SchematicDocument, res: PackResult, opts?: PackOptions): string[] {
+  if (!res.realigned) return validatePacking(before, res.doc, opts);
+  return [...realignProblems(before, res.realigned, opts?.ids), ...validatePacking(res.realigned, res.doc, opts)];
 }

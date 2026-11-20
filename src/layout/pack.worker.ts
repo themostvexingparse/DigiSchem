@@ -4,8 +4,7 @@
  */
 import { registerBuiltinComponents } from "../components/library";
 import type { SchematicDocument } from "../model/types";
-import { packSchematic } from "./pack";
-import { validatePacking } from "./validate";
+import { packSchematic, validateCompaction } from "./pack";
 
 registerBuiltinComponents();
 
@@ -25,7 +24,7 @@ ctx.onmessage = (e) => {
   try {
     const opts = ids ? { ids: new Set(ids) } : {};
     const res = packSchematic(doc, opts);
-    const problems = validatePacking(doc, res.doc, opts);
+    const problems = validateCompaction(doc, res, opts);
     ctx.postMessage({ id, ok: true, res, problems });
   } catch (err) {
     ctx.postMessage({ id, ok: false, error: (err as Error)?.message ?? String(err) });

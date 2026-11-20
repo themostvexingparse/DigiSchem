@@ -9,8 +9,7 @@ import { emptyDocument, type ComponentInstance, type SchematicDocument } from ".
 import { worldPins } from "../src/model/geometry";
 import { RouteObstacles, safeRoute } from "../src/editor/safe-route";
 import { serializeProject } from "../src/io/project";
-import { centerOfMass, packSchematic } from "../src/layout/pack";
-import { validatePacking } from "../src/layout/validate";
+import { centerOfMass, packSchematic, validateCompaction } from "../src/layout/pack";
 import { sprawled } from "../tests/helpers/sprawl";
 
 registerBuiltinComponents();
@@ -303,7 +302,7 @@ for (const s of samples) {
   const t = performance.now();
   const r = packSchematic(d, ids ? { ids } : {});
   const ms = Math.round(performance.now() - t);
-  const viol = validatePacking(d, r.doc, ids ? { ids } : {});
+  const viol = validateCompaction(d, r, ids ? { ids } : {});
   const c0 = centerOfMass(d, ids), c1 = centerOfMass(r.doc, ids);
   const shift = c0 && c1 ? Math.round(Math.hypot(c1.x - c0.x, c1.y - c0.y)) : 0;
   const improved = r.qualityAfter.total < r.qualityBefore.total - 1e-6;
