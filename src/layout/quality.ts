@@ -69,6 +69,14 @@ export interface QualityWeights {
   clutter?: number;
   /** Neighborhood radius in grid cells within which event pairs contribute to clutter (default: `5`). */
   clutterRadius?: number;
+  /**
+   * Extra clutter weight for events next to component pins (default `2`: an event ON a pin counts
+   * 3×, fading linearly to 1× at `pinClutterRadius` cells). Crowding where wires enter/leave a
+   * part makes it hard to read which wire goes to which pin.
+   */
+  pinClutter?: number;
+  /** Radius in grid cells of the pin-proximity boost (default `3`). */
+  pinClutterRadius?: number;
   /** Reward (negated in `alignment`) per aligned pair of same-type, same-size components (default: `6`). */
   alignment?: number;
   /** Reward (negated in `spacing`) per equal consecutive gap pair in a same-type row/column (default: `4`). */
@@ -114,6 +122,8 @@ export const DEFAULT_QUALITY_WEIGHTS: Readonly<Required<Omit<QualityWeights, "ba
   bend: 3,
   clutter: 8,
   clutterRadius: 5,
+  pinClutter: 2,
+  pinClutterRadius: 3,
   alignment: 6,
   spacingEqual: 4,
   spacingUneven: 1,
@@ -265,11 +275,15 @@ export function computeEventClutter(
   events: readonly Point[],
   grid: number,
   radiusCells: number,
+  /** Optional per-event weight (e.g. higher next to component pins); pair term × mean weight. */
+  weights?: readonly number[],
 ): number {
   const n = events.length;
   if (n < 2 || radiusCells <= 0) return 0;
 
-  const sorted = [...events].sort((a, b) => a.x - b.x || a.y - b.y);
+  const order = events.map((_, i) => i).sort((a, b) => events[a].x - events[b].x || events[a].y - events[b].y);
+  const sorted = order.map((i) => events[i]);
+  const wt = weights ? order.map((i) => weights[i]) : null;
   const rPx = radiusCells * grid;
   const r2 = rPx * rPx;
   let total = 0;
@@ -285,7 +299,7 @@ export function computeEventClutter(
       if (d2 >= r2) continue;
       const dCells = Math.sqrt(d2) / grid;
       const t = 1 - dCells / radiusCells;
-      total += t * t;
+      total += wt ? t * t * ((wt[i] + wt[j]) / 2) : t * t;
     }
   }
   return normZero(total);
@@ -456,6 +470,8 @@ export function layoutQuality(doc: SchematicDocument, opts?: QualityWeights): Qu
     bend: opts?.bend ?? DEFAULT_QUALITY_WEIGHTS.bend,
     clutter: opts?.clutter ?? DEFAULT_QUALITY_WEIGHTS.clutter,
     clutterRadius: opts?.clutterRadius ?? DEFAULT_QUALITY_WEIGHTS.clutterRadius,
+    pinClutter: opts?.pinClutter ?? DEFAULT_QUALITY_WEIGHTS.pinClutter,
+    pinClutterRadius: opts?.pinClutterRadius ?? DEFAULT_QUALITY_WEIGHTS.pinClutterRadius,
     alignment: opts?.alignment ?? DEFAULT_QUALITY_WEIGHTS.alignment,
     spacingEqual: opts?.spacingEqual ?? DEFAULT_QUALITY_WEIGHTS.spacingEqual,
     spacingUneven: opts?.spacingUneven ?? DEFAULT_QUALITY_WEIGHTS.spacingUneven,
@@ -495,7 +511,7 @@ export function layoutQuality(doc: SchematicDocument, opts?: QualityWeights): Qu
 
   // 3. Superlinear local density / clutter over crossings ∪ junctions
   const events: Point[] = [...crossingPts, ...jPts];
-  const rawClutter = computeEventClutter(events, grid, w.clutterRadius);
+  const rawClutter = computeEventClutter(events, grid, w.clutterRadius, pinProximityWeights(doc, events, grid, w.pinClutter, w.pinClutterRadius));
   const clutter = normZero(rawClutter === 0 ? 0 : rawClutter * w.clutter);
 
   // 4. Alignment & regular spacing of same-type, same-size components
@@ -531,4 +547,39 @@ export function layoutQuality(doc: SchematicDocument, opts?: QualityWeights): Qu
 export function collidingPairs(doc: SchematicDocument, componentGap = DEFAULT_QUALITY_WEIGHTS.componentGap): Set<string> {
   const grid = doc.grid || GRID;
   return new Set(countComponentCollisions(doc, doc.components.map((c) => componentBounds(c)), componentGap * grid));
+}
+
+/**
+ * Per-event clutter weight from the distance to the nearest component pin:
+ * 1 + boost · max(0, 1 − d / radius) (d in grid cells, Chebyshev).
+ */
+export function pinProximityWeights(
+  doc: SchematicDocument,
+  events: readonly Point[],
+  grid: number,
+  boost: number,
+  radiusCells: number,
+): number[] | undefined {
+  if (boost <= 0 || radiusCells <= 0 || events.length === 0) return undefined;
+  const cell = radiusCells * grid;
+  const buckets = new Map<string, Point[]>();
+  for (const c of doc.components) {
+    for (const wp of worldPins(c)) {
+      const k = `${Math.floor(wp.pos.x / cell)},${Math.floor(wp.pos.y / cell)}`;
+      const b = buckets.get(k);
+      if (b) b.push(wp.pos);
+      else buckets.set(k, [wp.pos]);
+    }
+  }
+  return events.map((e) => {
+    const cx = Math.floor(e.x / cell), cy = Math.floor(e.y / cell);
+    let best = Infinity;
+    for (let dx = -1; dx <= 1; dx++)
+      for (let dy = -1; dy <= 1; dy++)
+        for (const p of buckets.get(`${cx + dx},${cy + dy}`) ?? []) {
+          const d = Math.max(Math.abs(p.x - e.x), Math.abs(p.y - e.y)) / grid;
+          if (d < best) best = d;
+        }
+    return 1 + boost * Math.max(0, 1 - best / radiusCells);
+  });
 }

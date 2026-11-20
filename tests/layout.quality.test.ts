@@ -267,3 +267,23 @@ describe("overlaps judged against baseline nets", () => {
     expect(diff.total).toBe(Infinity);
   });
 });
+
+describe("clutter near component pins costs more", () => {
+  it("the same crossing pair costs more next to a gate's pins than far away", () => {
+    registerBuiltinComponents();
+    const mk = (ox: number) => {
+      const d = emptyDocument("pin-clutter");
+      d.components.push({ id: "g", type: "and", x: 400, y: 0, rotation: 0, props: { inputs: 2 } });
+      // two vertical wires crossing one horizontal wire, 20 apart, ending `ox` left of in0 (400,10)
+      d.wires.push(
+        { id: "h", points: [{ x: 300 - ox, y: 20 }, { x: 400 - ox + 60, y: 20 }] },
+        { id: "v1", points: [{ x: 390 - ox, y: -20 }, { x: 390 - ox, y: 60 }] },
+        { id: "v2", points: [{ x: 380 - ox, y: -20 }, { x: 380 - ox, y: 60 }] },
+      );
+      return layoutQuality(d);
+    };
+    const near = mk(0), far = mk(600);
+    expect(near.crossings).toBe(far.crossings);
+    expect(near.clutter).toBeGreaterThan(far.clutter * 1.5);
+  });
+});
