@@ -46,7 +46,7 @@ import {
   type AttachedWireSnapshot,
   type SnapTarget,
 } from "./wire-utils";
-import { movedEndContacts, RouteObstacles, repairWires, safeRoute } from "./safe-route";
+import { movedEndContacts, RouteObstacles, repairWires, safeRoute, sameNetWires } from "./safe-route";
 import { computeGuides, guidePeers, type GuideResult } from "./guides";
 import { getSettings, onSettingsChange, updateSettings } from "../model/settings";
 import {
@@ -145,12 +145,15 @@ type Interaction =
       moved: boolean;
       narrowToIdOnClick: string | null;
       pointerId: number;
+      /** Electrical nets at drag start (so the router never mistakes a fresh short for a net). */
+      netsBefore: Map<string, Set<string>>;
       /** Smart-guide anchor (component grabbed) and its same-type/same-size peers. */
       guide: { anchorOrig: Rect; peers: Rect[] } | null;
       guides: GuideResult | null;
     }
   | {
       kind: "drag-wire-segment";
+      netsBefore: Map<string, Set<string>>;
       wireId: string;
       segIndex: number;
       origPoints: Point[];
@@ -1308,6 +1311,7 @@ export class Editor {
         this.store.beginGesture();
         this.interaction = {
           kind: "drag-wire-segment",
+            netsBefore: sameNetWires(this.store.doc),
           wireId: w.id,
           segIndex: hit.segmentIndex,
           origPoints: w.points.map((p) => ({ ...p })),
@@ -1369,6 +1373,7 @@ export class Editor {
     this.store.beginGesture();
     this.interaction = {
       kind: "move-selection",
+      netsBefore: sameNetWires(this.store.doc),
       guide,
       guides: null,
       startWorldSnapped: { ...this.cursorWorldSnapped },
@@ -1465,7 +1470,7 @@ export class Editor {
                 w.points = stretchWireForMove(aw.origPoints, aw.startAttached, aw.endAttached, delta, true);
               }
               // Never let a stretched wire run over another pin/wire or through a body.
-              repairWires(draft, inter.attachedWires.map((aw) => aw.wireId), movedEndContacts(draft, inter.attachedWires));
+              repairWires(draft, inter.attachedWires.map((aw) => aw.wireId), movedEndContacts(draft, inter.attachedWires), { improve: true, nets: inter.netsBefore });
             });
           }
           if (snappedChanged) this.emitState();
@@ -1628,7 +1633,7 @@ export class Editor {
       case "drag-wire-segment":
         if (inter.moved) {
           this.store.update("Move wire segment", (draft) => {
-            repairWires(draft, [inter.wireId]);
+            repairWires(draft, [inter.wireId], undefined, { nets: inter.netsBefore });
             normalizeDocWires(draft);
           });
         }

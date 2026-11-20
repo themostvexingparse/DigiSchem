@@ -35,7 +35,7 @@ import {
   normalizeWirePoints,
   textBounds,
 } from "./wire-utils";
-import { movedEndContacts, repairWires } from "./safe-route";
+import { movedEndContacts, repairWires, sameNetWires } from "./safe-route";
 
 /**
  * Run `mutate` (which may rotate / mirror / re-parameterize components) and then
@@ -50,6 +50,7 @@ export function keepWiresAttached(
   excludeWireIds: ReadonlySet<string> = new Set(),
 ): void {
   const key = (p: Point) => `${p.x},${p.y}`;
+  const netsBefore = sameNetWires(doc); // nets as they were, before the transform
   const before = new Map<string, string>(); // pos -> compId:pinId
   for (const c of doc.components) {
     if (!componentIds.has(c.id)) continue;
@@ -84,7 +85,7 @@ export function keepWiresAttached(
     changed.push(a.wire.id);
   }
   // Stretching may run a wire over another pin / wire or through a body: re-route those.
-  repairWires(doc, changed);
+  repairWires(doc, changed, undefined, { improve: true, nets: netsBefore });
   // A pin may have moved onto the wire's other end: drop wires that collapsed (< 2 points).
   doc.wires = doc.wires.filter((w) => w.points.length >= 2);
 }
@@ -329,6 +330,7 @@ export function nudgeSelectionInStore(store: DocumentStore, dx: number, dy: numb
   for (const w of store.doc.wires) if (sel.has(w.id)) selWireIds.add(w.id);
 
   const attached = captureAttachedWires(store.doc, movedCompIds, selWireIds);
+  const netsBefore = sameNetWires(store.doc);
 
   store.update("Nudge", (draft) => {
     for (const c of draft.components) {
@@ -362,7 +364,7 @@ export function nudgeSelectionInStore(store: DocumentStore, dx: number, dy: numb
         true,
       );
     }
-    repairWires(draft, attached.map((a) => a.wireId), movedEndContacts(draft, attached));
+    repairWires(draft, attached.map((a) => a.wireId), movedEndContacts(draft, attached), { improve: true, nets: netsBefore });
     normalizeDocWires(draft);
   });
 }

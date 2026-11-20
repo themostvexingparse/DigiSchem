@@ -14,6 +14,7 @@ import type { Side } from "../model/component-def";
 import { GRID } from "../model/component-def";
 import { componentBounds, worldPins, type Rect } from "../model/geometry";
 import { normalizeWirePoints, pinExitVector } from "./wire-utils";
+import { buildNetlist } from "../io/netlist";
 
 const key = (p: Point) => `${p.x},${p.y}`;
 
@@ -130,6 +131,41 @@ export class RouteObstacles {
     return false;
   }
 
+  /**
+   * Number of plain crossings between the path and other wires (a perpendicular segment
+   * passing strictly through the interior of one of the path's segments). Crossings don't
+   * connect, but each one makes the drawing harder to read, so routes minimise them.
+   */
+  crossings(pts: readonly Point[], self: ReadonlySet<string> = new Set()): number {
+    let n = 0;
+    for (let i = 0; i + 1 < pts.length; i++) {
+      const a = pts[i], b = pts[i + 1];
+      if (a.y === b.y) {
+        const lo = Math.min(a.x, b.x), hi = Math.max(a.x, b.x);
+        for (const [x, segs] of this.vCols) {
+          if (x <= lo || x >= hi) continue;
+          for (const sg of segs) if (!self.has(sg.wireId) && a.y > sg.lo && a.y < sg.hi) n++;
+        }
+      } else if (a.x === b.x) {
+        const lo = Math.min(a.y, b.y), hi = Math.max(a.y, b.y);
+        for (const [y, segs] of this.hRows) {
+          if (y <= lo || y >= hi) continue;
+          for (const sg of segs) if (!self.has(sg.wireId) && a.x > sg.lo && a.x < sg.hi) n++;
+        }
+      }
+    }
+    return n;
+  }
+
+  /**
+   * Readability cost of a path (lower is better): crossings weigh most, then bends, then
+   * length; hugging a component outline is discouraged. Shared by every router decision.
+   */
+  routeCost(pts: readonly Point[], self: ReadonlySet<string> = new Set()): number {
+    const g = this.grid;
+    return this.crossings(pts, self) * 60 * g + (pts.length - 2) * 40 * g + pathLength(pts) + this.edgeHugLength(pts) * 3;
+  }
+
   /** Does point p lie on a segment of a wire other than `self`? */
   private onOtherWire(p: Point, self: ReadonlySet<string>): boolean {
     for (const s of this.hRows.get(p.y) ?? []) if (!self.has(s.wireId) && p.x >= s.lo && p.x <= s.hi) return true;
@@ -224,6 +260,11 @@ export interface SafeRouteOptions {
   prefer?: readonly Point[];
   /** Allowed contacts "wireId@x,y" (existing T-junction ends that moved along). */
   allowed?: ReadonlySet<string>;
+  /**
+   * Wires electrically on the same net as this one: touching them is harmless (it cannot
+   * short anything), so they are not treated as obstacles — but crossings still count.
+   */
+  sameNet?: ReadonlySet<string>;
 }
 
 /**
@@ -231,11 +272,23 @@ export interface SafeRouteOptions {
  * Leaves/enters pins along their stub axis. Returns null if no candidate works.
  */
 export function safeRoute(obs: RouteObstacles, from: Point, to: Point, opts: SafeRouteOptions = {}): Point[] | null {
+  return safeRouteCandidates(obs, from, to, opts, 1)[0] ?? null;
+}
+
+/** Up to `k` distinct valid routes, cheapest first (see safeRoute). */
+export function safeRouteCandidates(
+  obs: RouteObstacles,
+  from: Point,
+  to: Point,
+  opts: SafeRouteOptions = {},
+  k = 1,
+): Point[][] {
   const g = obs.grid;
   const self = opts.self ?? new Set<string>();
+  const ignore = opts.sameNet ? new Set([...self, ...opts.sameNet]) : self;
   const fromExit = opts.fromExit !== undefined ? opts.fromExit : obs.exitAt(from);
   const toExit = opts.toExit !== undefined ? opts.toExit : obs.exitAt(to);
-  if (from.x === to.x && from.y === to.y) return [{ ...from }];
+  if (from.x === to.x && from.y === to.y) return [[{ ...from }]];
 
   const stubs = (p: Point, e: Point | null): Point[][] =>
     e ? [1, 2, 3, 4, 6].map((k) => [{ ...p }, { x: p.x + e.x * k * g, y: p.y + e.y * k * g }]) : [[{ ...p }]];
@@ -262,17 +315,23 @@ export function safeRoute(obs: RouteObstacles, from: Point, to: Point, opts: Saf
     return c;
   };
 
-  let best: { pts: Point[]; cost: number } | null = null;
+  // Keep the k cheapest distinct valid candidates (k is small: a sorted array is enough).
+  const top: { pts: Point[]; cost: number; key: string }[] = [];
+  const worst = () => (top.length < k ? Infinity : top[top.length - 1].cost);
   const consider = (raw: Point[]) => {
     const pts = normalizeWirePoints(raw);
     if (pts.length < 2) return;
     // Must leave / enter pins along their stub direction, never sideways along the pin edge.
     if (fromExit && !leavesAlong(pts[0], pts[1], fromExit)) return;
     if (toExit && !leavesAlong(pts[pts.length - 1], pts[pts.length - 2], toExit)) return;
-    const cost = (pts.length - 2) * 40 * g + pathLength(pts) + preferCost(pts) * 0.5 + obs.edgeHugLength(pts) * 3;
-    if (best && cost >= best.cost) return;
-    if (obs.routeIsBad(pts, self, opts.allowed)) return;
-    best = { pts, cost };
+    const cost = obs.routeCost(pts, self) + preferCost(pts) * 0.5;
+    if (cost >= worst()) return;
+    const kk = pts.map((p) => `${p.x},${p.y}`).join(";");
+    if (top.some((t) => t.key === kk)) return;
+    if (obs.routeIsBad(pts, ignore, opts.allowed)) return;
+    top.push({ pts, cost, key: kk });
+    top.sort((a, b) => a.cost - b.cost);
+    if (top.length > k) top.pop();
   };
 
   for (const h of heads) {
@@ -288,7 +347,7 @@ export function safeRoute(obs: RouteObstacles, from: Point, to: Point, opts: Saf
       for (const my of channelsY) consider([...pre, a, { x: a.x, y: my }, { x: b.x, y: my }, b, ...post]);
     }
   }
-  return best ? (best as { pts: Point[] }).pts : null;
+  return top.map((t) => t.pts);
 }
 
 function leavesAlong(p: Point, next: Point, exit: Point): boolean {
@@ -304,28 +363,152 @@ function distToSeg(p: Point, a: Point, b: Point): number {
   return Math.hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy));
 }
 
+/** For each wire id, the ids of the OTHER wires on the same electrical net. */
+export function sameNetWires(doc: SchematicDocument): Map<string, Set<string>> {
+  const out = new Map<string, Set<string>>();
+  for (const net of buildNetlist(doc).nets) {
+    for (const id of net.wires) out.set(id, new Set(net.wires.filter((w) => w !== id)));
+  }
+  return out;
+}
+
+export interface RepairOptions {
+  /**
+   * Also re-route wires that are electrically fine when a clearly more readable route exists
+   * (fewer crossings / bends). Used after a component is displaced, so its wires never pile
+   * up loops; a stretched wire is kept unless the fresh route is meaningfully better.
+   */
+  improve?: boolean;
+  /**
+   * Same-net map computed BEFORE the edit (sameNetWires of the original document). Required
+   * for correctness: computing nets on the edited document would treat an accidental short
+   * the edit just created as "same net" and keep it.
+   */
+  nets?: Map<string, Set<string>>;
+}
+
+
 /**
  * Post-edit repair: for each listed wire, if its current path creates an unintended
- * connection or cuts through a component, replace it with the best safe route between
- * its endpoints (staying close to the current path). Mutates `doc`.
+ * connection or cuts through a component — or, with `improve`, if a fresh route is clearly
+ * more readable — replace it with the best safe route between its (unchanged) endpoints.
+ * Endpoints never move, so wires stay attached. Mutates `doc`.
  */
-export function repairWires(doc: SchematicDocument, wireIds: Iterable<string>, allowed?: ReadonlySet<string>): void {
-  const ids = [...new Set(wireIds)];
-  if (ids.length === 0) return;
-  const full = new RouteObstacles(doc);
-  const bad = ids.filter((id) => {
+export function repairWires(
+  doc: SchematicDocument,
+  wireIds: Iterable<string>,
+  allowed?: ReadonlySet<string>,
+  opts: RepairOptions = {},
+): void {
+  const ids = [...new Set(wireIds)].filter((id) => {
     const w = doc.wires.find((x) => x.id === id);
-    return !!w && w.points.length >= 2 && full.routeIsBad(w.points, new Set([id]), allowed);
+    return !!w && w.points.length >= 2;
   });
-  // Re-route one at a time. Bad wires not yet repaired are left out of the obstacles (they
-  // are about to move anyway — otherwise two crossed wires can block each other's detour);
-  // every repaired wire becomes an obstacle for the next.
-  const pending = new Set(bad);
-  for (const id of bad) {
-    const w = doc.wires.find((x) => x.id === id)!;
-    const obs = new RouteObstacles(doc, pending);
-    const r = safeRoute(obs, w.points[0], w.points[w.points.length - 1], { self: new Set([id]), prefer: w.points, allowed });
-    if (r) w.points = r;
-    pending.delete(id);
+  if (ids.length === 0) return;
+  const nets = opts.nets ?? sameNetWires(doc);
+  const full = new RouteObstacles(doc);
+  const ignoreFor = (id: string) => new Set([id, ...(nets.get(id) ?? [])]);
+  const work = opts.improve
+    ? ids
+    : ids.filter((id) => full.routeIsBad(doc.wires.find((x) => x.id === id)!.points, ignoreFor(id), allowed));
+  if (!opts.improve) {
+    // Repair only: re-route each bad wire once. Wires still waiting are left out of the
+    // obstacles (they move anyway — otherwise two crossed wires block each other's detour).
+    const pending = new Set(work);
+    for (const id of work) {
+      const w = doc.wires.find((x) => x.id === id)!;
+      pending.delete(id);
+      const obs = new RouteObstacles(doc, pending);
+      const fresh = safeRoute(obs, w.points[0], w.points[w.points.length - 1], {
+        self: new Set([id]), sameNet: nets.get(id), allowed, prefer: w.points,
+      });
+      if (fresh) w.points = fresh;
+    }
+    return;
   }
+
+  // Improve mode (after a component was displaced): choose the most readable JOINT
+  // arrangement of the displaced wires. Routing them one at a time gets stuck (two wires that
+  // should swap lanes each block the other), so: every wire gets its K best candidate routes
+  // computed against the NON-displaced circuit (its current stretched shape is candidate #0),
+  // then a small branch-and-bound search picks one candidate per wire minimising
+  //   Σ route cost (crossings ≫ bends > length)  +  crossings between the chosen routes,
+  // rejecting any pair that would touch (an accidental connection between different nets).
+  const n = work.length;
+  const K = n <= 2 ? 12 : n <= 3 ? 8 : n <= 4 ? 5 : n <= 6 ? 3 : 1;
+  const g = full.grid;
+  const workSet = new Set(work);
+  const base = new RouteObstacles(doc, workSet); // the circuit without the displaced wires
+  type Cand = { pts: Point[]; cost: number };
+  const cands: Cand[][] = work.map((id) => {
+    const w = doc.wires.find((x) => x.id === id)!;
+    const self = new Set([id]);
+    const list: Cand[] = [];
+    if (!base.routeIsBad(w.points, ignoreFor(id), allowed)) {
+      list.push({ pts: w.points, cost: base.routeCost(w.points, self) - 2 * g }); // keep-shape bonus
+    }
+    for (const pts of safeRouteCandidates(base, w.points[0], w.points[w.points.length - 1], {
+      self, sameNet: nets.get(id), allowed,
+    }, K)) list.push({ pts, cost: base.routeCost(pts, self) });
+    if (list.length === 0) list.push({ pts: w.points, cost: 1e9 }); // nothing valid: keep as is
+    return list.sort((a, b) => a.cost - b.cost);
+  });
+  const sameNetPair = (i: number, j: number) => nets.get(work[i])?.has(work[j]) ?? false;
+
+  let best: number[] | null = null;
+  let bestCost = Infinity;
+  const pick: number[] = [];
+  let explored = 0;
+  const search = (i: number, acc: number) => {
+    if (acc >= bestCost || explored++ > 20000) return;
+    if (i === n) {
+      bestCost = acc;
+      best = pick.slice();
+      return;
+    }
+    for (let c = 0; c < cands[i].length; c++) {
+      const P = cands[i][c].pts;
+      let cost = acc + cands[i][c].cost;
+      let ok = true;
+      for (let j = 0; j < i && ok; j++) {
+        const Q = cands[j][pick[j]].pts;
+        if (!sameNetPair(i, j) && pathsTouch(P, Q)) ok = false;
+        else cost += pathCrossings(P, Q) * 60 * g;
+      }
+      if (!ok || cost >= bestCost) continue;
+      pick[i] = c;
+      search(i + 1, cost);
+    }
+  };
+  search(0, 0);
+  if (best) (best as number[]).forEach((c, i) => (doc.wires.find((x) => x.id === work[i])!.points = cands[i][c].pts));
+}
+
+/** True if two orthogonal paths touch: a vertex of one lies on a segment of the other. */
+function pathsTouch(P: readonly Point[], Q: readonly Point[]): boolean {
+  const onPath = (p: Point, R: readonly Point[]) => {
+    for (let i = 0; i + 1 < R.length; i++) {
+      const a = R[i], b = R[i + 1];
+      if (a.x === b.x && p.x === a.x && p.y >= Math.min(a.y, b.y) && p.y <= Math.max(a.y, b.y)) return true;
+      if (a.y === b.y && p.y === a.y && p.x >= Math.min(a.x, b.x) && p.x <= Math.max(a.x, b.x)) return true;
+    }
+    return false;
+  };
+  return P.some((p) => onPath(p, Q)) || Q.some((q) => onPath(q, P));
+}
+
+/** Plain (interior, perpendicular) crossings between two orthogonal paths. */
+function pathCrossings(P: readonly Point[], Q: readonly Point[]): number {
+  let n = 0;
+  for (let i = 0; i + 1 < P.length; i++)
+    for (let j = 0; j + 1 < Q.length; j++) {
+      const [a, b] = [P[i], P[i + 1]];
+      const [c, d] = [Q[j], Q[j + 1]];
+      const h = a.y === b.y ? [a, b] : c.y === d.y ? [c, d] : null;
+      const v = h && (h[0] === a ? [c, d] : [a, b]);
+      if (!h || !v || v[0].x !== v[1].x || (h[0] === a && c.y === d.y)) continue;
+      const x = v[0].x, y = h[0].y;
+      if (x > Math.min(h[0].x, h[1].x) && x < Math.max(h[0].x, h[1].x) && y > Math.min(v[0].y, v[1].y) && y < Math.max(v[0].y, v[1].y)) n++;
+    }
+  return n;
 }
