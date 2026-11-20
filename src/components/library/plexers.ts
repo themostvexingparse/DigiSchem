@@ -41,6 +41,9 @@ interface TrapLayout {
   isDemux: boolean;
 }
 
+/** Clearance between the body corners and the outermost select pin on the slanted edge. */
+const BOT_MARGIN = 2 * GRID;
+
 function layoutMuxDemux(props: Record<string, PropValue>, isDemux: boolean): TrapLayout {
   const selectBits = clampInt(props, "selectBits", 1, 1, 5);
   const dataWidth = clampInt(props, "dataWidth", 1, 1, 32);
@@ -74,9 +77,14 @@ function layoutMuxDemux(props: Record<string, PropValue>, isDemux: boolean): Tra
   const subW = dataWidth > 1 ? `${dataWidth}-bit`.length * 6.4 + 12 : 0;
   const centerW = Math.max(titleW, subW);
   const botNeedW =
-    bottomPinsSpec.length > 0 ? (bottomPinsSpec.length - 1) * botSpacing + 2 * 30 : 0;
+    bottomPinsSpec.length > 0 ? (bottomPinsSpec.length - 1) * botSpacing + 2 * BOT_MARGIN : 0;
 
-  const computedBodyW = ceilEvenGrid(Math.max(80, leftLabelW + centerW + rightLabelW, botNeedW));
+  // Compact textbook proportions: the trapezoid is about half as wide as it is tall, just wide
+  // enough for the channel labels and select pins. The title is drawn only when it fits.
+  const computedBodyH0 = computedBodyH;
+  const ceilGrid = (v: number) => Math.ceil(v / GRID) * GRID;
+  const computedBodyW = ceilGrid(Math.max(4 * GRID, computedBodyH0 * 0.5, leftLabelW + rightLabelW + GRID, botNeedW));
+  void centerW;
   const bodyX = PIN_LEN;
   const bodyTop = 0;
 
@@ -148,7 +156,7 @@ function layoutMuxDemux(props: Record<string, PropValue>, isDemux: boolean): Tra
     bodyW > computedBodyW
       ? bottomPinsSpec.length === 1
         ? [bodyX + snapGrid(bodyW / 2)]
-        : distributeOnGrid(bottomPinsSpec.length, bodyX + 30, bodyX + bodyW - 30)
+        : distributeOnGrid(bottomPinsSpec.length, bodyX + BOT_MARGIN, bodyX + bodyW - BOT_MARGIN)
       : (() => {
           const botSpan = (bottomPinsSpec.length - 1) * botSpacing;
           const firstBotX = bodyX + Math.max(GRID, snapGrid((bodyW - botSpan) / 2));
@@ -215,7 +223,10 @@ function renderMuxDemux(props: Record<string, PropValue>, isDemux: boolean): str
   const cx = bodyX + bodyW / 2;
   const cy = bodyTop + bodyH / 2;
   const title = isDemux ? "DMUX" : "MUX";
-  if (bodyW >= 50) {
+  // Only draw the title if it clears the channel labels on both sides.
+  const labelLen = Math.max(...geometry.pins.filter((p) => p.side !== "bottom").map((p) => p.name.length));
+  const titleFits = bodyW - 2 * (labelLen * 6 + 14) >= title.length * 9 + 4;
+  if (titleFits) {
     svg += `<text class="ds-title" x="${cx}" y="${cy + (dataWidth > 1 ? -1 : 4)}" text-anchor="middle">${title}</text>`;
     if (dataWidth > 1) {
       svg += `<text class="ds-text" x="${cx}" y="${cy + 11}" text-anchor="middle">${dataWidth}-bit</text>`;

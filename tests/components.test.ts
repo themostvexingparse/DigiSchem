@@ -460,13 +460,16 @@ describe("pin spacing and label clearance invariants", () => {
         expect(bodyH - dataPins[dataPins.length - 1].y).toBeGreaterThanOrEqual(20);
 
         const texts = parseTextElements(mux.symbol(props));
-        const title = texts.find((t) => t.text === "MUX")!;
+        const title = texts.find((t) => t.text === "MUX");
         const outY = texts.find((t) => t.text === "Y")!;
-        expect(title).toBeDefined();
         expect(outY).toBeDefined();
-        const [, titleRight] = textSpanX(title);
-        const [yLeft] = textSpanX(outY);
-        expect(yLeft, `MUX(${JSON.stringify(props)}): Y overlaps MUX title`).toBeGreaterThan(titleRight + 2);
+        // Compact 2:1 / 4:1 muxes omit the title (textbook style); larger ones show it.
+        if (selectBits >= 3) expect(title, `MUX(${JSON.stringify(props)}) title`).toBeDefined();
+        if (title) {
+          const [, titleRight] = textSpanX(title);
+          const [yLeft] = textSpanX(outY);
+          expect(yLeft, `MUX(${JSON.stringify(props)}): Y overlaps MUX title`).toBeGreaterThan(titleRight + 2);
+        }
       }
     }
   });
@@ -487,13 +490,15 @@ describe("pin spacing and label clearance invariants", () => {
         }
 
         const texts = parseTextElements(demux.symbol(props));
-        const title = texts.find((t) => t.text === "DMUX")!;
+        const title = texts.find((t) => t.text === "DMUX");
         const inD = texts.find((t) => t.text === "D")!;
-        expect(title).toBeDefined();
         expect(inD).toBeDefined();
-        const [, dRight] = textSpanX(inD);
-        const [titleLeft] = textSpanX(title);
-        expect(titleLeft, `DEMUX(${JSON.stringify(props)}): D overlaps DMUX title`).toBeGreaterThan(dRight + 2);
+        if (selectBits >= 3) expect(title, `DEMUX(${JSON.stringify(props)}) title`).toBeDefined();
+        if (title) {
+          const [, dRight] = textSpanX(inD);
+          const [titleLeft] = textSpanX(title);
+          expect(titleLeft, `DEMUX(${JSON.stringify(props)}): D overlaps DMUX title`).toBeGreaterThan(dRight + 2);
+        }
       }
     }
   });
