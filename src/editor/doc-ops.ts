@@ -31,8 +31,12 @@ import {
   stretchWireForMove,
   stretchWireStart,
   normalizeWirePoints,
+  pinExitVector,
+  routePinAware,
   textBounds,
 } from "./wire-utils";
+import type { PinDef } from "../model/component-def";
+import { pointOnSegment } from "../model/geometry";
 
 /**
  * Run `mutate` (which may rotate / mirror / re-parameterize components) and then
@@ -66,13 +70,43 @@ export function keepWiresAttached(
     if (!componentIds.has(c.id)) continue;
     for (const wp of worldPins(c)) after.set(`${c.id}:${wp.pin.id}`, wp.pos);
   }
+  // All pins after the mutation, for exit directions and "passes over a pin" checks.
+  const pinAt = new Map<string, { inst: ComponentInstance; side: PinDef["side"] }>();
+  for (const c of doc.components)
+    for (const wp of worldPins(c)) pinAt.set(key(wp.pos), { inst: c, side: wp.pin.side });
+  const exitAt = (p: Point): Point | null => {
+    const hit = pinAt.get(key(p));
+    return hit ? pinExitVector(hit.inst, hit.side) : null;
+  };
+  const crossesPin = (pts: Point[]): boolean => {
+    const s = key(pts[0]), e = key(pts[pts.length - 1]);
+    for (const [k] of pinAt) {
+      if (k === s || k === e) continue;
+      const [x, y] = k.split(",").map(Number);
+      for (let i = 0; i + 1 < pts.length; i++) if (pointOnSegment({ x, y }, pts[i], pts[i + 1])) return true;
+    }
+    return false;
+  };
+
   for (const a of attached) {
-    let pts = a.wire.points.map((p) => ({ ...p }));
+    const orig = a.wire.points.map((p) => ({ ...p }));
+    let pts = orig;
     const ns = a.start ? after.get(a.start) : undefined;
-    if (ns && key(ns) !== key(pts[0])) pts = stretchWireStart(pts, ns);
     const ne = a.end ? after.get(a.end) : undefined;
-    if (ne && key(ne) !== key(pts[pts.length - 1])) pts = stretchWireStart([...pts].reverse(), ne).reverse();
-    a.wire.points = normalizeWirePoints(pts);
+    const startMoved = !!ns && key(ns) !== key(orig[0]);
+    const endMoved = !!ne && key(ne) !== key(orig[orig.length - 1]);
+    if (!startMoved && !endMoved) continue;
+    if (startMoved) pts = stretchWireStart(pts, ns!);
+    if (endMoved) pts = stretchWireStart([...pts].reverse(), ne!).reverse();
+    pts = normalizeWirePoints(pts);
+    if (crossesPin(pts)) {
+      // Stretching would run over another pin (geometric short) — re-route the wire pin-aware.
+      const s = ns ?? orig[0];
+      const e = ne ?? orig[orig.length - 1];
+      const rerouted = routePinAware(s, exitAt(s), e, exitAt(e), false, doc.grid || GRID);
+      if (!crossesPin(rerouted)) pts = rerouted;
+    }
+    a.wire.points = pts;
   }
 }
 

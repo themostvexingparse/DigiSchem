@@ -50,6 +50,26 @@ describe("wires follow transformed components", () => {
     for (const [p, q] of segs(w)) expect(p.x === q.x || p.y === q.y).toBe(true);
   });
 
+  it("rotating a wired gate never leaves a wire running over another pin", () => {
+    const d = emptyDocument();
+    d.components.push({ id: "g", type: "and", x: 410, y: 290, rotation: 0, props: { inputs: 2 } });
+    d.wires.push({ id: "w1", points: [{ x: 230, y: 220 }, { x: 320, y: 220 }, { x: 320, y: 310 }, { x: 410, y: 310 }] });
+    d.wires.push({ id: "w2", points: [{ x: 230, y: 440 }, { x: 320, y: 440 }, { x: 320, y: 330 }, { x: 410, y: 330 }] });
+    const sel = new Set(["g"]);
+    for (let turn = 0; turn < 4; turn++) {
+      keepWiresAttached(d, sel, () => rotateSelectionInDoc(d, sel), sel);
+      const pins = worldPins(d.components[0]);
+      for (const w of d.wires) {
+        const ends = [w.points[0], w.points[w.points.length - 1]];
+        for (const wp of pins) {
+          if (ends.some((e) => e.x === wp.pos.x && e.y === wp.pos.y)) continue;
+          expect(segs(w.points).some(([p, q]) => pointOnSegment(wp.pos, p, q)), `turn ${turn} ${w.id} over ${wp.pin.id}`).toBe(false);
+        }
+        expect(pins.some((wp) => wp.pos.x === ends[1].x && wp.pos.y === ends[1].y)).toBe(true);
+      }
+    }
+  });
+
   it("changing a count prop keeps wires on surviving pins", () => {
     const d = emptyDocument();
     d.components.push({ id: "g", type: "and", x: 200, y: 200, rotation: 0, props: { inputs: 2 } });
