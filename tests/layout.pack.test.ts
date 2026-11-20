@@ -714,18 +714,21 @@ describe("layout/packSchematic", () => {
       // Input must never be mutated
       expect(JSON.stringify(input)).toBe(snapshot);
 
-      // Area strictly decreases significantly
+      // Area strictly decreases significantly and quality improves
       expect(res.areaBefore).toBe(areaOf(input));
       expect(res.areaAfter).toBe(areaOf(res.doc));
       expect(res.areaAfter).toBeLessThan(res.areaBefore * fx.maxRatio);
+      expect(res.qualityAfter.total).toBeLessThanOrEqual(res.qualityBefore.total);
+      expect(res.qualityAfter.total).toBeLessThan(res.qualityBefore.total);
       expect(res.passes).toBeGreaterThan(0);
 
       // All 9 rules individually asserted + validatePacking === []
       assertAllNineRules(input, res.doc);
 
-      // Idempotence: packing twice gives same or smaller area and remains valid
+      // Idempotence: packing twice gives same or smaller area/quality and remains valid
       const res2 = packSchematic(res.doc);
       expect(res2.areaAfter).toBeLessThanOrEqual(res.areaAfter);
+      expect(res2.qualityAfter.total).toBeLessThanOrEqual(res.qualityAfter.total);
       assertAllNineRules(res.doc, res2.doc);
       assertAllNineRules(input, res2.doc);
     });
@@ -917,7 +920,122 @@ describe("layout/packSchematic", () => {
     const opts: PackOptions = { componentGap: 2, wireGap: 2 };
     const res = packSchematic(doc, opts);
     expect(res.areaAfter).toBeLessThan(res.areaBefore);
+    expect(res.qualityAfter.total).toBeLessThanOrEqual(res.qualityBefore.total);
     assertAllNineRules(doc, res.doc, opts);
+  });
+
+  it("aligns scattered same-type gates at slightly different heights into a row with equal spacing", () => {
+    // 4 identical 2-input AND gates staggered vertically (overlapping Y ranges so Rule 8a allows
+    // row alignment) and spaced unevenly horizontally, tapped cleanly off a shared top bus.
+    const doc = emptyDocument("Scattered Same-Type Row");
+    const inBus: ComponentInstance = { id: "inBus", type: "input-pin", x: 0, y: 10, rotation: 0, props: { name: "EN" } };
+    const g0: ComponentInstance = { id: "g0", type: "and", x: 100, y: 80, rotation: 0, props: { inputs: 2 }, label: "A0" };
+    const g1: ComponentInstance = { id: "g1", type: "and", x: 240, y: 100, rotation: 0, props: { inputs: 2 }, label: "A1" };
+    const g2: ComponentInstance = { id: "g2", type: "and", x: 460, y: 90, rotation: 0, props: { inputs: 2 }, label: "A2" };
+    const g3: ComponentInstance = { id: "g3", type: "and", x: 600, y: 110, rotation: 0, props: { inputs: 2 }, label: "A3" };
+    doc.components.push(inBus, g0, g1, g2, g3);
+
+    const busStart = pinPos(inBus, "out");
+    const gates = [g0, g1, g2, g3];
+    const lastTapX = pinPos(g3, "in0").x - 20;
+    doc.wires.push({ id: "w_bus", points: [busStart, { x: lastTapX, y: busStart.y }, { x: lastTapX, y: pinPos(g3, "in0").y }, pinPos(g3, "in0")] });
+    for (let i = 0; i < 3; i++) {
+      const in0 = pinPos(gates[i], "in0");
+      const tapX = in0.x - 20;
+      doc.wires.push({
+        id: `w_tap_${i}`,
+        points: [{ x: tapX, y: busStart.y }, { x: tapX, y: in0.y }, in0],
+      });
+    }
+
+    const res = packSchematic(doc);
+    assertAllNineRules(doc, res.doc);
+    expect(res.qualityAfter.total).toBeLessThan(res.qualityBefore.total);
+    expect(res.qualityAfter.alignment).toBeLessThan(res.qualityBefore.alignment);
+
+    // All 4 AND gates must end up row-aligned (identical top y) with equal consecutive horizontal gaps
+    const packedGates = ["g0", "g1", "g2", "g3"]
+      .map((id) => componentBounds(res.doc.components.find((c) => c.id === id)!))
+      .sort((a, b) => a.x - b.x);
+    expect(new Set(packedGates.map((b) => b.y)).size).toBe(1);
+    const gaps = [
+      packedGates[1].x - (packedGates[0].x + packedGates[0].w),
+      packedGates[2].x - (packedGates[1].x + packedGates[1].w),
+      packedGates[3].x - (packedGates[2].x + packedGates[2].w),
+    ];
+    expect(gaps[0]).toBe(gaps[1]);
+    expect(gaps[1]).toBe(gaps[2]);
+  });
+
+  it("equalises non-minimal gaps for 3 same-type gates when outer span is held wide by fixed anchors", () => {
+    // 3 identical 2-input AND gates staggered in Y and unevenly spaced in X, with fixed ground
+    // anchors holding the outer horizontal span wide so the middle gate must center itself for
+    // equal non-minimal gaps while all three snap into one horizontal row.
+    const doc = emptyDocument("Anchored Row Equalization");
+    const g0: ComponentInstance = { id: "g0", type: "and", x: 0, y: 60, rotation: 0, props: { inputs: 2 } };
+    const g1: ComponentInstance = { id: "g1", type: "and", x: 120, y: 80, rotation: 0, props: { inputs: 2 } };
+    const g2: ComponentInstance = { id: "g2", type: "and", x: 360, y: 70, rotation: 0, props: { inputs: 2 } };
+    const botL: ComponentInstance = { id: "botL", type: "ground", x: 20, y: 200, rotation: 0, props: {} };
+    const botR: ComponentInstance = { id: "botR", type: "ground", x: 400, y: 200, rotation: 0, props: {} };
+    doc.components.push(g0, g1, g2, botL, botR);
+
+    const g0In = pinPos(g0, "in0");
+    const g2Out = pinPos(g2, "out");
+    const bLPin = pinPos(botL, "gnd");
+    const bRPin = pinPos(botR, "gnd");
+    doc.wires.push(
+      { id: "wL", points: [g0In, { x: g0In.x - 20, y: g0In.y }, { x: g0In.x - 20, y: bLPin.y - 30 }, { x: bLPin.x, y: bLPin.y - 30 }, bLPin] },
+      { id: "wR", points: [g2Out, { x: g2Out.x + 20, y: g2Out.y }, { x: g2Out.x + 20, y: bRPin.y - 30 }, { x: bRPin.x, y: bRPin.y - 30 }, bRPin] },
+    );
+
+    const ids = new Set(["g0", "g1", "g2", "wL", "wR"]);
+    const res = packSchematic(doc, { ids });
+    assertAllNineRules(doc, res.doc, { ids });
+    expect(res.qualityAfter.total).toBeLessThan(res.qualityBefore.total);
+
+    const b0 = componentBounds(res.doc.components.find((c) => c.id === "g0")!);
+    const b1 = componentBounds(res.doc.components.find((c) => c.id === "g1")!);
+    const b2 = componentBounds(res.doc.components.find((c) => c.id === "g2")!);
+    expect(b0.y).toBe(b1.y);
+    expect(b1.y).toBe(b2.y);
+    const gap01 = b1.x - (b0.x + b0.w);
+    const gap12 = b2.x - (b1.x + b1.w);
+    expect(gap01).toBe(gap12);
+    // The anchor wires are movable, so the packer may legitimately pull the row to the tightest
+    // EQUAL spacing (the minimum component gap) — equal and compact beats equal and wide.
+    expect(gap01).toBeGreaterThanOrEqual(20);
+  });
+
+  it("reduces clutter on a fixture with a dense crossing cluster while preserving all 9 rules", () => {
+    // 4 input pins on the left wired in reversed order to 4 AND gates on the right, with all 4
+    // vertical routing lanes bunched 1 grid cell apart (x = 120, 130, 140, 150) forming a dense
+    // crossing cluster.
+    const doc = emptyDocument("Dense Crossing Cluster");
+    const ins: ComponentInstance[] = [];
+    const gates: ComponentInstance[] = [];
+    for (let i = 0; i < 4; i++) {
+      ins.push({ id: `in${i}`, type: "input-pin", x: 0, y: 20 + i * 80, rotation: 0, props: { name: `I${i}` } });
+      gates.push({ id: `g${i}`, type: "and", x: 380, y: 10 + i * 80, rotation: 0, props: { inputs: 2 }, label: `U${i}` });
+    }
+    doc.components.push(...ins, ...gates);
+
+    // Reverse routing: in0 -> g3, in1 -> g2, in2 -> g1, in3 -> g0 via tightly bunched lanes
+    const lanes = [120, 130, 140, 150];
+    for (let i = 0; i < 4; i++) {
+      const from = pinPos(ins[i], "out");
+      const to = pinPos(gates[3 - i], "in0");
+      const laneX = lanes[i];
+      doc.wires.push({
+        id: `w_cross_${i}`,
+        points: [from, { x: laneX, y: from.y }, { x: laneX, y: to.y }, to],
+      });
+    }
+
+    const res = packSchematic(doc);
+    assertAllNineRules(doc, res.doc);
+    expect(res.qualityBefore.clutter).toBeGreaterThan(0);
+    expect(res.qualityAfter.clutter).toBeLessThan(res.qualityBefore.clutter);
+    expect(res.qualityAfter.total).toBeLessThan(res.qualityBefore.total);
   });
 });
 

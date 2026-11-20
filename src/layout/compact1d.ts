@@ -38,6 +38,77 @@ import type { PackOptions } from "./pack";
 
 export type Axis = "x" | "y";
 
+/** Slack-placement strategy within feasible `[dMin, dMax]` bounds. */
+export type SlackStrategy = "median" | "centroid" | "min" | "max" | "keep" | "align";
+
+export interface CompactionOptions extends Required<Pick<PackOptions, "componentGap" | "wireGap">> {
+  ids?: ReadonlySet<string>;
+  /**
+   * Optional maximum allowed document span along `axis` for wide-bounds quality polish
+   * (e.g. `floor(areaBefore / otherSpan)` so Rule 9 holds).
+   */
+  maxSpan?: number;
+}
+
+export interface CompGroupInfo {
+  compIdx: number;
+  group: number;
+  type: string;
+  w: number;
+  h: number;
+  classKey: string;
+  offLo: number;
+  offHi: number;
+  sLo: number;
+  sHi: number;
+}
+
+export interface CompactionModel {
+  readonly axis: Axis;
+  readonly grid: number;
+  readonly compGapPx: number;
+  readonly numGroups: number;
+  readonly anchorGroup: number;
+  readonly groupOrig: Float64Array;
+  readonly groupLeftExt: Float64Array;
+  readonly groupRightExt: Float64Array;
+  readonly groupSubLeftExt: Float64Array;
+  readonly groupSubRightExt: Float64Array;
+  readonly origDocMin: number;
+  readonly origDocMax: number;
+  readonly adj: { to: number; w: number }[][];
+  readonly revAdj: { from: number; w: number }[][];
+  /** Tight minimum-span feasible bounds (or anchor-respecting bounds when `ids` is set). */
+  readonly dMin: Float64Array;
+  readonly dMax: Float64Array;
+  /** Wider feasible bounds up to `maxSpan` / `origDocMax` for quality polish. */
+  readonly wideMin: Float64Array;
+  readonly wideMax: Float64Array;
+  readonly compInfos: readonly CompGroupInfo[];
+  readonly compGroupSet: ReadonlySet<number>;
+  /** Exact dynamic feasible interval `[lo, hi]` for group `g` given current `x` and `[bMin, bMax]`. */
+  feasibleInterval(g: number, x: Float64Array, bMin: Float64Array, bMax: Float64Array): [number, number];
+  /** Compute a feasible coordinate vector using the requested slack strategy. */
+  solveStrategy(strategy: SlackStrategy): Float64Array;
+  /** Mutate only group `g`'s primary-axis coordinates in `targetDoc` (zero allocation). */
+  setGroupCoord(targetDoc: SchematicDocument, g: number, val: number): void;
+  /** Apply full solution vector `sol` in-place to `targetDoc`. */
+  applyTo(targetDoc: SchematicDocument, sol: Float64Array): void;
+  /** Clone the source document and apply `sol`. */
+  materialize(sol: Float64Array): SchematicDocument;
+  /** Groups owning wire vertices or perpendicular segments that pass through any of `events`. */
+  groupsAffectingEvents(targetDoc: SchematicDocument, events: readonly Point[]): Set<number>;
+  /**
+   * Run forward SPFA with additional temporary minimum-separation constraints `x[to] - x[from] >= w`
+   * (used by quality polish to jointly open cluttered crossing/junction corridors).
+   * Returns `null` if infeasible or if anchorGroup would move.
+   */
+  solveWithExtraEdges(
+    extraEdges: readonly { from: number; to: number; w: number }[],
+    seed?: Float64Array,
+  ): Float64Array | null;
+}
+
 const EPS = 1e-6;
 
 function normZero(v: number): number {
@@ -315,14 +386,15 @@ export function totalWireLength(doc: SchematicDocument): number {
 }
 
 /**
- * Perform one 1-D compaction pass along `axis` ("x" or "y"), returning a new SchematicDocument.
- * Never mutates the input `doc`.
+ * Build a reusable 1-D constraint-graph compaction model along `axis` ("x" or "y").
+ * Returns `null` if the document is empty or the constraint graph is infeasible.
+ * Never mutates `doc`.
  */
-export function compact1D(
+export function buildCompactionModel(
   doc: SchematicDocument,
   axis: Axis,
-  opts: Required<Pick<PackOptions, "componentGap" | "wireGap">> & { ids?: ReadonlySet<string> },
-): SchematicDocument {
+  opts: CompactionOptions,
+): CompactionModel | null {
   const grid = doc.grid || GRID;
   const compGapPx = opts.componentGap * grid;
   const wireGapPx = opts.wireGap * grid;
@@ -1185,14 +1257,13 @@ export function compact1D(
       origSubMax = Math.max(origSubMax, groupOrig[g] + groupSubRightExt[g]);
     }
   }
-  if (!Number.isFinite(origDocMin)) return structuredClone(doc);
+  if (!Number.isFinite(origDocMin)) return null;
 
-  const solveWithGraph = (
+  const tryBuildBounds = (
     adj: { to: number; w: number }[][],
     revAdj: { from: number; w: number }[][],
-  ): Float64Array | null => {
+  ): { dMin: Float64Array; dMax: Float64Array; wideMin: Float64Array; wideMax: Float64Array; minSpanMax: number } | null => {
     if (anchorGroup < 0) {
-      // Full-document compaction: exact global minimum span + wirelength/centroid relaxation
       const initMin = new Float64Array(numGroups);
       for (let g = 0; g < numGroups; g++) {
         initMin[g] = ceilGrid(origDocMin - groupLeftExt[g], grid);
@@ -1210,13 +1281,32 @@ export function compact1D(
       for (let g = 0; g < numGroups; g++) {
         initMax[g] = floorGrid(minSpanMax - groupRightExt[g], grid);
       }
-      const dMax = spfaBackward(numGroups, initMax, revAdj, orderDesc);
-      if (!dMax) return dMin;
+      const dMax = spfaBackward(numGroups, initMax, revAdj, orderDesc) ?? new Float64Array(dMin);
 
-      const centroid = (origDocMin + minSpanMax) / 2;
-      const xA = relaxSlack(dMin, dMin, dMax, adj, revAdj, wirePulls, groupLeftExt, groupRightExt, centroid, grid, -1);
-      const xB = relaxSlack(dMax, dMin, dMax, adj, revAdj, wirePulls, groupLeftExt, groupRightExt, centroid, grid, -1);
-      return evalWireLength(xB, wirePulls) < evalWireLength(xA, wirePulls) ? xB : xA;
+      // Compute wider upper bounds for quality polish (staying within legal Rule 9 span when provided)
+      const extraMargin = 8 * grid;
+      let wideRight = Math.max(origDocMax, minSpanMax);
+      if (opts.maxSpan !== undefined) {
+        const legalRight = origDocMin + opts.maxSpan;
+        wideRight = Math.min(legalRight, Math.max(origDocMax, minSpanMax + extraMargin));
+      }
+      wideRight = Math.max(minSpanMax, wideRight);
+
+      let wideMax: Float64Array;
+      if (wideRight > minSpanMax + EPS) {
+        const initWideMax = new Float64Array(numGroups);
+        for (let g = 0; g < numGroups; g++) {
+          initWideMax[g] = floorGrid(wideRight - groupRightExt[g], grid);
+        }
+        wideMax = spfaBackward(numGroups, initWideMax, revAdj, orderDesc) ?? dMax;
+        for (let g = 0; g < numGroups; g++) {
+          if (wideMax[g] < dMax[g]) wideMax[g] = dMax[g];
+        }
+      } else {
+        wideMax = dMax;
+      }
+
+      return { dMin, dMax, wideMin: dMin, wideMax, minSpanMax };
     }
 
     // Partial compaction (opts.ids): ANCHOR group is strictly pinned at its original coordinate
@@ -1232,11 +1322,244 @@ export function compact1D(
     if (!dMin || !dMax) return null;
     if (dMin[anchorGroup] !== anchorOrig || dMax[anchorGroup] !== anchorOrig) return null;
 
-    // Try multiple feasible seeds:
-    //  - squeezeLeftThenRight: push left to get tight upper bound on subset, then push right up to that bound
-    //  - squeezeRightThenLeft: push right to get tight lower bound on subset, then push left down to that bound
-    //  - dMin, dMax, and original coordinates
-    // Relax each toward connected wire neighbors / subset centroid and pick the tightest subset span.
+    return { dMin, dMax, wideMin: dMin, wideMax: dMax, minSpanMax: origDocMax };
+  };
+
+  let chosenGraph = hasRepairEdges ? buildAdjacency(true) : buildAdjacency(false);
+  let solved = tryBuildBounds(chosenGraph.adj, chosenGraph.revAdj);
+  if (!solved && hasRepairEdges) {
+    chosenGraph = buildAdjacency(false);
+    solved = tryBuildBounds(chosenGraph.adj, chosenGraph.revAdj);
+  }
+  if (!solved) return null;
+
+  const { adj, revAdj } = chosenGraph;
+  const { dMin, dMax, wideMin, wideMax, minSpanMax } = solved;
+
+  // Precompute per-group element references for fast zero-allocation updates
+  const groupCompRefs: { compIdx: number; off: number }[][] = Array.from({ length: numGroups }, () => []);
+  const groupTextRefs: { textIdx: number; off: number }[][] = Array.from({ length: numGroups }, () => []);
+  const groupVtxRefs: { wireIdx: number; ptIdx: number; off: number }[][] = Array.from({ length: numGroups }, () => []);
+
+  for (let ci = 0; ci < doc.components.length; ci++) {
+    const g = varGroup(compVars[ci]);
+    groupCompRefs[g].push({ compIdx: ci, off: varOff(compVars[ci]) });
+  }
+  for (let ti = 0; ti < doc.texts.length; ti++) {
+    const g = varGroup(textVars[ti]);
+    groupTextRefs[g].push({ textIdx: ti, off: varOff(textVars[ti]) });
+  }
+  const vtxGroupIdx: number[][] = [];
+  for (let wi = 0; wi < doc.wires.length; wi++) {
+    const arr: number[] = [];
+    for (let k = 0; k < doc.wires[wi].points.length; k++) {
+      const g = varGroup(vtxVars[wi][k]);
+      arr.push(g);
+      groupVtxRefs[g].push({ wireIdx: wi, ptIdx: k, off: varOff(vtxVars[wi][k]) });
+    }
+    vtxGroupIdx.push(arr);
+  }
+
+  // Component metadata for alignment / spacing exploitation
+  const compInfos: CompGroupInfo[] = [];
+  const compGroupSet = new Set<number>();
+  for (let ci = 0; ci < doc.components.length; ci++) {
+    const c = doc.components[ci];
+    const b = compBoundsArr[ci];
+    const g = varGroup(compVars[ci]);
+    compGroupSet.add(g);
+    compInfos.push({
+      compIdx: ci,
+      group: g,
+      type: c.type,
+      w: b.w,
+      h: b.h,
+      classKey: `${c.type}|${Math.round(b.w * 2)}x${Math.round(b.h * 2)}`,
+      offLo: rectPLo(b) - groupOrig[g],
+      offHi: rectPHi(b) - groupOrig[g],
+      sLo: rectSLo(b),
+      sHi: rectSHi(b),
+    });
+  }
+
+  const feasibleInterval = (
+    g: number,
+    x: Float64Array,
+    bMin: Float64Array,
+    bMax: Float64Array,
+  ): [number, number] => {
+    if (g === anchorGroup) return [x[g], x[g]];
+    let lo = bMin[g];
+    let hi = bMax[g];
+    const inc = revAdj[g];
+    for (let i = 0; i < inc.length; i++) {
+      const bound = x[inc[i].from] + inc[i].w;
+      if (bound > lo) lo = bound;
+    }
+    const out = adj[g];
+    for (let i = 0; i < out.length; i++) {
+      const bound = x[out[i].to] - out[i].w;
+      if (bound < hi) hi = bound;
+    }
+    return [lo, hi];
+  };
+
+  /** Snap same-type, same-size components into shared coordinates along `axis` within `[bMin, bMax]`. */
+  const applyAlignmentSnap = (x: Float64Array, bMin: Float64Array, bMax: Float64Array): void => {
+    const byClass = new Map<string, CompGroupInfo[]>();
+    for (const info of compInfos) {
+      const list = byClass.get(info.classKey);
+      if (list) list.push(info);
+      else byClass.set(info.classKey, [info]);
+    }
+
+    for (const list of byClass.values()) {
+      if (list.length < 2) continue;
+      const remaining = new Set<CompGroupInfo>(list);
+
+      while (remaining.size >= 2) {
+        const cands = new Set<number>();
+        const intervals = new Map<CompGroupInfo, [number, number]>();
+        for (const info of remaining) {
+          const lo = bMin[info.group] + info.offLo;
+          const hi = bMax[info.group] + info.offLo;
+          intervals.set(info, [lo, hi]);
+          cands.add(snapGrid(lo, grid));
+          cands.add(snapGrid(hi, grid));
+          cands.add(snapGrid(x[info.group] + info.offLo, grid));
+        }
+
+        let bestV = 0;
+        let bestCluster: CompGroupInfo[] = [];
+        let bestDist = Infinity;
+
+        for (const v of cands) {
+          const hit: CompGroupInfo[] = [];
+          let dist = 0;
+          for (const info of remaining) {
+            const [lo, hi] = intervals.get(info)!;
+            if (v >= lo - EPS && v <= hi + EPS) {
+              hit.push(info);
+              dist += Math.abs(x[info.group] + info.offLo - v);
+            }
+          }
+          if (
+            hit.length > bestCluster.length ||
+            (hit.length === bestCluster.length &&
+              (dist < bestDist - EPS || (Math.abs(dist - bestDist) <= EPS && v < bestV)))
+          ) {
+            bestCluster = hit;
+            bestV = v;
+            bestDist = dist;
+          }
+        }
+
+        if (bestCluster.length < 2) break;
+
+        // Sweep in both directions so coupled groups can slide toward `bestV`
+        const sortedAsc = [...bestCluster].sort((a, b) => x[a.group] - x[b.group]);
+        const sortedDesc = [...sortedAsc].reverse();
+        for (const pass of [sortedDesc, sortedAsc]) {
+          for (const info of pass) {
+            const g = info.group;
+            const target = normZero(snapGrid(bestV - info.offLo, grid));
+            const [lo, hi] = feasibleInterval(g, x, bMin, bMax);
+            if (target >= lo - EPS && target <= hi + EPS) {
+              x[g] = normZero(Math.max(lo, Math.min(hi, target)));
+            }
+          }
+        }
+        for (const info of bestCluster) remaining.delete(info);
+      }
+    }
+  };
+
+  /** Equalise consecutive gaps in same-type rows/columns along `axis` within `[bMin, bMax]`. */
+  const applySpacingEqualize = (x: Float64Array, bMin: Float64Array, bMax: Float64Array): void => {
+    const byLine = new Map<string, CompGroupInfo[]>();
+    for (const info of compInfos) {
+      const lk = `${info.classKey}@${Math.round(info.sLo * 2)}`;
+      const list = byLine.get(lk);
+      if (list) list.push(info);
+      else byLine.set(lk, [info]);
+    }
+
+    for (const line of byLine.values()) {
+      if (line.length < 3) continue;
+      line.sort((a, b) => (x[a.group] + a.offLo) - (x[b.group] + b.offLo));
+      const m = line.length;
+      const first = line[0];
+      const last = line[m - 1];
+      const p0 = x[first.group] + first.offLo;
+      const pLast = x[last.group] + last.offLo;
+      const compSize = first.offHi - first.offLo;
+      const minPitch = ceilGrid(compSize + compGapPx, grid);
+      const rawPitch = (pLast - p0) / (m - 1);
+      const pitchCands = [
+        Math.max(minPitch, floorGrid(rawPitch, grid)),
+        Math.max(minPitch, ceilGrid(rawPitch, grid)),
+        minPitch,
+      ];
+
+      let appliedUniform = false;
+      for (const pitch of pitchCands) {
+        let startLo = -Infinity;
+        let startHi = Infinity;
+        for (let k = 0; k < m; k++) {
+          const info = line[k];
+          const lo = bMin[info.group] + info.offLo - k * pitch;
+          const hi = bMax[info.group] + info.offLo - k * pitch;
+          if (lo > startLo) startLo = lo;
+          if (hi < startHi) startHi = hi;
+        }
+        if (startLo > startHi + EPS) continue;
+        const start = Math.max(ceilGrid(startLo, grid), Math.min(floorGrid(startHi, grid), snapGrid(p0, grid)));
+        if (start < startLo - EPS || start > startHi + EPS) continue;
+
+        const saved = new Float64Array(x);
+        let allHit = true;
+        // Two sweeps (right-to-left then left-to-right) let chains shift cleanly
+        for (const dir of [-1, 1]) {
+          for (let idx = dir < 0 ? m - 1 : 0; dir < 0 ? idx >= 0 : idx < m; idx += dir) {
+            const info = line[idx];
+            const target = normZero(start + idx * pitch - info.offLo);
+            const [lo, hi] = feasibleInterval(info.group, x, bMin, bMax);
+            x[info.group] = normZero(Math.max(lo, Math.min(hi, target)));
+          }
+        }
+        for (let k = 0; k < m; k++) {
+          const info = line[k];
+          if (Math.abs((x[info.group] + info.offLo) - (start + k * pitch)) > EPS) {
+            allHit = false;
+            break;
+          }
+        }
+        if (allHit) {
+          appliedUniform = true;
+          break;
+        }
+        x.set(saved);
+      }
+
+      if (!appliedUniform) {
+        // Fallback: relax interior components toward midpoints of their immediate neighbors
+        for (let iter = 0; iter < 3; iter++) {
+          for (let k = 1; k < m - 1; k++) {
+            const prev = line[k - 1];
+            const cur = line[k];
+            const next = line[k + 1];
+            const mid = snapGrid(((x[prev.group] + prev.offLo) + (x[next.group] + next.offLo)) / 2, grid);
+            const target = normZero(mid - cur.offLo);
+            const [lo, hi] = feasibleInterval(cur.group, x, bMin, bMax);
+            if (lo <= hi) x[cur.group] = normZero(Math.max(lo, Math.min(hi, target)));
+          }
+        }
+      }
+    }
+  };
+
+  const solvePartial = (strategy: SlackStrategy): Float64Array => {
+    const anchorOrig = groupOrig[anchorGroup];
     const subCenter = Number.isFinite(origSubMin) ? (origSubMin + origSubMax) / 2 : (origDocMin + origDocMax) / 2;
 
     let dMinSubMax = -Infinity;
@@ -1283,7 +1606,7 @@ export function compact1D(
         }
       }
       if (!ok) continue;
-      // Preserve tightest achieved subset bounds when relaxing slack
+
       let seedSubLo = Infinity;
       let seedSubHi = -Infinity;
       for (let g = 0; g < numGroups; g++) {
@@ -1303,11 +1626,34 @@ export function compact1D(
           if (bHi >= seed[g] && bHi < rHi[g]) rHi[g] = bHi;
         }
       }
-      candidates.push(
-        relaxSlack(seed, rLo, rHi, adj, revAdj, wirePulls, groupLeftExt, groupRightExt, subCenter, grid, anchorGroup),
-      );
+
+      if (strategy === "min" || strategy === "max") {
+        candidates.push(new Float64Array(seed));
+      } else {
+        const mode = strategy === "align" ? "median" : strategy;
+        const relaxed = relaxSlack(
+          seed,
+          rLo,
+          rHi,
+          adj,
+          revAdj,
+          wirePulls,
+          groupLeftExt,
+          groupRightExt,
+          groupOrig,
+          subCenter,
+          grid,
+          anchorGroup,
+          mode,
+        );
+        if (strategy === "align") {
+          applyAlignmentSnap(relaxed, rLo, rHi);
+          applySpacingEqualize(relaxed, rLo, rHi);
+        }
+        candidates.push(relaxed);
+      }
     }
-    if (candidates.length === 0) return null;
+    if (candidates.length === 0) return new Float64Array(groupOrig);
 
     const scoreCandidate = (x: Float64Array) => {
       let dLo = Infinity;
@@ -1345,47 +1691,199 @@ export function compact1D(
     return best;
   };
 
-  let sol: Float64Array | null = null;
-  if (hasRepairEdges) {
-    const gDesired = buildAdjacency(true);
-    sol = solveWithGraph(gDesired.adj, gDesired.revAdj);
-  }
-  if (!sol) {
-    const gClamped = buildAdjacency(false);
-    sol = solveWithGraph(gClamped.adj, gClamped.revAdj);
-  }
-  if (!sol) return structuredClone(doc);
+  const solveStrategy = (strategy: SlackStrategy): Float64Array => {
+    if (anchorGroup >= 0) return solvePartial(strategy);
 
-  // --- 6. Apply solved group coordinates to a fresh deep clone of `doc` ---
-  const out = structuredClone(doc);
-  for (let ci = 0; ci < out.components.length; ci++) {
-    const g = varGroup(compVars[ci]);
-    const val = normZero(sol[g] + varOff(compVars[ci]));
-    if (isX) out.components[ci].x = val;
-    else out.components[ci].y = val;
-  }
-  for (let ti = 0; ti < out.texts.length; ti++) {
-    const g = varGroup(textVars[ti]);
-    const val = normZero(sol[g] + varOff(textVars[ti]));
-    if (isX) out.texts[ti].x = val;
-    else out.texts[ti].y = val;
-  }
-  for (let wi = 0; wi < out.wires.length; wi++) {
-    const pts = out.wires[wi].points;
-    for (let k = 0; k < pts.length; k++) {
-      const g = varGroup(vtxVars[wi][k]);
-      const val = normZero(sol[g] + varOff(vtxVars[wi][k]));
-      if (isX) pts[k].x = val;
-      else pts[k].y = val;
+    if (strategy === "min") return new Float64Array(dMin);
+    if (strategy === "max") return new Float64Array(dMax);
+
+    const centroid = (origDocMin + minSpanMax) / 2;
+    const mode = strategy === "align" ? "median" : strategy;
+    const xA = relaxSlack(
+      dMin,
+      dMin,
+      dMax,
+      adj,
+      revAdj,
+      wirePulls,
+      groupLeftExt,
+      groupRightExt,
+      groupOrig,
+      centroid,
+      grid,
+      -1,
+      mode,
+    );
+    const xB = relaxSlack(
+      dMax,
+      dMin,
+      dMax,
+      adj,
+      revAdj,
+      wirePulls,
+      groupLeftExt,
+      groupRightExt,
+      groupOrig,
+      centroid,
+      grid,
+      -1,
+      mode,
+    );
+    const chosen = evalWireLength(xB, wirePulls) < evalWireLength(xA, wirePulls) ? xB : xA;
+    if (strategy === "align") {
+      applyAlignmentSnap(chosen, dMin, dMax);
+      applySpacingEqualize(chosen, dMin, dMax);
     }
-  }
-  return out;
+    return chosen;
+  };
+
+  const setGroupCoord = (targetDoc: SchematicDocument, g: number, val: number): void => {
+    const comps = groupCompRefs[g];
+    for (let i = 0; i < comps.length; i++) {
+      const r = comps[i];
+      const v = normZero(val + r.off);
+      if (isX) targetDoc.components[r.compIdx].x = v;
+      else targetDoc.components[r.compIdx].y = v;
+    }
+    const texts = groupTextRefs[g];
+    for (let i = 0; i < texts.length; i++) {
+      const r = texts[i];
+      const v = normZero(val + r.off);
+      if (isX) targetDoc.texts[r.textIdx].x = v;
+      else targetDoc.texts[r.textIdx].y = v;
+    }
+    const vtxs = groupVtxRefs[g];
+    for (let i = 0; i < vtxs.length; i++) {
+      const r = vtxs[i];
+      const v = normZero(val + r.off);
+      if (isX) targetDoc.wires[r.wireIdx].points[r.ptIdx].x = v;
+      else targetDoc.wires[r.wireIdx].points[r.ptIdx].y = v;
+    }
+  };
+
+  const applyTo = (targetDoc: SchematicDocument, sol: Float64Array): void => {
+    for (let g = 0; g < numGroups; g++) setGroupCoord(targetDoc, g, sol[g]);
+  };
+
+  const materialize = (sol: Float64Array): SchematicDocument => {
+    const out = structuredClone(doc);
+    applyTo(out, sol);
+    return out;
+  };
+
+  const groupsAffectingEvents = (targetDoc: SchematicDocument, events: readonly Point[]): Set<number> => {
+    const out = new Set<number>();
+    if (events.length === 0) return out;
+    const byP = new Map<number, number[]>();
+    const ptKeys = new Set<string>();
+    for (const e of events) {
+      ptKeys.add(`${e.x},${e.y}`);
+      const p = isX ? e.x : e.y;
+      const s = isX ? e.y : e.x;
+      const list = byP.get(p);
+      if (list) list.push(s);
+      else byP.set(p, [s]);
+    }
+    for (let wi = 0; wi < targetDoc.wires.length; wi++) {
+      const pts = targetDoc.wires[wi].points;
+      for (let k = 0; k < pts.length; k++) {
+        const pt = pts[k];
+        if (ptKeys.has(`${pt.x},${pt.y}`)) {
+          out.add(vtxGroupIdx[wi][k]);
+        }
+        if (k + 1 < pts.length) {
+          const q = pts[k + 1];
+          const pa = isX ? pt.x : pt.y;
+          const pb = isX ? q.x : q.y;
+          if (pa === pb) {
+            const evS = byP.get(pa);
+            if (evS) {
+              const sLo = Math.min(isX ? pt.y : pt.x, isX ? q.y : q.x);
+              const sHi = Math.max(isX ? pt.y : pt.x, isX ? q.y : q.x);
+              for (let j = 0; j < evS.length; j++) {
+                if (evS[j] >= sLo && evS[j] <= sHi) {
+                  out.add(vtxGroupIdx[wi][k]);
+                  break;
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    return out;
+  };
+
+  const solveWithExtraEdges = (
+    extraEdges: readonly { from: number; to: number; w: number }[],
+    seed?: Float64Array,
+  ): Float64Array | null => {
+    if (extraEdges.length === 0) return seed ? new Float64Array(seed) : new Float64Array(dMin);
+    const augAdj: { to: number; w: number }[][] = adj.map((edges) => edges.slice());
+    for (const e of extraEdges) {
+      if (e.from !== e.to && e.from >= 0 && e.to >= 0 && e.from < numGroups && e.to < numGroups) {
+        augAdj[e.from].push({ to: e.to, w: e.w });
+      }
+    }
+    const init = seed ? new Float64Array(seed) : new Float64Array(dMin);
+    const sol = spfaForward(numGroups, init, augAdj, orderAsc);
+    if (!sol) return null;
+    if (anchorGroup >= 0 && sol[anchorGroup] !== groupOrig[anchorGroup]) return null;
+    return sol;
+  };
+
+  return {
+    axis,
+    grid,
+    compGapPx,
+    numGroups,
+    anchorGroup,
+    groupOrig,
+    groupLeftExt,
+    groupRightExt,
+    groupSubLeftExt,
+    groupSubRightExt,
+    origDocMin,
+    origDocMax,
+    adj,
+    revAdj,
+    dMin,
+    dMax,
+    wideMin,
+    wideMax,
+    compInfos,
+    compGroupSet,
+    feasibleInterval,
+    solveStrategy,
+    setGroupCoord,
+    applyTo,
+    materialize,
+    groupsAffectingEvents,
+    solveWithExtraEdges,
+  };
 }
 
 /**
- * Pull groups with positive slack toward the median of their connected wire neighbors
- * (or the schematic centroid if unconnected), staying strictly within `[dMin, dMax]`
- * and obeying all difference constraints.
+ * Perform one 1-D compaction pass along `axis` ("x" or "y"), returning a new SchematicDocument.
+ * Never mutates the input `doc`.
+ */
+export function compact1D(
+  doc: SchematicDocument,
+  axis: Axis,
+  opts: Required<Pick<PackOptions, "componentGap" | "wireGap">> & { ids?: ReadonlySet<string> },
+  strategy: SlackStrategy = "median",
+): SchematicDocument {
+  const model = buildCompactionModel(doc, axis, opts);
+  if (!model) return structuredClone(doc);
+  return model.materialize(model.solveStrategy(strategy));
+}
+
+/**
+ * Pull groups with positive slack toward a strategy-specific target:
+ *  - `"median"`: median of connected wire neighbors (or schematic centroid if unconnected)
+ *  - `"centroid"`: schematic centroid (blended with neighbor mean)
+ *  - `"keep"`: original coordinate `groupOrig[g]`
+ * stays strictly within `[dMin, dMax]` and obeys all difference constraints.
  */
 function relaxSlack(
   seed: Float64Array,
@@ -1396,9 +1894,11 @@ function relaxSlack(
   wirePulls: readonly WirePullEdge[],
   groupLeftExt: Float64Array,
   groupRightExt: Float64Array,
+  groupOrig: Float64Array,
   centroid: number,
   grid: number,
   anchorGroup: number,
+  mode: "median" | "centroid" | "keep",
 ): Float64Array {
   const n = seed.length;
   const x = new Float64Array(seed);
@@ -1432,18 +1932,33 @@ function relaxSlack(
     }
     if (lo >= hi) return;
 
-    const nbrs = pullNeighbors[g];
     let ideal: number;
-    if (nbrs.length > 0) {
-      targets.length = 0;
-      for (let i = 0; i < nbrs.length; i++) {
-        targets.push(x[nbrs[i].other] + nbrs[i].shift);
-      }
-      ideal = medianOf(targets);
-    } else {
-      // Unconnected component or text note: pull toward schematic centroid
+    if (mode === "keep") {
+      ideal = groupOrig[g];
+    } else if (mode === "centroid") {
       const halfSpan = (groupLeftExt[g] + groupRightExt[g]) / 2;
-      ideal = centroid - halfSpan;
+      const centTarget = centroid - halfSpan;
+      const nbrs = pullNeighbors[g];
+      if (nbrs.length > 0) {
+        let sum = 0;
+        for (let i = 0; i < nbrs.length; i++) sum += x[nbrs[i].other] + nbrs[i].shift;
+        ideal = (centTarget + sum / nbrs.length) / 2;
+      } else {
+        ideal = centTarget;
+      }
+    } else {
+      const nbrs = pullNeighbors[g];
+      if (nbrs.length > 0) {
+        targets.length = 0;
+        for (let i = 0; i < nbrs.length; i++) {
+          targets.push(x[nbrs[i].other] + nbrs[i].shift);
+        }
+        ideal = medianOf(targets);
+      } else {
+        // Unconnected component or text note: pull toward schematic centroid
+        const halfSpan = (groupLeftExt[g] + groupRightExt[g]) / 2;
+        ideal = centroid - halfSpan;
+      }
     }
 
     const snapped = snapGrid(ideal, grid);

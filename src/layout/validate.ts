@@ -223,6 +223,12 @@ interface ParallelPairRecord {
 /** Precomputed baseline information about the `before` document for fast repeated validation. */
 export interface ValidationBaseline {
   before: SchematicDocument;
+  /**
+   * Violations the INPUT already has (e.g. a hand-drawn label touching a neighbouring body).
+   * Packing is judged only on what it introduces: these are filtered out of every check, so a
+   * single pre-existing imperfection doesn't make the whole schematic un-packable.
+   */
+  preexisting: ReadonlySet<string>;
   grid: number;
   componentGap: number;
   wireGap: number;
@@ -543,7 +549,8 @@ export function prepareValidationBaseline(
     }
   }
 
-  return {
+  const baseline: ValidationBaseline = {
+    preexisting: new Set<string>(),
     before,
     grid,
     componentGap,
@@ -573,6 +580,9 @@ export function prepareValidationBaseline(
     beforeTightParallelDist,
     beforeTightSegBodyDist,
   };
+  // What does the input violate on its own? (computed against itself, with nothing filtered)
+  baseline.preexisting = new Set(validateAgainstBaseline(baseline, before));
+  return baseline;
 }
 
 /** Validate `after` against a precomputed `ValidationBaseline`. Returns list of violation messages. */
@@ -1047,7 +1057,7 @@ export function validateAgainstBaseline(
     }
   }
 
-  return violations;
+  return base.preexisting.size > 0 ? violations.filter((v) => !base.preexisting.has(v)) : violations;
 }
 
 /**
