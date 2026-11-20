@@ -58,6 +58,11 @@ export function showSettingsDialog(): void {
   toggle("sweepOrphanWires", "Delete orphaned wires", "Deleting a component also removes wires left dangling from its pins.");
   toggle("showGuides", "Alignment & spacing guides", "While moving a part, show guides to other parts of the same type and size.");
   toggle("snapToGuides", "Snap to guides", "Pull the part onto an alignment / equal-spacing guide when it is close.");
+  toggle(
+    "advancedRerouteSearch",
+    "Advanced re-routing search (experimental)",
+    "When a part moves, choose its wires' new routes with a deeper, chess-engine style search (iterative deepening, pruning, move ordering, and moving crossed neighbours too). Finds fewer crossings when many wires move; uses up to 25 ms per move step.",
+  );
 
   section("Canvas");
   toggle("showGrid", "Show grid", "Dotted 10-unit grid (also toggled with G).");

@@ -15,6 +15,7 @@ import { GRID } from "../model/component-def";
 import { componentBounds, SegmentIndex, worldPins, type Rect } from "../model/geometry";
 import { normalizeWirePoints, pinExitVector, stretchWireStart } from "./wire-utils";
 import { buildNetlist } from "../io/netlist";
+import { getSettings } from "../model/settings";
 
 const key = (p: Point) => `${p.x},${p.y}`;
 
@@ -447,6 +448,13 @@ export interface RepairOptions {
   before?: Map<string, Point[]>;
   /** Internal: recursion depth while following a chain of detached branches. */
   depth?: number;
+  /**
+   * Joint search used by `improve`: "classic" (bounded branch-and-bound) or "advanced"
+   * (iterative deepening, futility pruning, move ordering, quiescence). Default: the setting.
+   */
+  search?: "classic" | "advanced";
+  /** Wall-clock budget of the advanced search in ms (default 25 — fits a drag frame). */
+  timeBudgetMs?: number;
 }
 
 
@@ -497,6 +505,10 @@ function repairWiresCore(
   //   Σ route cost (crossings ≫ bends > length)  +  crossings between the chosen routes,
   // rejecting any pair that would touch (an accidental connection between different nets).
   const n = work.length;
+  if ((opts.search ?? (getSettings().advancedRerouteSearch ? "advanced" : "classic")) === "advanced") {
+    advancedJointRepair(doc, work, nets, allowed, ignoreFor, opts.timeBudgetMs ?? 25);
+    return;
+  }
   const K = n <= 2 ? 12 : n <= 3 ? 8 : n <= 4 ? 5 : n <= 6 ? 3 : 1;
   const g = full.grid;
   const workSet = new Set(work);
@@ -885,4 +897,215 @@ export function repairWires(
 /** Move a path's start to `p`, keeping the rest of it (adds a bend if needed). */
 function stretchLeg(path: readonly Point[], p: Point): Point[] {
   return stretchWireStart(path, p);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Advanced joint search (opt-in: Settings → "Advanced re-routing search")
+// ---------------------------------------------------------------------------------------------
+//
+// The same problem as the classic search — pick one candidate route per displaced wire,
+// minimising Σ route cost + pairwise crossings (+ a huge penalty per short) — solved with
+// techniques borrowed from chess engines:
+//
+//   • Iterative deepening over the candidate breadth (1, 2, 4, 8 … routes per wire) under a
+//     wall-clock budget: always returns the best arrangement found so far (anytime).
+//   • Principal-variation move ordering: each wire first tries the route it had in the best
+//     arrangement of the previous iteration; the rest are ordered by their incremental cost
+//     against the routes already picked (a static evaluation).
+//   • Futility pruning with an admissible bound: a partial arrangement is cut as soon as its cost
+//     plus the cheapest possible cost of every wire still to place cannot beat the best so far.
+//   • Variable ordering ("most constrained first"): wires that interact with the most others are
+//     placed first, so conflicts — and therefore cut-offs — show up early.
+//   • Transposition table: pairwise costs are cached across nodes and iterations.
+//   • Quiescence stage: after the search, wires that were NOT displaced but now cross the new
+//     routes are "unquiet"; up to a few of them (those without branches, so no junction moves)
+//     are added and the search is re-run, so a cheap detour of a neighbour can remove a crossing.
+
+export interface AdvancedSearchStats {
+  iterations: number;
+  nodes: number;
+  breadth: number;
+  quiescenceWires: number;
+}
+
+let lastAdvancedStats: AdvancedSearchStats | null = null;
+/** Statistics of the most recent advanced search (for tests / diagnostics). */
+export function advancedSearchStats(): AdvancedSearchStats | null {
+  return lastAdvancedStats;
+}
+
+function boundsOfCands(list: { pts: Point[] }[]): { x0: number; y0: number; x1: number; y1: number } {
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const c of list) for (const p of c.pts) {
+    if (p.x < x0) x0 = p.x;
+    if (p.y < y0) y0 = p.y;
+    if (p.x > x1) x1 = p.x;
+    if (p.y > y1) y1 = p.y;
+  }
+  return { x0, y0, x1, y1 };
+}
+
+function advancedJointRepair(
+  doc: SchematicDocument,
+  work0: string[],
+  nets: Map<string, Set<string>>,
+  allowed: ReadonlySet<string> | undefined,
+  ignoreFor: (id: string) => Set<string>,
+  budgetMs: number,
+): void {
+  const t0 = performance.now();
+  const deadline = t0 + budgetMs;
+  const g = doc.grid || GRID;
+  type Cand = { pts: Point[]; cost: number };
+
+  const buildCands = (work: string[], kMax: number): Cand[][] => {
+    const base = new RouteObstacles(doc, new Set(work));
+    return work.map((id) => {
+      const w = doc.wires.find((x) => x.id === id)!;
+      const self = new Set([id]);
+      const list: Cand[] = [];
+      if (!base.routeIsBad(w.points, ignoreFor(id), allowed)) {
+        list.push({ pts: w.points, cost: base.routeCost(w.points, self) - 2 * g });
+      }
+      // generation is the expensive part: shrink the breadth if time is running out
+      const k = performance.now() > t0 + budgetMs * 0.5 ? Math.min(3, kMax) : kMax;
+      for (const pts of safeRouteCandidates(base, w.points[0], w.points[w.points.length - 1], {
+        self, sameNet: nets.get(id), allowed,
+      }, k)) list.push({ pts, cost: base.routeCost(pts, self) });
+      if (list.length === 0) list.push({ pts: w.points, cost: 1e9 });
+      return list.sort((a, b) => a.cost - b.cost);
+    });
+  };
+
+  /** Run the iterative-deepening search over `work` with candidate lists `cands`. */
+  const solve = (work: string[], cands: Cand[][]) => {
+    const n = work.length;
+    // variable ordering: most interacting wires first
+    const bb = cands.map(boundsOfCands);
+    const degree = bb.map((a, i) =>
+      bb.reduce((d, b, j) => d + (i !== j && a.x0 <= b.x1 && b.x0 <= a.x1 && a.y0 <= b.y1 && b.y0 <= a.y1 ? 1 : 0), 0));
+    const order = work.map((_, i) => i).sort((a, b) => degree[b] - degree[a] || cands[a].length - cands[b].length);
+    const sameNetPair = (i: number, j: number) => nets.get(work[i])?.has(work[j]) ?? false;
+    const tt = new Map<number, number>(); // transposition table of pair costs
+    const pairCost = (i: number, c: number, j: number, d: number) => {
+      const key = ((i * 64 + c) * 1024 + j) * 64 + d;
+      let v = tt.get(key);
+      if (v === undefined) {
+        const P = cands[i][c].pts, Q = cands[j][d].pts;
+        v = !sameNetPair(i, j) && pathsTouch(P, Q) ? SHORT_PENALTY : pathCrossings(P, Q) * 60 * g;
+        tt.set(key, v);
+      }
+      return v;
+    };
+    // initial solution: everyone's cheapest route (a valid arrangement → first bound)
+    let best: number[] = work.map(() => 0);
+    let bestCost = 0;
+    for (let a = 0; a < n; a++) {
+      bestCost += cands[a][0].cost;
+      for (let b = 0; b < a; b++) bestCost += pairCost(a, 0, b, 0);
+    }
+    const maxBreadth = Math.max(...cands.map((l) => l.length));
+    let nodes = 0;
+    let iterations = 0;
+    let breadth = 1;
+    let timeUp = false;
+    const pick = new Array<number>(n).fill(-1);
+    for (breadth = 1; ; breadth = Math.min(maxBreadth, breadth * 2)) {
+      iterations++;
+      // admissible lower bound of the wires still to place (positions in `order`)
+      const minCost = order.map((i) => Math.min(...cands[i].slice(0, breadth).map((c) => c.cost)));
+      const lbSuffix = new Array<number>(n + 1).fill(0);
+      for (let p = n - 1; p >= 0; p--) lbSuffix[p] = lbSuffix[p + 1] + minCost[p];
+      const pv = best.slice();
+      const search = (pos: number, acc: number) => {
+        if ((++nodes & 255) === 0 && performance.now() > deadline) timeUp = true;
+        if (timeUp) return;
+        if (acc + lbSuffix[pos] >= bestCost) return; // futility cut-off
+        if (pos === n) {
+          bestCost = acc;
+          best = pick.slice();
+          return;
+        }
+        const i = order[pos];
+        const lim = Math.min(breadth, cands[i].length);
+        // move ordering: PV route first, then by incremental cost against picked routes
+        const opts: { c: number; inc: number }[] = [];
+        for (let c = 0; c < lim; c++) {
+          let inc = cands[i][c].cost;
+          for (let q = 0; q < pos; q++) inc += pairCost(i, c, order[q], pick[order[q]]);
+          opts.push({ c, inc });
+        }
+        opts.sort((a, b) => (a.c === pv[i] ? -1 : b.c === pv[i] ? 1 : a.inc - b.inc));
+        for (const o of opts) {
+          if (acc + o.inc + lbSuffix[pos + 1] >= bestCost) continue;
+          pick[i] = o.c;
+          search(pos + 1, acc + o.inc);
+          if (timeUp) break;
+        }
+        pick[i] = -1;
+      };
+      search(0, 0);
+      if (timeUp || breadth >= maxBreadth) break;
+    }
+    return { best, bestCost, nodes, iterations, breadth };
+  };
+
+  let work = work0.slice();
+  const kMax = work.length <= 2 ? 16 : work.length <= 4 ? 12 : work.length <= 8 ? 8 : 5;
+  let cands = buildCands(work, kMax);
+  let r = solve(work, cands);
+  const apply = (w: string[], c: Cand[][], b: number[]) =>
+    b.forEach((ci, i) => (doc.wires.find((x) => x.id === w[i])!.points = c[i][ci].pts));
+  apply(work, cands, r.best);
+
+  // Quiescence: neighbours that now cross the new routes get one chance to move too.
+  let quiet = 0;
+  if (performance.now() < deadline - budgetMs * 0.2) {
+    const workSet = new Set(work);
+    const chosen = work.map((id) => doc.wires.find((x) => x.id === id)!.points);
+    const unquiet: { id: string; hits: number }[] = [];
+    for (const w of doc.wires) {
+      if (workSet.has(w.id) || w.points.length < 2) continue;
+      let hits = 0;
+      for (const P of chosen) hits += pathCrossings(P, w.points);
+      if (hits === 0) continue;
+      // only wires without branches on them (re-routing never moves a junction)
+      const hasBranch = doc.wires.some((o) => o.id !== w.id && o.points.some((p, k) =>
+        (k === 0 || k === o.points.length - 1) && onPathInterior(w.points, p)));
+      if (!hasBranch) unquiet.push({ id: w.id, hits });
+    }
+    unquiet.sort((a, b) => b.hits - a.hits);
+    const extra = unquiet.slice(0, 4).map((u) => u.id);
+    if (extra.length > 0) {
+      const before = new Map(doc.wires.map((w) => [w.id, w.points]));
+      const costOf = (ids: string[]) => {
+        const obs = new RouteObstacles(doc, new Set(ids));
+        let c = 0;
+        const pts = ids.map((id) => doc.wires.find((x) => x.id === id)!.points);
+        ids.forEach((id, i) => (c += obs.routeCost(pts[i], new Set([id]))));
+        for (let i = 0; i < pts.length; i++) for (let j = 0; j < i; j++) c += pathCrossings(pts[i], pts[j]) * 60 * g;
+        return c;
+      };
+      const all = [...work, ...extra];
+      const c0 = costOf(all);
+      const cands2 = buildCands(all, 4);
+      const r2 = solve(all, cands2);
+      if (r2.bestCost < c0 - 1e-6) {
+        apply(all, cands2, r2.best);
+        quiet = extra.length;
+        work = all;
+        cands = cands2;
+        r = { ...r2, nodes: r.nodes + r2.nodes, iterations: r.iterations + r2.iterations };
+      } else {
+        for (const w of doc.wires) w.points = before.get(w.id) ?? w.points;
+      }
+    }
+  }
+  lastAdvancedStats = { iterations: r.iterations, nodes: r.nodes, breadth: r.breadth, quiescenceWires: quiet };
+}
+
+function onPathInterior(path: readonly Point[], p: Point): boolean {
+  const n = path.length;
+  if ((path[0].x === p.x && path[0].y === p.y) || (path[n - 1].x === p.x && path[n - 1].y === p.y)) return false;
+  return onPath(path, p);
 }

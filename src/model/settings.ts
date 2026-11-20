@@ -14,6 +14,11 @@ export interface Settings {
   showGrid: boolean;
   /** Show the properties panel on the right. */
   showPropertiesPanel: boolean;
+  /**
+   * Re-route displaced wires with the advanced, chess-engine style search (iterative deepening,
+   * futility pruning, move ordering, quiescence) instead of the classic one.
+   */
+  advancedRerouteSearch: boolean;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -24,6 +29,7 @@ export const DEFAULT_SETTINGS: Settings = {
   showUnconnectedPins: true,
   showGrid: true,
   showPropertiesPanel: true,
+  advancedRerouteSearch: false,
 };
 
 const KEY = "digischem.settings.v1";
