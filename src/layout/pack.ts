@@ -23,7 +23,7 @@
  *     partial-pack subset area improvement occurred), returns an unmodified deep copy.
  */
 import type { SchematicDocument } from "../model/types";
-import { documentBounds } from "../model/geometry";
+import { componentBounds, documentBounds } from "../model/geometry";
 import {
   buildCompactionModel,
   totalWireLength,
@@ -59,8 +59,15 @@ export interface PackOptions {
   maxPasses?: number;
   /** Optional quality-weight overrides (`componentGap` defaults to `PackOptions.componentGap`). */
   qualityWeights?: QualityWeights;
-  /** Soft wall-clock time budget in milliseconds for multi-start + local search (default 1500). */
+  /**
+   * Soft wall-clock time budget in milliseconds (default grows with size: 1500 ms + 25 ms per
+   * component, capped at 4000 ms; the beam adds up to half of that again).
+   */
   timeBudgetMs?: number;
+  /** Beam width of the search (default 4; 0 = greedy pipeline only). */
+  beamWidth?: number;
+  /** Keep the layout's centre of mass where it was (default true). */
+  preserveCenter?: boolean;
 }
 
 export interface PackResult {
@@ -70,6 +77,11 @@ export interface PackResult {
   qualityBefore: QualityBreakdown;
   qualityAfter: QualityBreakdown;
   passes: number;
+  /** Area-weighted centre of mass of the components before / after packing. */
+  centerBefore: { x: number; y: number } | null;
+  centerAfter: { x: number; y: number } | null;
+  /** Beam statistics (depth reached, states expanded). */
+  beam: { depth: number; expanded: number };
 }
 
 const EPS = 1e-6;
@@ -447,10 +459,8 @@ function polishLocalSearch1D(
     if (eventGroups.has(g) || compGroupSet.has(g)) priorityGroups.push(g);
     else otherGroups.push(g);
   }
-  const activeGroups =
-    priorityGroups.length + otherGroups.length <= 160
-      ? [...priorityGroups, ...otherGroups]
-      : priorityGroups.slice(0, 160);
+  // Priority groups first; every group gets a turn while time remains (the sweep is deadline-bounded).
+  const activeGroups = [...priorityGroups, ...otherGroups];
   if (activeGroups.length === 0) return curQ;
 
   let bestQ = curQ;
@@ -576,31 +586,27 @@ function polishClutterSpread(
   const eventGroupSet = model.groupsAffectingEvents(workDoc, events);
   if (eventGroupSet.size < 2) return curQ;
 
-  const groupEventCoords = new Map<number, { p: number; sMin: number; sMax: number }>();
-  for (const g of eventGroupSet) {
-    // Find events lying on this group's current primary coordinate (via workDoc)
-    const testSet = new Set<number>([g]);
-    let pSum = 0;
-    let count = 0;
-    let sMin = Infinity;
-    let sMax = -Infinity;
-    for (const e of events) {
-      const grp = model.groupsAffectingEvents(workDoc, [e]);
-      if (grp.has(g)) {
-        const ep = isX ? e.x : e.y;
-        const es = isX ? e.y : e.x;
-        pSum += ep;
-        count++;
-        if (es < sMin) sMin = es;
-        if (es > sMax) sMax = es;
-      }
-    }
-    if (count > 0 && testSet.size > 0) {
-      groupEventCoords.set(g, { p: pSum / count, sMin, sMax });
+  // Per group: mean primary coordinate and orthogonal extent of the events it carries.
+  // (Each event's groups are computed ONCE — the per-group × per-event rescan was O(G·E) doc scans.)
+  const acc = new Map<number, { pSum: number; count: number; sMin: number; sMax: number }>();
+  for (const e of events) {
+    const ep = isX ? e.x : e.y;
+    const es = isX ? e.y : e.x;
+    for (const g of model.groupsAffectingEvents(workDoc, [e])) {
+      if (!eventGroupSet.has(g)) continue;
+      const a = acc.get(g);
+      if (a) {
+        a.pSum += ep;
+        a.count++;
+        if (es < a.sMin) a.sMin = es;
+        if (es > a.sMax) a.sMax = es;
+      } else acc.set(g, { pSum: ep, count: 1, sMin: es, sMax: es });
     }
   }
+  const groupEventCoords = new Map<number, { p: number; sMin: number; sMax: number }>();
+  for (const [g, a] of acc) groupEventCoords.set(g, { p: a.pSum / a.count, sMin: a.sMin, sMax: a.sMax });
 
-  const ordered = [...groupEventCoords.entries()].sort((a, b) => a[1].p - b[1].p);
+  const ordered = [...groupEventCoords.entries()].sort((a, b) => a[1].p - b[1].p || a[0] - b[0]);
   if (ordered.length < 2) return curQ;
 
   let bestQ = curQ;
@@ -645,6 +651,55 @@ function polishClutterSpread(
   return bestQ;
 }
 
+/**
+ * One quality-polish round along `axis` (clutter spreading, same-type alignment snaps, gap
+ * equalisation, single-group local search inside each group's feasible interval).
+ * Returns the validated improved state, or null if nothing improved.
+ */
+function polishRound(
+  best: ScheduleOutcome,
+  axis: Axis,
+  baseline: ValidationBaseline,
+  compOpts: { componentGap: number; wireGap: number; ids?: ReadonlySet<string> },
+  qWeights: QualityWeights,
+  deadline: number,
+  mode: "full" | "cheap" = "full",
+): ScheduleOutcome | null {
+  // Maximum legal span along `axis` under Rule 9 (areaAfter <= areaBefore)
+  const curB = documentBounds(best.doc);
+  const otherSpan = curB ? (axis === "x" ? curB.h : curB.w) : 0;
+  const maxSpan = otherSpan > 0 ? Math.floor(baseline.areaBefore / otherSpan) : undefined;
+
+  const model = buildCompactionModel(best.doc, axis, { ...compOpts, maxSpan });
+  if (!model) return null;
+
+  const workDoc = structuredClone(best.doc);
+  const x = new Float64Array(model.groupOrig);
+  const bMin = new Float64Array(model.wideMin);
+  const bMax = new Float64Array(model.wideMax);
+  const clamp = () => {
+    for (let g = 0; g < model.numGroups; g++) {
+      if (x[g] < bMin[g]) bMin[g] = x[g];
+      if (x[g] > bMax[g]) bMax[g] = x[g];
+    }
+  };
+  clamp();
+  let workQ = best.metrics.quality;
+  if (mode === "full") {
+    workQ = polishClutterSpread(model, workDoc, x, baseline, qWeights, workQ, deadline);
+    clamp(); // clutter spreading may have shifted coordinates slightly
+  }
+  workQ = polishAlignmentSnap(model, workDoc, x, bMin, bMax, baseline, qWeights, workQ, deadline);
+  workQ = polishSpacingEqualize(model, workDoc, x, bMin, bMax, baseline, qWeights, workQ, deadline);
+  if (mode === "full") {
+    workQ = polishLocalSearch1D(model, workDoc, x, bMin, bMax, baseline, qWeights, workQ, deadline);
+  }
+
+  if (!(workQ.total < best.metrics.quality.total - EPS)) return null;
+  if (validateAgainstBaseline(baseline, workDoc).length > 0) return null;
+  return { doc: workDoc, metrics: measureMetrics(workDoc, qWeights, compOpts.ids), passes: best.passes + 1 };
+}
+
 /** Run alternating Y/X quality polish rounds (slack exploitation + local search) within `deadline`. */
 function runQualityPolish(
   start: ScheduleOutcome,
@@ -656,61 +711,307 @@ function runQualityPolish(
   let best = start;
   const axes: Axis[] = ["y", "x", "y", "x", "y", "x"];
   let staleAxes = 0;
-
-  for (let round = 0; round < axes.length; round++) {
+  for (const axis of axes) {
     if (performance.now() > deadline) break;
-    const axis = axes[round];
+    const next = polishRound(best, axis, baseline, compOpts, qWeights, deadline);
+    if (next) {
+      best = next;
+      staleAxes = 0;
+    } else if (++staleAxes >= 2) break;
+  }
+  return best;
+}
 
-    // Compute maximum legal span along `axis` under Rule 9 (areaAfter <= areaBefore)
-    const curB = documentBounds(best.doc);
-    const otherSpan = curB ? (axis === "x" ? curB.h : curB.w) : 0;
-    const maxSpan = otherSpan > 0 ? Math.floor(baseline.areaBefore / otherSpan) : undefined;
+// ---------------------------------------------------------------------------------------------
+// Beam search
+// ---------------------------------------------------------------------------------------------
 
-    const model = buildCompactionModel(best.doc, axis, { ...compOpts, maxSpan });
-    if (!model) {
-      staleAxes++;
-      if (staleAxes >= 2) break;
-      continue;
+
+/** -1 if a is better, 1 if b is better, 0 if tied (same order as `isStrictlyBetter`). */
+function cmpMetrics(a: Metrics, b: Metrics): number {
+  if (isStrictlyBetter(a, b)) return -1;
+  if (isStrictlyBetter(b, a)) return 1;
+  return 0;
+}
+
+/** Position fingerprint of a layout (components, text notes and wire vertices). */
+function layoutKey(doc: SchematicDocument): string {
+  let h1 = 0x811c9dc5 | 0;
+  let h2 = 0x01000193 | 0;
+  const mix = (v: number) => {
+    h1 = Math.imul(h1 ^ v, 0x01000193);
+    h2 = Math.imul(h2 + v, 0x5bd1e995) ^ (h2 >>> 15);
+  };
+  for (const c of doc.components) {
+    mix(Math.round(c.x * 2));
+    mix(Math.round(c.y * 2));
+  }
+  for (const t of doc.texts) {
+    mix(Math.round(t.x * 2));
+    mix(Math.round(t.y * 2));
+  }
+  for (const w of doc.wires) for (const p of w.points) mix(Math.round(p.x * 2) * 31 + Math.round(p.y * 2));
+  return `${(h1 >>> 0).toString(36)}.${(h2 >>> 0).toString(36)}`;
+}
+
+const CHAIN_MOVES_PER_KIND = 6;
+
+/**
+ * Candidate chain moves along `model.axis`, as extra solver constraints `x[to] - x[from] >= w`:
+ *  - SEPARATE the groups carrying the closest pairs of crossings/junctions (declutter), and
+ *  - ALIGN near-miss pairs of same-type, same-size components onto one line (two opposite
+ *    edges = equality; the lower one is pushed up and drags its dependents along).
+ */
+function chainMoves(
+  model: CompactionModel,
+  doc: SchematicDocument,
+  qWeights: QualityWeights,
+  perKind: number,
+): { from: number; to: number; w: number }[][] {
+  const { grid, axis } = model;
+  const isX = axis === "x";
+  const x = model.groupOrig;
+  const moves: { score: number; edges: { from: number; to: number; w: number }[] }[] = [];
+
+  // 1) separation of close event pairs
+  const radiusCells = qWeights.clutterRadius ?? DEFAULT_QUALITY_WEIGHTS.clutterRadius;
+  const { events } = extractVisualEvents(doc);
+  if (events.length >= 2) {
+    const evGroups = model.groupsAffectingEvents(doc, events);
+    const acc = new Map<number, { p: number; s: number }>();
+    for (const e of events) {
+      for (const g of model.groupsAffectingEvents(doc, [e])) {
+        if (evGroups.has(g) && !acc.has(g)) acc.set(g, { p: isX ? e.x : e.y, s: isX ? e.y : e.x });
+      }
     }
-
-    const workDoc = structuredClone(best.doc);
-    const x = new Float64Array(model.groupOrig);
-    const bMin = new Float64Array(model.wideMin);
-    const bMax = new Float64Array(model.wideMax);
-    for (let g = 0; g < model.numGroups; g++) {
-      if (x[g] < bMin[g]) bMin[g] = x[g];
-      if (x[g] > bMax[g]) bMax[g] = x[g];
+    const ord = [...acc.entries()].sort((a, b) => a[1].p - b[1].p || a[0] - b[0]);
+    const sep: { score: number; edges: { from: number; to: number; w: number }[] }[] = [];
+    for (let i = 0; i + 1 < ord.length; i++) {
+      const [gA, a] = ord[i];
+      const [gB, b] = ord[i + 1];
+      const dp = b.p - a.p;
+      const ds = Math.abs(b.s - a.s);
+      if (dp <= 0 || dp >= radiusCells * grid || ds >= radiusCells * grid) continue;
+      const target = Math.min(radiusCells, Math.ceil(dp / grid) + 2) * grid;
+      sep.push({
+        score: Math.hypot(dp, ds),
+        edges: [{ from: gA, to: gB, w: ceilGrid(a.p - x[gA] - (b.p - x[gB]) + target, grid) }],
+      });
     }
+    sep.sort((a, b) => a.score - b.score);
+    moves.push(...sep.slice(0, perKind));
+  }
 
-    let workQ = best.metrics.quality;
-    workQ = polishClutterSpread(model, workDoc, x, baseline, qWeights, workQ, deadline);
-    // Re-clamp wide bounds if clutter spread shifted coordinates slightly
-    for (let g = 0; g < model.numGroups; g++) {
-      if (x[g] < bMin[g]) bMin[g] = x[g];
-      if (x[g] > bMax[g]) bMax[g] = x[g];
+  // 2) alignment of near-miss same-class pairs
+  const byClass = new Map<string, CompGroupInfo[]>();
+  for (const info of model.compInfos) {
+    const l = byClass.get(info.classKey);
+    if (l) l.push(info);
+    else byClass.set(info.classKey, [info]);
+  }
+  const al: { score: number; edges: { from: number; to: number; w: number }[] }[] = [];
+  for (const list of byClass.values()) {
+    if (list.length < 2) continue;
+    for (let i = 0; i < list.length; i++) {
+      for (let j = i + 1; j < list.length; j++) {
+        const A = list[i];
+        const B = list[j];
+        if (A.group === B.group) continue;
+        const pa = x[A.group] + A.offLo;
+        const pb = x[B.group] + B.offLo;
+        const dp = Math.abs(pa - pb);
+        if (dp < 0.5 || dp > 8 * grid) continue;
+        const ds = Math.abs(A.sLo - B.sLo);
+        // equality x[A]+offA = x[B]+offB as two opposite edges
+        al.push({
+          score: dp + ds * 0.25,
+          edges: [
+            { from: A.group, to: B.group, w: A.offLo - B.offLo },
+            { from: B.group, to: A.group, w: B.offLo - A.offLo },
+          ],
+        });
+      }
     }
-    workQ = polishAlignmentSnap(model, workDoc, x, bMin, bMax, baseline, qWeights, workQ, deadline);
-    workQ = polishSpacingEqualize(model, workDoc, x, bMin, bMax, baseline, qWeights, workQ, deadline);
-    workQ = polishLocalSearch1D(model, workDoc, x, bMin, bMax, baseline, qWeights, workQ, deadline);
+  }
+  al.sort((a, b) => a.score - b.score);
+  moves.push(...al.slice(0, perKind));
+  return moves.map((m) => m.edges);
+}
 
-    if (workQ.total < best.metrics.quality.total - EPS) {
-      const violations = validateAgainstBaseline(baseline, workDoc);
-      if (violations.length === 0) {
-        best = {
-          doc: workDoc,
-          metrics: measureMetrics(workDoc, qWeights, compOpts.ids),
-          passes: best.passes + 1,
-        };
-        staleAxes = 0;
-        continue;
+interface BeamCandidate extends ScheduleOutcome {
+  validated: boolean;
+}
+
+/**
+ * Beam search over packing moves. Each state in the beam is expanded with
+ *   - a 1-D compaction pass along X and along Y under every slack strategy, and
+ *   - a quality-polish round along X and along Y;
+ * the `width` best DISTINCT children survive to the next depth even when they are worse than
+ * their parent — that is what lets the search leave the local optima a greedy pass gets stuck
+ * in. The best state ever seen (seeds included, so the result is never worse than the seeds)
+ * is returned. Full rule validation runs only on children that would enter the beam.
+ */
+function runBeamSearch(
+  seeds: ScheduleOutcome[],
+  baseline: ValidationBaseline,
+  compOpts: { componentGap: number; wireGap: number; ids?: ReadonlySet<string> },
+  qWeights: QualityWeights,
+  deadline: number,
+  width: number,
+  maxDepth: number,
+): { best: ScheduleOutcome; finalists: ScheduleOutcome[]; depth: number; expanded: number } {
+  const seen = new Set<string>();
+  let beam: ScheduleOutcome[] = [];
+  let best = seeds[0];
+  for (const sd of seeds) {
+    const k = layoutKey(sd.doc);
+    if (seen.has(k)) continue;
+    seen.add(k);
+    beam.push(sd);
+    if (isStrictlyBetter(sd.metrics, best.metrics)) best = sd;
+  }
+  const timeUp = () => performance.now() > deadline;
+  let depth = 0;
+  let expanded = 0;
+  let sinceImprovement = 0;
+
+  for (; depth < maxDepth && beam.length > 0 && !timeUp(); depth++) {
+    const children: BeamCandidate[] = [];
+    const push = (st: ScheduleOutcome, cand: SchematicDocument) => {
+      const k = layoutKey(cand);
+      if (seen.has(k)) return;
+      seen.add(k);
+      if (!obeysAreaBaseline(cand, baseline)) return;
+      const m = measureMetrics(cand, qWeights, compOpts.ids);
+      if (!Number.isFinite(m.quality.total)) return;
+      children.push({ doc: cand, metrics: m, passes: st.passes + 1, validated: false });
+      expanded++;
+    };
+    // Chain moves: each adds one or two constraints and lets the solver push every dependent
+    // group along — moves a single-group local search cannot make, and that often look worse
+    // before they pay off (which is why the beam keeps them).
+    for (const st of beam) {
+      for (const axis of ["x", "y"] as Axis[]) {
+        if (timeUp()) break;
+        const model = buildCompactionModel(st.doc, axis, compOpts);
+        if (!model) continue;
+        for (const edges of chainMoves(model, st.doc, qWeights, CHAIN_MOVES_PER_KIND)) {
+          if (timeUp()) break;
+          const sol = model.solveWithExtraEdges(edges, model.groupOrig);
+          if (sol) push(st, model.materialize(sol));
+        }
+      }
+    }
+    // Cheap polish (alignment snap + gap equalisation) of every beam state.
+    for (const st of beam) {
+      for (const axis of ["y", "x"] as Axis[]) {
+        if (timeUp()) break;
+        const next = polishRound(st, axis, baseline, compOpts, qWeights, deadline, "cheap");
+        if (!next) continue;
+        const k = layoutKey(next.doc);
+        if (seen.has(k)) continue;
+        seen.add(k);
+        children.push({ ...next, validated: true });
+        expanded++;
       }
     }
 
-    staleAxes++;
-    if (staleAxes >= 2) break;
+    children.sort((a, b) => cmpMetrics(a.metrics, b.metrics));
+    const nextBeam: ScheduleOutcome[] = [];
+    for (const c of children) {
+      if (nextBeam.length >= width) break;
+      if (!c.validated && validateAgainstBaseline(baseline, c.doc).length > 0) continue;
+      nextBeam.push(c);
+    }
+    if (nextBeam.length === 0) break;
+    beam = nextBeam;
+    if (isStrictlyBetter(beam[0].metrics, best.metrics)) {
+      best = beam[0];
+      sinceImprovement = 0;
+    } else if (++sinceImprovement >= 3) {
+      break; // three depths without a new best: converged
+    }
   }
+  const finalists = [best, ...beam.filter((b) => b !== best)];
+  return { best, finalists, depth, expanded };
+}
 
-  return best;
+// ---------------------------------------------------------------------------------------------
+// Centre of mass
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * Centre of mass of a layout: the AREA-WEIGHTED centroid of the component bounds (bodies incl.
+ * pin legs). Falls back to the centre of the bounding box when there are no components (only
+ * wires / text). With `ids`, only those items count.
+ */
+export function centerOfMass(doc: SchematicDocument, ids?: ReadonlySet<string>): { x: number; y: number } | null {
+  let sw = 0;
+  let sx = 0;
+  let sy = 0;
+  for (const c of doc.components) {
+    if (ids && !ids.has(c.id)) continue;
+    const b = componentBounds(c);
+    const w = Math.max(1, b.w * b.h);
+    sw += w;
+    sx += w * (b.x + b.w / 2);
+    sy += w * (b.y + b.h / 2);
+  }
+  if (sw > 0) return { x: sx / sw, y: sy / sw };
+  const b = documentBounds(doc);
+  return b ? { x: b.x + b.w / 2, y: b.y + b.h / 2 } : null;
+}
+
+/** Rigidly translate the movable items (`ids`, or everything) by (dx, dy). */
+function translated(doc: SchematicDocument, dx: number, dy: number, ids?: ReadonlySet<string>): SchematicDocument {
+  const d = structuredClone(doc);
+  const moves = (id: string) => !ids || ids.has(id);
+  for (const c of d.components) {
+    if (!moves(c.id)) continue;
+    c.x += dx;
+    c.y += dy;
+  }
+  for (const w of d.wires) {
+    if (!moves(w.id)) continue;
+    for (const p of w.points) {
+      p.x += dx;
+      p.y += dy;
+    }
+  }
+  for (const t of d.texts) {
+    if (!moves(t.id)) continue;
+    t.x += dx;
+    t.y += dy;
+  }
+  return d;
+}
+
+/**
+ * Shift the packed layout so its centre of mass lands back on the original one (snapped to the
+ * grid, so it matches within half a cell). A rigid translation of the whole document keeps every
+ * rule; for a partial pack (fixed obstacles stay put) the shift is validated, and shorter shifts
+ * are tried if the full one would collide or detach a wire.
+ */
+function restoreCenterOfMass(
+  packed: SchematicDocument,
+  target: { x: number; y: number } | null,
+  baseline: ValidationBaseline,
+  ids?: ReadonlySet<string>,
+): SchematicDocument {
+  const cur = centerOfMass(packed, ids);
+  if (!target || !cur) return packed;
+  const grid = baseline.grid;
+  const dx0 = snapGrid(target.x - cur.x, grid);
+  const dy0 = snapGrid(target.y - cur.y, grid);
+  if (dx0 === 0 && dy0 === 0) return packed;
+  for (const f of [1, 0.75, 0.5, 0.25]) {
+    const dx = snapGrid(dx0 * f, grid);
+    const dy = snapGrid(dy0 * f, grid);
+    if (dx === 0 && dy === 0) break;
+    const cand = translated(packed, dx, dy, ids);
+    if (validateAgainstBaseline(baseline, cand).length === 0) return cand;
+  }
+  return packed;
 }
 
 /**
@@ -723,8 +1024,14 @@ export function packSchematic(doc: SchematicDocument, opts?: PackOptions): PackR
   const componentGap = Math.max(0, Math.round(opts?.componentGap ?? 2));
   const wireGap = Math.max(0, Math.round(opts?.wireGap ?? 1));
   const maxPasses = Math.max(0, Math.round(opts?.maxPasses ?? 8));
-  const timeBudgetMs = Math.max(0, opts?.timeBudgetMs ?? DEFAULT_TIME_BUDGET_MS);
+  const timeBudgetMs = Math.max(
+    0,
+    opts?.timeBudgetMs ?? Math.min(4000, DEFAULT_TIME_BUDGET_MS + 25 * doc.components.length),
+  );
+  const beamWidth = Math.max(0, Math.round(opts?.beamWidth ?? 4));
+  const preserveCenter = opts?.preserveCenter ?? true;
   const ids = opts?.ids;
+  const centerBefore = centerOfMass(doc, ids);
   const qWeights: QualityWeights = { componentGap, baselineNets: wireNetIndex(doc), ...opts?.qualityWeights };
 
   const areaBefore = ids ? subsetArea(doc, ids) : documentArea(doc);
@@ -743,12 +1050,21 @@ export function packSchematic(doc: SchematicDocument, opts?: PackOptions): PackR
       qualityBefore,
       qualityAfter: qualityBefore,
       passes: 0,
+      centerBefore,
+      centerAfter: centerBefore,
+      beam: { depth: 0, expanded: 0 },
     };
   }
 
   const tStart = performance.now();
   const hardDeadline = tStart + timeBudgetMs;
+  // Greedy pipeline first (it seeds the beam, so the beam can only do better), then the beam.
+  // Budget: the greedy pipeline gets the FULL budget (it usually converges early), so beam mode
+  // can never end worse than greedy-only. The beam then gets the leftover plus `beamExtraMs`;
+  // its last 40% refines the best finalists with the expensive polish.
   const multiStartDeadline = tStart + timeBudgetMs * 0.65;
+  const greedyDeadline = hardDeadline;
+  const beamExtraMs = beamWidth > 0 ? timeBudgetMs * 0.5 : 0;
 
   const normalizedOpts: PackOptions = { componentGap, wireGap, ids, maxPasses, qualityWeights: qWeights, timeBudgetMs };
   const baseline = prepareValidationBaseline(doc, normalizedOpts);
@@ -761,6 +1077,7 @@ export function packSchematic(doc: SchematicDocument, opts?: PackOptions): PackR
     passes: 0,
   };
 
+  const starts: ScheduleOutcome[] = [];
   // Stage 1: Multi-start alternating 1-D compaction across axis orders & slack strategies
   const schedules: { firstAxis: Axis; strategy: SlackStrategy; guaranteed: number }[] = [
     { firstAxis: "x", strategy: "align", guaranteed: 2 },
@@ -786,14 +1103,41 @@ export function packSchematic(doc: SchematicDocument, opts?: PackOptions): PackR
       s.guaranteed > 0 ? hardDeadline : multiStartDeadline,
       s.guaranteed,
     );
+    starts.push(outcome);
     if (isStrictlyBetter(outcome.metrics, winner.metrics)) {
       winner = outcome;
     }
   }
 
-  // Stage 2: Slack exploitation & local search polish within remaining time budget
-  if (performance.now() < hardDeadline) {
-    winner = runQualityPolish(winner, baseline, compOpts, qWeights, hardDeadline);
+  // Stage 2: Slack exploitation & local search polish
+  if (performance.now() < greedyDeadline) {
+    winner = runQualityPolish(winner, baseline, compOpts, qWeights, greedyDeadline);
+  }
+
+  // Stage 3: beam search seeded with the greedy winner, the multi-start outcomes and the input
+  let beamStats = { depth: 0, expanded: 0 };
+  if (beamWidth > 0) {
+    const beamStart = performance.now();
+    const beamEnd = Math.max(hardDeadline, beamStart) + beamExtraMs;
+    const beamDeadline = beamStart + (beamEnd - beamStart) * 0.6;
+    const r = runBeamSearch(
+      [winner, ...starts, { doc: structuredClone(doc), metrics: startMetrics, passes: 0 }],
+      baseline,
+      compOpts,
+      qWeights,
+      beamDeadline,
+      beamWidth,
+      40,
+    );
+    beamStats = { depth: r.depth, expanded: r.expanded };
+    // Stage 4: refine the best few distinct finalists with the expensive polish (clutter
+    // spreading + local search), splitting the remaining time between them.
+    const finalists = r.finalists.slice(0, 3);
+    for (let i = 0; i < finalists.length && performance.now() < beamEnd; i++) {
+      const slice = (beamEnd - performance.now()) / (finalists.length - i);
+      const refined = runQualityPolish(finalists[i], baseline, compOpts, qWeights, performance.now() + slice);
+      if (isStrictlyBetter(refined.metrics, winner.metrics)) winner = refined;
+    }
   }
 
   // Accept only if visual quality strictly improved (or partial-pack subset area improved with equal quality)
@@ -812,15 +1156,23 @@ export function packSchematic(doc: SchematicDocument, opts?: PackOptions): PackR
       qualityBefore,
       qualityAfter: qualityBefore,
       passes: 0,
+      centerBefore,
+      centerAfter: centerBefore,
+      beam: { depth: 0, expanded: 0 },
     };
   }
 
+  const out = preserveCenter ? restoreCenterOfMass(winner.doc, centerBefore, baseline, ids) : winner.doc;
   return {
-    doc: winner.doc,
+    doc: out,
     areaBefore,
-    areaAfter: winner.metrics.primaryArea,
+    // measured on the returned (centre-restored) document, so a re-pack of it agrees exactly
+    areaAfter: ids ? subsetArea(out, ids) : documentArea(out),
     qualityBefore,
-    qualityAfter: winner.metrics.quality,
+    qualityAfter: out === winner.doc ? winner.metrics.quality : layoutQuality(out, qWeights),
     passes: winner.passes,
+    centerBefore,
+    centerAfter: centerOfMass(out, ids),
+    beam: beamStats,
   };
 }

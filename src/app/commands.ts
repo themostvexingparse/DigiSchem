@@ -8,8 +8,7 @@ import { PROJECT_EXTENSION, parseProject, serializeProject } from "../io/project
 import { exportPngBlob, exportSvgString } from "../io/export";
 import { openText, saveBinary, saveText } from "../platform/files";
 import { showShortcutsDialog } from "./dialogs";
-import { packSchematic } from "../layout/pack";
-import { validatePacking } from "../layout/validate";
+import { packInBackground } from "../layout/pack-client";
 import { worldPins } from "../model/geometry";
 import type { SchematicDocument } from "../model/types";
 
@@ -37,6 +36,8 @@ export function notify(msg: string, isError = false): void {
 }
 
 export class AppCommands {
+  private compacting = false;
+
   constructor(private store: DocumentStore, private editor: Editor) {}
 
   private confirmDiscard(): boolean {
@@ -142,13 +143,20 @@ export class AppCommands {
         if (ends.some((e) => e && pinKeys.has(`${e.x},${e.y}`))) ids.add(w.id);
       }
     }
-    notify(sel.size > 0 ? "Compacting selection…" : "Compacting layout…");
-    // Let the toast paint before the (synchronous) packer runs.
-    setTimeout(() => {
-      try {
-        const before = this.store.doc as SchematicDocument;
-        const res = packSchematic(before, ids ? { ids } : {});
-        const problems = validatePacking(before, res.doc, ids ? { ids } : {});
+    if (this.compacting) {
+      notify("Compaction is already running…");
+      return;
+    }
+    this.compacting = true;
+    const before = doc as SchematicDocument;
+    const t0 = performance.now();
+    notify(sel.size > 0 ? "Compacting selection… (searching layouts)" : "Compacting layout… (searching layouts)");
+    packInBackground(before, ids)
+      .then(({ res, problems }) => {
+        if (this.store.doc !== before) {
+          notify("The schematic changed while compacting — run Compact layout again.", true);
+          return;
+        }
         if (problems.length > 0) {
           notify(`Compaction skipped: the result broke a layout rule (${problems[0]})`, true);
           return;
@@ -166,11 +174,13 @@ export class AppCommands {
         const parts = [pct > 0 ? `${pct}% less area` : "same area"];
         if (res.qualityAfter.spacing < res.qualityBefore.spacing || res.qualityAfter.alignment < res.qualityBefore.alignment) parts.push("aligned & evenly spaced");
         if (res.qualityAfter.clutter < res.qualityBefore.clutter) parts.push("less clutter");
-        notify(`Compacted: ${parts.join(", ")} (Ctrl+Z to undo)`);
-      } catch (e) {
-        notify(`Compaction failed: ${(e as Error).message ?? e}`, true);
-      }
-    }, 30);
+        const secs = ((performance.now() - t0) / 1000).toFixed(1);
+        notify(`Compacted in ${secs}s: ${parts.join(", ")} (Ctrl+Z to undo)`);
+      })
+      .catch((e) => notify(`Compaction failed: ${(e as Error).message ?? e}`, true))
+      .finally(() => {
+        this.compacting = false;
+      });
   }
 
   /** Small modal for export settings. */
