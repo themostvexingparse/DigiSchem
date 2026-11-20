@@ -5,9 +5,9 @@
 import type { DocumentStore } from "../model/store";
 import type { ComponentInstance, PropValue, Rotation, TextNote, Wire } from "../model/types";
 import type { PropDef } from "../model/component-def";
-import { propBool, propNum, propStr } from "../model/component-def";
+import { GRID, propBool, propNum, propStr } from "../model/component-def";
 import { getDef } from "../model/registry";
-import { geometryOf } from "../model/geometry";
+import { effectiveProps, geometryOf, snap } from "../model/geometry";
 import { FOCUS_LABEL_EVENT } from "../editor/editor";
 import {
   deleteSelectionInStore,
@@ -16,6 +16,7 @@ import {
   setComponentRotationInDoc,
   keepWiresAttached,
 } from "../editor/doc-ops";
+import { resetComponentSizeInDoc, setComponentSizeInDoc } from "../editor/resize";
 
 type SyncFn = () => void;
 
@@ -204,6 +205,106 @@ export function mountProperties(host: HTMLElement, store: DocumentStore): void {
     });
     root.appendChild(makeRow("Mirror", mirrorChk));
 
+    // Resize controls (for defs with `resizable`)
+    let wInput: HTMLInputElement | null = null;
+    let hInput: HTMLInputElement | null = null;
+    let resetSizeBtn: HTMLButtonElement | null = null;
+    if (def?.resizable) {
+      const grid = store.doc.grid || GRID;
+      const sizeSec = document.createElement("div");
+      sizeSec.className = "ds-prop-sec";
+      const secTitle = document.createElement("div");
+      secTitle.className = "ds-prop-sec-title";
+      secTitle.textContent = "Size";
+      sizeSec.appendChild(secTitle);
+
+      const sizeGrid = document.createElement("div");
+      sizeGrid.className = "ds-prop-size-grid";
+
+      const applyAxisSize = (axis: "w" | "h", rawVal: number) => {
+        const snapped = Math.max(grid, snap(rawVal, grid));
+        const cur = store.doc.components.find((x) => x.id === compId);
+        if (!cur) return;
+        const curGeom = geometryOf(cur);
+        if (cur.size) {
+          if ((axis === "w" && cur.size.w === snapped) || (axis === "h" && cur.size.h === snapped)) {
+            return;
+          }
+        } else {
+          if ((axis === "w" && snapped === curGeom.width) || (axis === "h" && snapped === curGeom.height)) {
+            return;
+          }
+        }
+        const nextW = axis === "w" ? snapped : (cur.size?.w ?? Math.max(grid, snap(curGeom.width, grid)));
+        const nextH = axis === "h" ? snapped : (cur.size?.h ?? Math.max(grid, snap(curGeom.height, grid)));
+        runSelfUpdate(() => {
+          store.update("Resize component", (draft) => {
+            setComponentSizeInDoc(draft, compId, { w: nextW, h: nextH });
+          });
+        });
+      };
+
+      const makeSizeField = (axis: "w" | "h", labelText: string, disabled: boolean): HTMLInputElement => {
+        const field = document.createElement("label");
+        field.className = "ds-prop-size-field";
+        const tag = document.createElement("span");
+        tag.textContent = labelText;
+        const input = document.createElement("input");
+        input.type = "number";
+        input.min = String(grid);
+        input.step = String(grid);
+        input.disabled = disabled;
+        input.dataset.dsSizeInput = axis;
+        input.setAttribute("aria-label", axis === "w" ? "Width" : "Height");
+
+        input.addEventListener("input", () => {
+          const parsed = parseInt(input.value, 10);
+          if (!Number.isFinite(parsed) || parsed < grid || parsed % grid !== 0) return;
+          applyAxisSize(axis, parsed);
+        });
+
+        input.addEventListener("change", () => {
+          const cur = store.doc.components.find((x) => x.id === compId);
+          if (!cur) return;
+          const curGeom = geometryOf(cur);
+          const fallback = axis === "w" ? curGeom.width : curGeom.height;
+          const parsed = parseInt(input.value, 10);
+          const valid = Number.isFinite(parsed) ? Math.max(grid, snap(parsed, grid)) : fallback;
+          applyAxisSize(axis, valid);
+          const updated = store.doc.components.find((x) => x.id === compId);
+          if (updated) {
+            const g = geometryOf(updated);
+            input.value = String(axis === "w" ? g.width : g.height);
+          }
+        });
+
+        field.appendChild(tag);
+        field.appendChild(input);
+        sizeGrid.appendChild(field);
+        return input;
+      };
+
+      wInput = makeSizeField("w", "W", def.resizable === "height");
+      hInput = makeSizeField("h", "H", def.resizable === "width");
+      sizeSec.appendChild(sizeGrid);
+
+      resetSizeBtn = document.createElement("button");
+      resetSizeBtn.type = "button";
+      resetSizeBtn.className = "ds-prop-reset-size";
+      resetSizeBtn.textContent = "Reset size";
+      resetSizeBtn.onclick = () => {
+        const cur = store.doc.components.find((x) => x.id === compId);
+        if (!cur?.size) return;
+        runSelfUpdate(() => {
+          store.update("Reset size", (draft) => {
+            resetComponentSizeInDoc(draft, compId);
+          });
+        });
+      };
+      sizeSec.appendChild(resetSizeBtn);
+      root.appendChild(sizeSec);
+    }
+
     // Dynamic controls for every PropDef
     const propSyncs: ((c: ComponentInstance) => void)[] = [];
     if (def && def.props.length > 0) {
@@ -236,6 +337,11 @@ export function mountProperties(host: HTMLElement, store: DocumentStore): void {
       setCheckboxIfSafe(mirrorChk, Boolean(c.mirror));
       for (const s of propSyncs) s(c);
       const g = geometryOf(c);
+      if (wInput && hInput && resetSizeBtn) {
+        setInputIfSafe(wInput, String(g.width));
+        setInputIfSafe(hInput, String(g.height));
+        resetSizeBtn.disabled = !c.size;
+      }
       pinInfo.textContent = `Pins: ${g.pins.length} · Position: (${c.x}, ${c.y})`;
     };
   };
@@ -283,7 +389,7 @@ export function mountProperties(host: HTMLElement, store: DocumentStore): void {
         input.addEventListener("change", () => {
           const cur = store.doc.components.find((x) => x.id === compId);
           const fallback = cur
-            ? propNum(cur.props, pdef.key, typeof defaultVal === "number" ? defaultVal : (pdef.min ?? 0))
+            ? propNum(effectiveProps(cur), pdef.key, typeof defaultVal === "number" ? defaultVal : (pdef.min ?? 0))
             : (pdef.min ?? 0);
           const clamped = clampInt(input.value, fallback);
           input.value = String(clamped);
@@ -294,7 +400,7 @@ export function mountProperties(host: HTMLElement, store: DocumentStore): void {
           control: input,
           sync: (c) => {
             const fallback = typeof defaultVal === "number" ? defaultVal : (pdef.min ?? 0);
-            const v = propNum(c.props, pdef.key, fallback);
+            const v = propNum(effectiveProps(c), pdef.key, fallback);
             setInputIfSafe(input, String(v));
           },
         };
@@ -312,7 +418,7 @@ export function mountProperties(host: HTMLElement, store: DocumentStore): void {
           control: sel,
           sync: (c) => {
             const fallback = typeof defaultVal === "string" ? defaultVal : (pdef.options?.[0]?.value ?? "");
-            setInputIfSafe(sel, propStr(c.props, pdef.key, fallback));
+            setInputIfSafe(sel, propStr(effectiveProps(c), pdef.key, fallback));
           },
         };
       }
@@ -324,7 +430,7 @@ export function mountProperties(host: HTMLElement, store: DocumentStore): void {
           control: chk,
           sync: (c) => {
             const fallback = typeof defaultVal === "boolean" ? defaultVal : false;
-            setCheckboxIfSafe(chk, propBool(c.props, pdef.key, fallback));
+            setCheckboxIfSafe(chk, propBool(effectiveProps(c), pdef.key, fallback));
           },
         };
       }
@@ -336,7 +442,7 @@ export function mountProperties(host: HTMLElement, store: DocumentStore): void {
           control: input,
           sync: (c) => {
             const fallback = typeof defaultVal === "string" ? defaultVal : "";
-            setInputIfSafe(input, propStr(c.props, pdef.key, fallback));
+            setInputIfSafe(input, propStr(effectiveProps(c), pdef.key, fallback));
           },
         };
       }

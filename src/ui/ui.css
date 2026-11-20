@@ -283,6 +283,53 @@
   background: rgba(197, 48, 48, 0.12);
 }
 
+.ds-prop-size-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+.ds-prop-size-field {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted);
+  min-width: 0;
+}
+
+.ds-prop-size-field span {
+  flex-shrink: 0;
+  font-weight: 600;
+}
+
+.ds-prop-size-field input[type="number"] {
+  width: 100%;
+  min-width: 0;
+  padding: 4px 6px;
+  font-size: 12px;
+  background: var(--canvas);
+  color: var(--text);
+  border: 1px solid var(--panel-border);
+  border-radius: 4px;
+}
+
+.ds-prop-size-field input[type="number"]:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.ds-prop-reset-size {
+  width: 100%;
+  padding: 4px 8px;
+  font-size: 12px;
+}
+
+.ds-prop-reset-size:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 /* ---- Inline Text Note Editor on Canvas ---- */
 .ds-inline-text-editor {
   position: absolute;

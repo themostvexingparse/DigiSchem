@@ -3,13 +3,14 @@
  * Public API is used by src/main.ts, src/app/commands.ts, and src/ui/palette.ts.
  */
 import type { DocumentStore } from "../model/store";
-import type { ComponentInstance, Point, Rotation, TextNote } from "../model/types";
+import type { ComponentInstance, Point, Rotation, TextNote, Wire } from "../model/types";
 import { newId } from "../model/types";
 import { escapeXml, GRID } from "../model/component-def";
 import { getDef } from "../model/registry";
 import {
   componentBounds,
   documentBounds,
+  geometryOf,
   unconnectedPins,
   worldPins,
   type Rect,
@@ -48,6 +49,7 @@ import {
   copySelectionFromDoc,
   deleteSelectionInStore,
   duplicateSelectionInStore,
+  keepWiresAttached,
   mirrorSelectionInStore,
   nudgeSelectionInStore,
   pasteClipboardIntoStore,
@@ -55,6 +57,15 @@ import {
   rotateSelectionInStore,
   type ClipboardData,
 } from "./doc-ops";
+import {
+  applyResizeDrag,
+  hasSnappedResizeDelta,
+  hitTestResizeHandle,
+  resizeHandles,
+  type ResizeCursor,
+  type ResizeHandleId,
+  type ResizeResult,
+} from "./resize";
 
 export type Tool = "select" | "wire" | "text" | "pan";
 
@@ -90,6 +101,7 @@ function isEditableElement(el: EventTarget | null): boolean {
 }
 
 type HoverState =
+  | { kind: "resize-handle"; compId: string; handle: ResizeHandleId; cursor: ResizeCursor }
   | { kind: "pin"; pin: WorldPin }
   | { kind: "wire-snap"; pos: Point }
   | { kind: "component"; id: string }
@@ -134,6 +146,18 @@ type Interaction =
       endAnchored: boolean;
       startWorldSnapped: Point;
       lastDelta: Point;
+      moved: boolean;
+      pointerId: number;
+    }
+  | {
+      kind: "resize-component";
+      compId: string;
+      handle: ResizeHandleId;
+      cursor: ResizeCursor;
+      startWorldExact: Point;
+      origComp: ComponentInstance;
+      origWires: Wire[];
+      lastResult: ResizeResult | null;
       moved: boolean;
       pointerId: number;
     }
@@ -417,7 +441,13 @@ export class Editor {
 
     let mode: string;
     let hint: string;
-    if (this.placing) {
+    const activeInter = this.interaction;
+    if (activeInter?.kind === "resize-component") {
+      const c = this.store.doc.components.find((x) => x.id === activeInter.compId);
+      const g = c ? geometryOf(c) : null;
+      mode = "Resize";
+      hint = g ? `${g.width} × ${g.height} · Esc cancel` : "Drag to resize · Esc cancel";
+    } else if (this.placing) {
       const def = getDef(this.placing.type);
       mode = `Place: ${def?.name ?? this.placing.type}`;
       hint = "Click to place (Shift: keep placing) · R rotate · M mirror · Esc cancel";
@@ -486,6 +516,18 @@ export class Editor {
     return clamp(7 / this.zoom, 4, 14);
   }
 
+  private handleToleranceWorld(): number {
+    return clamp(8 / this.zoom, 5, 12);
+  }
+
+  private singleSelectedResizable(): ComponentInstance | null {
+    if (this.store.selection.size !== 1) return null;
+    const [id] = this.store.selection;
+    const comp = this.store.doc.components.find((c) => c.id === id);
+    if (!comp) return null;
+    return getDef(comp.type)?.resizable ? comp : null;
+  }
+
   private zoomAtScreenPoint(sx: number, sy: number, factor: number): void {
     const oldZoom = this.zoom;
     const newZoom = clamp(oldZoom * factor, MIN_ZOOM, MAX_ZOOM);
@@ -520,6 +562,8 @@ export class Editor {
         `.ds-pin-tag-text{fill:${this.theme.text};font-family:"Segoe UI",Arial,sans-serif;font-size:10px;font-weight:600}`,
         `.ds-marquee{fill:${accentSoft};stroke:${accent};stroke-width:1.2;stroke-dasharray:4 3;vector-effect:non-scaling-stroke}`,
         `.ds-unconn-pin{fill:${this.theme.background};stroke:${unconnStroke};stroke-width:1.3}`,
+        `.ds-resize-handle{fill:${this.theme.background};stroke:${accent};stroke-width:1.5;vector-effect:non-scaling-stroke}`,
+        `.ds-resize-handle-active{fill:${accent};stroke:${this.theme.background};stroke-width:1.5;vector-effect:non-scaling-stroke}`,
         `.ds-ghost{opacity:0.65}`,
       ].join("\n");
     this.bgRect.setAttribute("fill", this.theme.background);
@@ -585,6 +629,10 @@ export class Editor {
       .map((p) => `<circle class="ds-unconn-pin" cx="${p.x}" cy="${p.y}" r="2.5"/>`)
       .join("");
 
+    if (!this.interaction && this.hasCursor) {
+      this.updateHoverFromCursor();
+      this.updateCursorStyle();
+    }
     this.renderOverlay();
   }
 
@@ -613,6 +661,27 @@ export class Editor {
         parts.push(
           `<rect class="ds-sel-box" x="${b.x - 3}" y="${b.y - 3}" width="${b.w + 6}" height="${b.h + 6}" rx="2"/>`,
         );
+      }
+    }
+
+    // 1b. Resize handles when exactly ONE resizable component is selected (in select tool)
+    if (this.tool === "select" && !this.placing && !this.dragDropGhostType && !this.wireDraft) {
+      const resizableComp = this.singleSelectedResizable();
+      if (resizableComp) {
+        const handles = resizeHandles(resizableComp);
+        const hs = clamp(4 / this.zoom, 2.5, 6);
+        const activeHandleId =
+          this.interaction?.kind === "resize-component" && this.interaction.compId === resizableComp.id
+            ? this.interaction.handle
+            : this.hover?.kind === "resize-handle" && this.hover.compId === resizableComp.id
+              ? this.hover.handle
+              : null;
+        for (const h of handles) {
+          const cls = h.id === activeHandleId ? "ds-resize-handle ds-resize-handle-active" : "ds-resize-handle";
+          parts.push(
+            `<rect class="${cls}" data-handle="${h.id}" x="${h.pos.x - hs}" y="${h.pos.y - hs}" width="${hs * 2}" height="${hs * 2}" rx="1"/>`,
+          );
+        }
       }
     }
 
@@ -762,6 +831,19 @@ export class Editor {
     }
 
     if (this.tool === "select") {
+      const resizableComp = this.singleSelectedResizable();
+      if (resizableComp) {
+        const handle = hitTestResizeHandle(resizableComp, this.cursorWorldExact, this.handleToleranceWorld());
+        if (handle) {
+          this.hover = {
+            kind: "resize-handle",
+            compId: resizableComp.id,
+            handle: handle.id,
+            cursor: handle.cursor,
+          };
+          return;
+        }
+      }
       const pin = findPinAt(this.store.doc, this.cursorWorldExact, this.pinToleranceWorld(), this.cachedPins);
       if (pin) {
         this.hover = { kind: "pin", pin };
@@ -797,12 +879,20 @@ export class Editor {
       this.svg.style.cursor = "grab";
       return;
     }
+    if (this.interaction?.kind === "resize-component") {
+      this.svg.style.cursor = this.interaction.cursor;
+      return;
+    }
     if (this.interaction?.kind === "drag-wire-segment") {
       this.svg.style.cursor = this.interaction.isHorizontal ? "ns-resize" : "ew-resize";
       return;
     }
     if (this.placing || this.tool === "wire" || this.tool === "text" || this.wireDraft) {
       this.svg.style.cursor = "crosshair";
+      return;
+    }
+    if (this.hover?.kind === "resize-handle") {
+      this.svg.style.cursor = this.hover.cursor;
       return;
     }
     if (this.hover?.kind === "pin") {
@@ -1016,6 +1106,35 @@ export class Editor {
 
   private handleSelectPointerDown(e: PointerEvent): void {
     const toggleMod = e.shiftKey || e.ctrlKey || e.metaKey;
+
+    // Resize handle on the single selected resizable component takes priority
+    if (!toggleMod) {
+      const resizableComp = this.singleSelectedResizable();
+      if (resizableComp) {
+        const handle = hitTestResizeHandle(resizableComp, this.cursorWorldExact, this.handleToleranceWorld());
+        if (handle) {
+          e.preventDefault();
+          this.store.beginGesture();
+          this.interaction = {
+            kind: "resize-component",
+            compId: resizableComp.id,
+            handle: handle.id,
+            cursor: handle.cursor,
+            startWorldExact: { ...this.cursorWorldExact },
+            origComp: structuredClone(resizableComp),
+            origWires: structuredClone(this.store.doc.wires),
+            lastResult: null,
+            moved: false,
+            pointerId: e.pointerId,
+          };
+          this.capturePointer(e.pointerId);
+          this.updateCursorStyle();
+          this.renderOverlay();
+          this.emitState();
+          return;
+        }
+      }
+    }
 
     // Dragging from any pin in select mode starts a wire (unless modifier held for selection toggle)
     if (!toggleMod) {
@@ -1249,6 +1368,70 @@ export class Editor {
           if (snappedChanged) this.emitState();
           return;
         }
+        case "resize-component": {
+          const worldDelta: Point = {
+            x: this.cursorWorldExact.x - this.interaction.startWorldExact.x,
+            y: this.cursorWorldExact.y - this.interaction.startWorldExact.y,
+          };
+          const grid = this.grid();
+          if (
+            !this.interaction.moved &&
+            !hasSnappedResizeDelta(this.interaction.origComp, this.interaction.handle, worldDelta, grid)
+          ) {
+            if (snappedChanged) this.emitState();
+            return;
+          }
+          const next = applyResizeDrag(
+            this.interaction.origComp,
+            this.interaction.handle,
+            worldDelta,
+            grid,
+          );
+          if (!this.interaction.moved && !this.interaction.origComp.size) {
+            const orig = this.interaction.origComp;
+            const origGeom = geometryOf(orig);
+            const nextGeom = geometryOf({ ...orig, size: next.size });
+            if (
+              next.x === orig.x &&
+              next.y === orig.y &&
+              nextGeom.width === origGeom.width &&
+              nextGeom.height === origGeom.height
+            ) {
+              if (snappedChanged) this.emitState();
+              return;
+            }
+          }
+          const prev = this.interaction.lastResult;
+          if (
+            !prev ||
+            prev.x !== next.x ||
+            prev.y !== next.y ||
+            prev.size.w !== next.size.w ||
+            prev.size.h !== next.size.h
+          ) {
+            this.interaction.lastResult = next;
+            this.interaction.moved = true;
+            const inter = this.interaction;
+            this.store.update("Resize", (draft) => {
+              const idx = draft.components.findIndex((c) => c.id === inter.compId);
+              if (idx === -1) return;
+              // Restore pre-drag component & wires before applying keepWiresAttached so
+              // repeated drag ticks always route cleanly from the original geometry.
+              draft.components[idx] = structuredClone(inter.origComp);
+              draft.wires = structuredClone(inter.origWires);
+              keepWiresAttached(draft, new Set([inter.compId]), () => {
+                const c = draft.components[idx];
+                c.x = next.x;
+                c.y = next.y;
+                c.size = { ...next.size };
+              });
+            });
+            this.emitState();
+          } else if (snappedChanged) {
+            this.emitState();
+          }
+          return;
+        }
         case "pending-pin-wire": {
           const distPx = Math.hypot(
             e.clientX - this.interaction.startClient.x,
@@ -1319,6 +1502,12 @@ export class Editor {
         }
         this.store.endGesture();
         break;
+      case "resize-component":
+        if (inter.moved) {
+          this.store.update("Resize", (draft) => normalizeDocWires(draft));
+        }
+        this.store.endGesture();
+        break;
       case "pending-pin-wire":
         // User clicked a pin without dragging: select the owning component
         this.store.setSelection([inter.pin.componentId]);
@@ -1346,7 +1535,11 @@ export class Editor {
     this.interaction = null;
     this.releasePointer(e.pointerId);
 
-    if (inter.kind === "move-selection" || inter.kind === "drag-wire-segment") {
+    if (
+      inter.kind === "move-selection" ||
+      inter.kind === "drag-wire-segment" ||
+      inter.kind === "resize-component"
+    ) {
       this.store.cancelGesture();
     } else if (inter.kind === "pin-wire-drag") {
       this.wireDraft = null;
@@ -1360,6 +1553,10 @@ export class Editor {
   private onDoubleClick(e: MouseEvent): void {
     if (this.tool !== "select" || this.placing || this.wireDraft) return;
     this.updateCursorFromClient(e.clientX, e.clientY);
+    const resizableComp = this.singleSelectedResizable();
+    if (resizableComp && hitTestResizeHandle(resizableComp, this.cursorWorldExact, this.handleToleranceWorld())) {
+      return;
+    }
     const hit = hitTestDocument(
       this.store.doc,
       this.cursorWorldExact,
@@ -1563,7 +1760,12 @@ export class Editor {
       } else if (this.interaction) {
         const inter = this.interaction;
         this.interaction = null;
-        if (inter.kind === "move-selection" || inter.kind === "drag-wire-segment") {
+        this.releasePointer(inter.pointerId);
+        if (
+          inter.kind === "move-selection" ||
+          inter.kind === "drag-wire-segment" ||
+          inter.kind === "resize-component"
+        ) {
           this.store.cancelGesture();
         }
       } else if (this.tool !== "select") {
