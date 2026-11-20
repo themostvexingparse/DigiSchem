@@ -108,6 +108,8 @@ export function keepWiresAttached(
     }
     a.wire.points = pts;
   }
+  // A pin may have moved onto the wire's other end: drop wires that collapsed (< 2 points).
+  doc.wires = doc.wires.filter((w) => w.points.length >= 2);
 }
 
 export interface ClipboardData {
@@ -149,26 +151,33 @@ export function rotateSelectionInDoc(doc: SchematicDocument, selection: Readonly
   const bounds = selectionBounds(doc, selection);
   if (!bounds) return;
   const grid = doc.grid || GRID;
-  const cx = snap(bounds.x + bounds.w / 2, grid);
-  const cy = snap(bounds.y + bounds.h / 2, grid);
+  // Rotate about the bbox top-left corner T (exact on grid), then translate so the rotated
+  // bbox stays centered on the old one. The centering offset (w-h)/2 is truncated to whole
+  // grid cells; since (w-h) flips sign every quarter turn, truncation cancels out and four
+  // rotations are an exact identity (no drift), and everything stays on the grid.
+  const { x: bx, y: by, w, h } = bounds;
+  const trunc = (v: number) => Math.trunc(v / grid) * grid;
+  const shiftX = h + trunc((w - h) / 2);
+  const shiftY = trunc((h - w) / 2);
+  const rot = (p: Point): Point => {
+    const r = rotatePointCW(p, bx, by);
+    return { x: r.x + shiftX, y: r.y + shiftY };
+  };
 
   for (const c of doc.components) {
     if (!selection.has(c.id)) continue;
-    const nextPos = rotatePointCW({ x: c.x, y: c.y }, cx, cy);
-    c.x = snap(nextPos.x, grid);
-    c.y = snap(nextPos.y, grid);
+    const nextPos = rot({ x: c.x, y: c.y });
+    c.x = nextPos.x;
+    c.y = nextPos.y;
     c.rotation = ((c.rotation + 90) % 360) as Rotation;
   }
-  for (const w of doc.wires) {
-    if (!selection.has(w.id)) continue;
-    w.points = w.points.map((p) => {
-      const rp = rotatePointCW(p, cx, cy);
-      return { x: snap(rp.x, grid), y: snap(rp.y, grid) };
-    });
+  for (const w2 of doc.wires) {
+    if (!selection.has(w2.id)) continue;
+    w2.points = w2.points.map(rot);
   }
   for (const t of doc.texts) {
     if (!selection.has(t.id)) continue;
-    const nextPos = rotatePointCW({ x: t.x, y: t.y }, cx, cy);
+    const nextPos = rot({ x: t.x, y: t.y });
     t.x = snap(nextPos.x, grid);
     t.y = snap(nextPos.y, grid);
   }
@@ -225,36 +234,38 @@ export function mirrorSelectionInDoc(doc: SchematicDocument, selection: Readonly
 
   const bounds = selectionBounds(doc, selection);
   if (!bounds) return;
-  const cx = snap(bounds.x + bounds.w / 2, grid);
+  // Mirror axis at the exact bbox center; 2*cx = 2*x + w is always on the grid, so a
+  // double mirror is an exact identity (no drift).
+  const twoCx = snap(2 * bounds.x + bounds.w, grid);
 
   for (const c of selComps) {
     const g = geometryOf(c);
     c.mirror = !c.mirror || undefined;
     switch (c.rotation) {
       case 0:
-        c.x = snap(2 * cx - c.x - g.width, grid);
+        c.x = snap(twoCx - c.x - g.width, grid);
         break;
       case 180:
-        c.x = snap(2 * cx - c.x + g.width, grid);
+        c.x = snap(twoCx - c.x + g.width, grid);
         break;
       case 90:
-        c.x = snap(2 * cx - c.x, grid);
+        c.x = snap(twoCx - c.x, grid);
         c.y = snap(c.y + g.width, grid);
         c.rotation = 270;
         break;
       case 270:
-        c.x = snap(2 * cx - c.x, grid);
+        c.x = snap(twoCx - c.x, grid);
         c.y = snap(c.y - g.width, grid);
         c.rotation = 90;
         break;
     }
   }
   for (const w of selWires) {
-    w.points = w.points.map((p) => ({ x: snap(2 * cx - p.x, grid), y: p.y }));
+    w.points = w.points.map((p) => ({ x: snap(twoCx - p.x, grid), y: p.y }));
   }
   for (const t of selTexts) {
     const b = textBounds(t);
-    t.x = snap(2 * cx - (t.x + b.w), grid);
+    t.x = snap(twoCx - (t.x + b.w), grid);
   }
   normalizeDocWires(doc);
 }

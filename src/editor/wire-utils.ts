@@ -42,7 +42,7 @@ export function snapToGrid(p: Point, grid = GRID): Point {
  * - drop consecutive duplicate points (zero-length segments)
  * - merge collinear consecutive points (including fold-backs)
  */
-export function normalizeWirePoints(points: readonly Point[]): Point[] {
+export function normalizeWirePoints(points: readonly Point[], keep?: ReadonlySet<string>): Point[] {
   const out: Point[] = [];
   for (const pt of points) {
     const p: Point = { x: pt.x, y: pt.y };
@@ -54,7 +54,10 @@ export function normalizeWirePoints(points: readonly Point[]): Point[] {
       const c = out[out.length - 1];
       const sameX = a.x === b.x && b.x === c.x;
       const sameY = a.y === b.y && b.y === c.y;
-      if (sameX || sameY) {
+      // A straight-through vertex that another wire/pin connects to is load-bearing
+      // (connectivity is vertex-based): keep it unless the wire folds back on itself.
+      const foldBack = sameX ? (b.y - a.y) * (c.y - b.y) < 0 : (b.x - a.x) * (c.x - b.x) < 0;
+      if ((sameX || sameY) && (foldBack || !keep?.has(pointKey(b)))) {
         out.splice(out.length - 2, 1);
         if (out.length >= 2 && pointsEqual(out[out.length - 2], out[out.length - 1])) {
           out.pop();
@@ -76,9 +79,24 @@ export function normalizeWire(w: Wire): Wire | null {
 
 /** Normalize all wires in a document in place, dropping degenerate wires (< 2 points). */
 export function normalizeDocWires(doc: SchematicDocument): void {
+  // Protect vertices that connect to something else: points touched by another wire's
+  // vertex, or by a pin. Merging those away would silently disconnect a junction.
+  const vertexOwners = new Map<string, number>();
+  for (const w of doc.wires) {
+    const seen = new Set<string>();
+    for (const p of w.points) {
+      const k = pointKey(p);
+      if (seen.has(k)) continue;
+      seen.add(k);
+      vertexOwners.set(k, (vertexOwners.get(k) ?? 0) + 1);
+    }
+  }
+  const keep = new Set<string>();
+  for (const [k, n] of vertexOwners) if (n >= 2) keep.add(k);
+  for (const c of doc.components) for (const wp of worldPins(c)) keep.add(pointKey(wp.pos));
   const kept: Wire[] = [];
   for (const w of doc.wires) {
-    const pts = normalizeWirePoints(w.points);
+    const pts = normalizeWirePoints(w.points, keep);
     if (pts.length >= 2) {
       w.points = pts;
       kept.push(w);

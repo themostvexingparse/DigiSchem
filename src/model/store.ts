@@ -28,6 +28,9 @@ export class DocumentStore {
   private listeners = new Set<Listener>();
   private gestureDepth = 0;
   private gestureRecorded = false;
+  /** dirty flag + redo stack as they were when the outermost gesture began (restored on cancel). */
+  private gesturePrevDirty = false;
+  private gesturePrevRedo: { label: string; doc: SchematicDocument }[] = [];
   /** Selected ids (components, wires, texts share one id space). */
   private _selection = new Set<string>();
   /** True when the document has unsaved changes. */
@@ -70,7 +73,21 @@ export class DocumentStore {
   }
 
   beginGesture(): void {
-    if (this.gestureDepth++ === 0) this.gestureRecorded = false;
+    if (this.gestureDepth++ === 0) {
+      this.gestureRecorded = false;
+      this.gesturePrevDirty = this.dirty;
+      this.gesturePrevRedo = this.redoStack;
+    }
+  }
+
+  /** True while a gesture (drag / resize / text edit) is open. */
+  inGesture(): boolean {
+    return this.gestureDepth > 0;
+  }
+
+  private resetGesture(): void {
+    this.gestureDepth = 0;
+    this.gestureRecorded = false;
   }
 
   endGesture(): void {
@@ -79,13 +96,17 @@ export class DocumentStore {
 
   /** Abort the current gesture, restoring the document state from before it. */
   cancelGesture(): void {
-    if (this.gestureDepth > 0 && this.gestureRecorded) {
-      const prev = this.undoStack.pop();
-      if (prev) this._doc = prev.doc;
-      this.emit("doc");
+    if (this.gestureDepth > 0) {
+      if (this.gestureRecorded) {
+        const prev = this.undoStack.pop();
+        if (prev) this._doc = prev.doc;
+        this.redoStack = this.gesturePrevRedo;
+        this.dirty = this.gesturePrevDirty;
+        this.pruneSelection();
+        this.emit("doc");
+      }
     }
-    this.gestureDepth = 0;
-    this.gestureRecorded = false;
+    this.resetGesture();
   }
 
   canUndo(): boolean {
@@ -96,6 +117,9 @@ export class DocumentStore {
   }
 
   undo(): void {
+    // Undo while a gesture is open finalizes the gesture first, so the pre-gesture
+    // snapshot is what gets restored and later updates start a fresh history entry.
+    this.resetGesture();
     const prev = this.undoStack.pop();
     if (!prev) return;
     this.redoStack.push({ label: prev.label, doc: this._doc });
@@ -106,6 +130,7 @@ export class DocumentStore {
   }
 
   redo(): void {
+    this.resetGesture();
     const next = this.redoStack.pop();
     if (!next) return;
     this.undoStack.push({ label: next.label, doc: this._doc });
@@ -117,6 +142,7 @@ export class DocumentStore {
 
   /** Replace the whole document (open / new). Clears history. */
   replace(doc: SchematicDocument, filePath: string | null = null): void {
+    this.resetGesture();
     this._doc = doc;
     this.undoStack = [];
     this.redoStack = [];

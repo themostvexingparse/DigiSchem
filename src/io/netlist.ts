@@ -13,7 +13,7 @@
 import type { ComponentInstance, Point, SchematicDocument, Wire } from "../model/types";
 import { propStr } from "../model/component-def";
 import { getDef } from "../model/registry";
-import { effectiveProps, pointOnSegment, wireSegments, worldPins, type WorldPin } from "../model/geometry";
+import { effectiveProps, SegmentIndex, wireSegments, worldPins, type WorldPin } from "../model/geometry";
 
 export interface NetPin {
   componentId: string;
@@ -123,64 +123,30 @@ export function buildNetlist(doc: SchematicDocument): Netlist {
 
   const uf = new UnionFind(wireCount + indexedPins.length);
 
-  // 1. Wires sharing any vertex connect.
-  const vertexToWire = new Map<string, number>();
+  // Shared connectivity rule (see junctionPoints in model/geometry.ts): two items connect at
+  // a point that is a VERTEX of one and lies ON a segment of the other. This covers shared
+  // vertices, T-junctions, overlapping collinear wires and pins on wires; plain crossings
+  // (no vertex at the crossing) stay unconnected. Lookups use an axis-aligned segment index.
+  const segIndex = new SegmentIndex(indexedWires.map((iw) => iw.wire));
+
+  // 1-2. Wire-to-wire: every vertex of every wire joins all wires whose segments contain it.
   for (const iw of indexedWires) {
     for (const p of iw.wire.points) {
-      const k = ptKey(p);
-      const existing = vertexToWire.get(k);
-      if (existing !== undefined) {
-        uf.union(iw.node, existing);
-      } else {
-        vertexToWire.set(k, iw.node);
+      for (const other of segIndex.wiresAt(p)) {
+        if (other !== iw.node) uf.union(iw.node, other);
       }
     }
   }
 
-  // 2. T-junctions: a wire's endpoint lying on another wire's segment connects them.
-  // Crossing wires without a shared vertex or endpoint do NOT connect.
-  for (let i = 0; i < indexedWires.length; i++) {
-    const a = indexedWires[i];
-    for (let j = 0; j < indexedWires.length; j++) {
-      if (i === j || uf.find(a.node) === uf.find(indexedWires[j].node)) continue;
-      const b = indexedWires[j];
-      const [ep0, ep1] = a.endpoints;
-      for (const [s0, s1] of b.segments) {
-        if (pointOnSegment(ep0, s0, s1) || pointOnSegment(ep1, s0, s1)) {
-          uf.union(a.node, b.node);
-          break;
-        }
-      }
-    }
-  }
-
-  // 3. Pins at the same world point connect; pins at wire vertices or on wire segments connect.
+  // 3. Pins: coincident pins connect; a pin connects to every wire whose segment contains it.
   const pinPosToNode = new Map<string, number>();
   for (const ip of indexedPins) {
     const pos = ip.worldPin.pos;
     const k = ptKey(pos);
-
     const existingPin = pinPosToNode.get(k);
-    if (existingPin !== undefined) {
-      uf.union(ip.node, existingPin);
-    } else {
-      pinPosToNode.set(k, ip.node);
-    }
-
-    const wireAtVertex = vertexToWire.get(k);
-    if (wireAtVertex !== undefined) {
-      uf.union(ip.node, wireAtVertex);
-    }
-
-    for (const iw of indexedWires) {
-      if (uf.find(ip.node) === uf.find(iw.node)) continue;
-      for (const [s0, s1] of iw.segments) {
-        if (pointOnSegment(pos, s0, s1)) {
-          uf.union(ip.node, iw.node);
-          break;
-        }
-      }
-    }
+    if (existingPin !== undefined) uf.union(ip.node, existingPin);
+    else pinPosToNode.set(k, ip.node);
+    for (const wi of segIndex.wiresAt(pos)) uf.union(ip.node, wi);
   }
 
   // 4. Components of type "tunnel" with the same non-empty prop "name" join their nets.
@@ -188,7 +154,7 @@ export function buildNetlist(doc: SchematicDocument): Netlist {
   const tunnelNameByNode = new Map<number, string>();
   for (const ip of indexedPins) {
     if (ip.component.type !== "tunnel") continue;
-    const name = propStr(ip.component.props, "name", "").trim();
+    const name = propStr(effectiveProps(ip.component), "name", "").trim();
     if (!name) continue;
     tunnelNameByNode.set(ip.node, name);
     const first = tunnelFirstNode.get(name);

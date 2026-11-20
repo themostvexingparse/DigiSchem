@@ -104,15 +104,32 @@ export function unionRect(a: Rect | null, b: Rect): Rect {
   return { x, y, w: Math.max(a.x + a.w, b.x + b.w) - x, h: Math.max(a.y + a.h, b.y + b.h) - y };
 }
 
-/** Bounding box of everything in the document (components, wires, texts). Null if empty. */
+/** Multi-line text note bounds (approximate glyph metrics; matches renderText line spacing). */
+export function textNoteBounds(t: { x: number; y: number; text: string; fontSize?: number }): Rect {
+  const fs = t.fontSize ?? 14;
+  const lines = t.text.split(/\n/);
+  const maxLen = Math.max(1, ...lines.map((l) => l.length));
+  return { x: t.x, y: t.y - fs, w: Math.max(fs, maxLen * fs * 0.6), h: (lines.length - 1) * fs * 1.25 + fs * 1.35 };
+}
+
+/** Approximate bounds of a component's upright label (drawn centered above the body). */
+export function labelBounds(inst: ComponentInstance): Rect | null {
+  if (!inst.label) return null;
+  const b = componentBounds(inst);
+  const w = inst.label.length * 6.5 + 8;
+  return { x: b.x + b.w / 2 - w / 2, y: b.y - 20, w, h: 16 };
+}
+
+/** Bounding box of everything in the document (components + labels, wires, texts). Null if empty. */
 export function documentBounds(doc: SchematicDocument): Rect | null {
   let r: Rect | null = null;
-  for (const c of doc.components) r = unionRect(r, componentBounds(c));
-  for (const w of doc.wires) r = unionRect(r, boundsOfPoints(w.points));
-  for (const t of doc.texts) {
-    const fs = t.fontSize ?? 14;
-    r = unionRect(r, { x: t.x, y: t.y - fs, w: Math.max(fs, t.text.length * fs * 0.6), h: fs * 1.3 });
+  for (const c of doc.components) {
+    r = unionRect(r, componentBounds(c));
+    const lb = labelBounds(c);
+    if (lb) r = unionRect(r, lb);
   }
+  for (const w of doc.wires) r = unionRect(r, boundsOfPoints(w.points));
+  for (const t of doc.texts) r = unionRect(r, textNoteBounds(t));
   return r;
 }
 
@@ -148,51 +165,104 @@ export function wireSegments(w: Wire): [Point, Point][] {
 const key = (p: Point) => `${p.x},${p.y}`;
 
 /**
- * Points where a junction dot should be drawn: any point where 3 or more
- * connection "arms" meet (wire endpoints, interior vertices on other wires' segments, pins).
+ * Index of axis-aligned wire segments by row (horizontal) and column (vertical), so
+ * "which segments contain point p" is a map lookup instead of a scan over all wires.
+ * Non-axis-aligned segments (only possible in hand-edited files) go to a slow list.
+ */
+export interface SegmentRef {
+  wire: number; // index into the wires array given to buildSegmentIndex
+  lo: number;
+  hi: number;
+}
+export class SegmentIndex {
+  readonly rows = new Map<number, SegmentRef[]>(); // y -> horizontal segments [lo..hi] in x
+  readonly cols = new Map<number, SegmentRef[]>(); // x -> vertical segments [lo..hi] in y
+  readonly diagonal: { wire: number; a: Point; b: Point }[] = [];
+
+  constructor(wires: readonly Wire[]) {
+    wires.forEach((w, wi) => {
+      for (let i = 0; i + 1 < w.points.length; i++) {
+        const a = w.points[i], b = w.points[i + 1];
+        if (a.x === b.x && a.y === b.y) continue;
+        if (a.y === b.y) push(this.rows, a.y, { wire: wi, lo: Math.min(a.x, b.x), hi: Math.max(a.x, b.x) });
+        else if (a.x === b.x) push(this.cols, a.x, { wire: wi, lo: Math.min(a.y, b.y), hi: Math.max(a.y, b.y) });
+        else this.diagonal.push({ wire: wi, a, b });
+      }
+    });
+  }
+
+  /** Bitmask of distinct directions wires leave p in: 1=E, 2=W, 4=S, 8=N. */
+  directionsAt(p: Point): number {
+    let m = 0;
+    for (const s of this.rows.get(p.y) ?? []) {
+      if (p.x < s.lo || p.x > s.hi) continue;
+      if (s.hi > p.x) m |= 1;
+      if (s.lo < p.x) m |= 2;
+    }
+    for (const s of this.cols.get(p.x) ?? []) {
+      if (p.y < s.lo || p.y > s.hi) continue;
+      if (s.hi > p.y) m |= 4;
+      if (s.lo < p.y) m |= 8;
+    }
+    return m;
+  }
+
+  /** Indices of wires with a segment containing p (endpoints inclusive). */
+  wiresAt(p: Point): Set<number> {
+    const out = new Set<number>();
+    for (const s of this.rows.get(p.y) ?? []) if (p.x >= s.lo && p.x <= s.hi) out.add(s.wire);
+    for (const s of this.cols.get(p.x) ?? []) if (p.y >= s.lo && p.y <= s.hi) out.add(s.wire);
+    for (const d of this.diagonal) if (pointOnSegment(p, d.a, d.b)) out.add(d.wire);
+    return out;
+  }
+
+  hasWireAt(p: Point): boolean {
+    for (const s of this.rows.get(p.y) ?? []) if (p.x >= s.lo && p.x <= s.hi) return true;
+    for (const s of this.cols.get(p.x) ?? []) if (p.y >= s.lo && p.y <= s.hi) return true;
+    return this.diagonal.some((d) => pointOnSegment(p, d.a, d.b));
+  }
+}
+
+function push<K, V>(m: Map<K, V[]>, k: K, v: V) {
+  const l = m.get(k);
+  if (l) l.push(v);
+  else m.set(k, [v]);
+}
+
+const popcount4 = (m: number) => (m & 1) + ((m >> 1) & 1) + ((m >> 2) & 1) + ((m >> 3) & 1);
+
+/**
+ * CONNECTIVITY RULE (shared by junction dots, unconnected-pin markers and the netlist):
+ * two items connect at a point that is a vertex of one and lies on a segment of the other
+ * (shared vertices, T-junctions, overlapping collinear wires, corners resting on a wire,
+ * pins on wires). Plain crossings (no vertex at the crossing) do NOT connect.
+ *
+ * A junction dot is drawn at a vertex/pin point where (distinct wire directions + pins) >= 3.
  */
 export function junctionPoints(doc: SchematicDocument): Point[] {
-  // Count arms per grid point.
-  const arms = new Map<string, number>();
-  const add = (p: Point, n: number) => arms.set(key(p), (arms.get(key(p)) ?? 0) + n);
-  const pinSet = new Set<string>();
-  for (const c of doc.components) for (const wp of worldPins(c)) pinSet.add(key(wp.pos));
-
-  const allSegs: [Point, Point][] = doc.wires.flatMap(wireSegments);
-  const endpoints: Point[] = [];
-  for (const w of doc.wires) {
-    if (w.points.length < 2) continue;
-    endpoints.push(w.points[0], w.points[w.points.length - 1]);
-  }
-  // Each segment contributes one arm at each of its two endpoints.
-  for (const [a, b] of allSegs) {
-    if (a.x === b.x && a.y === b.y) continue;
-    add(a, 1);
-    add(b, 1);
-  }
-  // A wire endpoint landing mid-segment of another segment adds two arms there (T-junction).
-  for (const e of endpoints) {
-    for (const [a, b] of allSegs) {
-      if ((a.x === e.x && a.y === e.y) || (b.x === e.x && b.y === e.y)) continue;
-      if (pointOnSegment(e, a, b)) add(e, 2);
+  const idx = new SegmentIndex(doc.wires);
+  const pinCount = new Map<string, number>();
+  const candidates = new Map<string, Point>();
+  for (const c of doc.components)
+    for (const wp of worldPins(c)) {
+      const k = key(wp.pos);
+      pinCount.set(k, (pinCount.get(k) ?? 0) + 1);
+      candidates.set(k, wp.pos);
     }
-  }
-  for (const k of pinSet) if (arms.has(k)) add({ x: +k.split(",")[0], y: +k.split(",")[1] }, 1);
-
+  for (const w of doc.wires) for (const p of w.points) candidates.set(key(p), p);
   const out: Point[] = [];
-  for (const [k, n] of arms) {
-    if (n >= 3) {
-      const [x, y] = k.split(",").map(Number);
-      out.push({ x, y });
-    }
+  for (const [k, p] of candidates) {
+    const dirs = popcount4(idx.directionsAt(p));
+    const pins = pinCount.get(k) ?? 0;
+    if (dirs === 0) continue; // pins merely abutting: no dot
+    if (dirs + pins >= 3) out.push({ x: p.x, y: p.y });
   }
   return out;
 }
 
-/** Pin endpoints (world) that have no wire or other pin attached — rendered as small "unconnected" markers in the editor. */
+/** Pin positions (world) with no wire on them and no other pin coinciding — drawn as "unconnected" markers. */
 export function unconnectedPins(doc: SchematicDocument): Point[] {
-  const touched = new Set<string>();
-  for (const w of doc.wires) for (const p of w.points) touched.add(key(p));
+  const idx = new SegmentIndex(doc.wires);
   const pinCount = new Map<string, number>();
   const pins: Point[] = [];
   for (const c of doc.components)
@@ -200,8 +270,5 @@ export function unconnectedPins(doc: SchematicDocument): Point[] {
       pins.push(wp.pos);
       pinCount.set(key(wp.pos), (pinCount.get(key(wp.pos)) ?? 0) + 1);
     }
-  const segs = doc.wires.flatMap(wireSegments);
-  return pins.filter(
-    (p) => !touched.has(key(p)) && (pinCount.get(key(p)) ?? 0) < 2 && !segs.some(([a, b]) => pointOnSegment(p, a, b)),
-  );
+  return pins.filter((p) => (pinCount.get(key(p)) ?? 0) < 2 && !idx.hasWireAt(p));
 }
