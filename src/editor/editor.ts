@@ -684,7 +684,7 @@ export class Editor {
     this.unconnectedGroup.innerHTML =
       unconn.map((p) => `<circle class="ds-unconn-pin" cx="${p.x}" cy="${p.y}" r="2.5"/>`).join("") +
       conflicts
-        .map((c) => `<g><title>${c.kind === "unintended" ? "Touching, but not connected" : "Connected, but not touching"}</title>` +
+        .map((c) => `<g><title>${c.kind === "unintended" ? "Touching, but not connected" : c.kind === "drivers" ? "Two outputs drive this net" : "Connected, but not touching"}</title>` +
           `<circle class="ds-conflict" cx="${c.at.x}" cy="${c.at.y}" r="7"/>` +
           `<path class="ds-conflict-x" d="M${c.at.x - 3} ${c.at.y - 3}L${c.at.x + 3} ${c.at.y + 3}M${c.at.x + 3} ${c.at.y - 3}L${c.at.x - 3} ${c.at.y + 3}"/></g>`)
         .join("");

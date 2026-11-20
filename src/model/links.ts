@@ -13,7 +13,7 @@
  */
 import type { Point, SchematicDocument } from "./types";
 import { worldPins } from "./geometry";
-import { geometricContacts, pinTerm, wireTerm, type Terminal } from "../io/netlist";
+import { geometricContacts, pinTerm, wireTerm, type Contact, type Terminal } from "../io/netlist";
 
 export function terminalsOf(doc: SchematicDocument): Set<Terminal> {
   const out = new Set<Terminal>();
@@ -32,9 +32,82 @@ export function canonicalLinks(links: Iterable<readonly [string, string]>): [str
   return [...m.values()].sort((x, y) => (x[0] < y[0] ? -1 : x[0] > y[0] ? 1 : x[1] < y[1] ? -1 : x[1] > y[1] ? 1 : 0));
 }
 
+/** Pin terminals that DRIVE a net (outputs; tri-state outputs and pull resistors may share). */
+function driverTerms(doc: SchematicDocument): Set<Terminal> {
+  const out = new Set<Terminal>();
+  for (const c of doc.components) {
+    if (c.type === "tristate" || c.type === "pull-up" || c.type === "pull-down") continue;
+    for (const wp of worldPins(c)) if (wp.pin.dir === "out") out.add(pinTerm(c.id, wp.pin.id));
+  }
+  return out;
+}
+
+/** How deliberate a geometric contact looks: 0 wire end on a pin, 1 wire end on a wire, 2 other. */
+function contactIntent(doc: SchematicDocument, c: Contact): number {
+  const ends = (t: Terminal) => {
+    if (!t.startsWith("w:")) return [] as Point[];
+    const w = doc.wires.find((x) => x.id === t.slice(2));
+    return w && w.points.length ? [w.points[0], w.points[w.points.length - 1]] : [];
+  };
+  const atEnd = (t: Terminal) => ends(t).some((p) => p.x === c.at.x && p.y === c.at.y);
+  const pinSide = c.a.startsWith("p:") || c.b.startsWith("p:");
+  if (pinSide) {
+    const wire = c.a.startsWith("w:") ? c.a : c.b.startsWith("w:") ? c.b : null;
+    return wire && atEnd(wire) ? 0 : wire ? 2 : 0; // pin-on-pin abutment counts as deliberate
+  }
+  return atEnd(c.a) || atEnd(c.b) ? 1 : 2;
+}
+
+/**
+ * Read connections from contacts, most deliberate first, never letting a contact put two
+ * outputs on one net — that is a short in the drawing, not something anyone draws on purpose.
+ * Such contacts are left unconnected (and reported by `connectionConflicts`). With `only`, just
+ * the contacts touching those terminals are considered (and accidental-looking ones of them are
+ * subject to the driver rule; deliberate ones — a wire drawn onto a pin — always connect).
+ */
+function linksFromContacts(
+  doc: SchematicDocument,
+  contacts: Contact[],
+  base: [string, string][],
+  guardAll: boolean,
+): [string, string][] {
+  const drivers = driverTerms(doc);
+  const parent = new Map<string, string>();
+  const nDrv = new Map<string, number>();
+  const find = (x: string): string => {
+    let r = x;
+    while (parent.has(r)) r = parent.get(r)!;
+    let c = x;
+    while (parent.has(c) && parent.get(c) !== r) {
+      const n = parent.get(c)!;
+      parent.set(c, r);
+      c = n;
+    }
+    return r;
+  };
+  const drv = (r: string) => nDrv.get(r) ?? (drivers.has(r) ? 1 : 0);
+  const union = (a: string, b: string) => {
+    const ra = find(a), rb = find(b);
+    if (ra === rb) return;
+    const n = drv(ra) + drv(rb);
+    parent.set(ra, rb);
+    nDrv.set(rb, n);
+  };
+  for (const [a, b] of base) union(a, b);
+  const out = [...base];
+  const ranked = contacts.map((c) => ({ c, k: contactIntent(doc, c) })).sort((x, y) => x.k - y.k);
+  for (const { c, k } of ranked) {
+    const ra = find(c.a), rb = find(c.b);
+    if (ra !== rb && (guardAll || k === 2) && drv(ra) > 0 && drv(rb) > 0) continue; // would short two outputs
+    union(c.a, c.b);
+    out.push([c.a, c.b]);
+  }
+  return out;
+}
+
 /** Links read from the drawing (used for documents that have none yet). */
 export function inferLinks(doc: SchematicDocument): [string, string][] {
-  return canonicalLinks(geometricContacts(doc).map((c) => [c.a, c.b] as const));
+  return canonicalLinks(linksFromContacts(doc, geometricContacts(doc), [], true));
 }
 
 /** Update `draft.links` after an edit from `before` (see the module comment). */
@@ -46,7 +119,9 @@ export function maintainLinks(before: SchematicDocument, draft: SchematicDocumen
   const fresh = new Set<Terminal>();
   for (const t of now) if (!old.has(t)) fresh.add(t);
   if (fresh.size > 0) {
-    for (const c of geometricContacts(draft)) if (fresh.has(c.a) || fresh.has(c.b)) kept.push([c.a, c.b]);
+    const touching = geometricContacts(draft).filter((c) => fresh.has(c.a) || fresh.has(c.b));
+    draft.links = canonicalLinks(linksFromContacts(draft, touching, kept, false));
+    return;
   }
   draft.links = canonicalLinks(kept);
 }
@@ -54,8 +129,11 @@ export function maintainLinks(before: SchematicDocument, draft: SchematicDocumen
 // ---------------------------------------------------------------------------------------------
 
 export interface ConnectionConflict {
-  /** "unintended": two items touch that are not connected; "broken": connected items no longer touch. */
-  kind: "unintended" | "broken";
+  /**
+   * "unintended": two items touch that are not connected; "broken": connected items no longer
+   * touch; "drivers": a connected net has more than one output driving it.
+   */
+  kind: "unintended" | "broken" | "drivers";
   at: Point;
   a: Terminal;
   b: Terminal;
@@ -113,6 +191,14 @@ export function connectionConflicts(doc: SchematicDocument): ConnectionConflict[
   for (const [a, b] of doc.links) {
     if (!terms.has(a) || !terms.has(b)) continue;
     if (geo.find(a) !== geo.find(b)) out.push({ kind: "broken", at: near(a.startsWith("p:") ? a : b, a.startsWith("p:") ? b : a), a, b });
+  }
+  // electrical rule: two outputs on one connected net
+  const firstDriver = new Map<string, Terminal>();
+  for (const d of driverTerms(doc)) {
+    const r = logical.find(d);
+    const first = firstDriver.get(r);
+    if (!first) firstDriver.set(r, d);
+    else out.push({ kind: "drivers", at: pinPos.get(d) ?? { x: 0, y: 0 }, a: first, b: d });
   }
   return out;
 }

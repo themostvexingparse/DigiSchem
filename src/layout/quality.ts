@@ -61,6 +61,10 @@ export interface QualityWeights {
   sameNetOverlap?: number;
   /** Cost per component collision or `componentGap` violation (default: `Infinity`). */
   componentCollision?: number;
+  /** Cost per cross-net wire overlap the baseline layout already had (default: `400`). */
+  preexistingOverlap?: number;
+  /** Wire-id pairs ("a|b", sorted) overlapping across nets in the layout BEFORE editing. */
+  baselineOverlaps?: ReadonlySet<string>;
   /** Cost per collision that the baseline layout already had (default: `400`). */
   preexistingCollision?: number;
   /** Component-id pairs ("a|b", sorted) colliding in the layout BEFORE editing (see `collidingPairs`). */
@@ -122,11 +126,12 @@ export function wireNetIndex(doc: SchematicDocument): Map<string, number> {
  *   clutter is strictly superlinear in local event density (pairwise quadratic decay within R = 5 cells)
  *   area weight (0.05 / grid²) keeps layouts compact while letting visual quality win over the last few percent of area.
  */
-export const DEFAULT_QUALITY_WEIGHTS: Readonly<Required<Omit<QualityWeights, "baselineNets" | "baselineCollisions" | "baselineTightEvents">>> = Object.freeze({
+export const DEFAULT_QUALITY_WEIGHTS: Readonly<Required<Omit<QualityWeights, "baselineNets" | "baselineCollisions" | "baselineTightEvents" | "baselineOverlaps">>> = Object.freeze({
   overlap: Infinity,
   sameNetOverlap: 40,
   componentCollision: Infinity,
   preexistingCollision: 400,
+  preexistingOverlap: 400,
   crossing: 12,
   junction: 5,
   bend: 3,
@@ -180,9 +185,11 @@ function countWireOverlaps(
   hSegs: readonly HSeg[],
   vSegs: readonly VSeg[],
   sameNet: (a: number, b: number) => boolean = () => false,
-): { different: number; same: number } {
+  preexisting: (a: number, b: number) => boolean = () => false,
+): { different: number; same: number; pre: number } {
   let count = 0;
   let same = 0;
+  let pre = 0;
 
   const byRow = new Map<number, HSeg[]>();
   for (const s of hSegs) {
@@ -200,6 +207,7 @@ function countWireOverlaps(
         if (b.lo >= a.hi) break;
         if (a.wireIdx !== b.wireIdx) {
           if (sameNet(a.wireIdx, b.wireIdx)) same++;
+          else if (preexisting(a.wireIdx, b.wireIdx)) pre++;
           else count++;
         }
       }
@@ -222,13 +230,14 @@ function countWireOverlaps(
         if (b.lo >= a.hi) break;
         if (a.wireIdx !== b.wireIdx) {
           if (sameNet(a.wireIdx, b.wireIdx)) same++;
+          else if (preexisting(a.wireIdx, b.wireIdx)) pre++;
           else count++;
         }
       }
     }
   }
 
-  return { different: count, same };
+  return { different: count, same, pre };
 }
 
 /** Find all plain orthogonal wire crossing points (strictly interior to both segments, excluding junctions). */
@@ -471,11 +480,12 @@ function computeAlignmentAndSpacing(
  * Lower `total` is better; hard defects (wire overlaps, component collisions) yield `+Infinity`.
  */
 export function layoutQuality(doc: SchematicDocument, opts?: QualityWeights): QualityBreakdown {
-  const w: Required<Omit<QualityWeights, "baselineNets" | "baselineCollisions" | "baselineTightEvents">> = {
+  const w: Required<Omit<QualityWeights, "baselineNets" | "baselineCollisions" | "baselineTightEvents" | "baselineOverlaps">> = {
     overlap: opts?.overlap ?? DEFAULT_QUALITY_WEIGHTS.overlap,
     sameNetOverlap: opts?.sameNetOverlap ?? DEFAULT_QUALITY_WEIGHTS.sameNetOverlap,
     componentCollision: opts?.componentCollision ?? DEFAULT_QUALITY_WEIGHTS.componentCollision,
     preexistingCollision: opts?.preexistingCollision ?? DEFAULT_QUALITY_WEIGHTS.preexistingCollision,
+    preexistingOverlap: opts?.preexistingOverlap ?? DEFAULT_QUALITY_WEIGHTS.preexistingOverlap,
     crossing: opts?.crossing ?? DEFAULT_QUALITY_WEIGHTS.crossing,
     junction: opts?.junction ?? DEFAULT_QUALITY_WEIGHTS.junction,
     bend: opts?.bend ?? DEFAULT_QUALITY_WEIGHTS.bend,
@@ -500,8 +510,19 @@ export function layoutQuality(doc: SchematicDocument, opts?: QualityWeights): Qu
   // 1. Hard defects (infinite penalty by default)
   const base = opts?.baselineNets;
   const wireNet = doc.wires.map((x) => base?.get(x.id) ?? -1);
-  const ov = countWireOverlaps(hSegs, vSegs, (a, b) => wireNet[a] >= 0 && wireNet[a] === wireNet[b]);
-  const overlaps = (ov.different === 0 ? 0 : ov.different * w.overlap) + ov.same * w.sameNetOverlap;
+  const preOv = opts?.baselineOverlaps;
+  const pairKeyW = (a: number, b: number) => {
+    const x = doc.wires[a].id, y = doc.wires[b].id;
+    return x < y ? `${x}|${y}` : `${y}|${x}`;
+  };
+  const ov = countWireOverlaps(
+    hSegs,
+    vSegs,
+    (a, b) => wireNet[a] >= 0 && wireNet[a] === wireNet[b],
+    (a, b) => !!preOv && preOv.has(pairKeyW(a, b)),
+  );
+  const overlaps =
+    (ov.different === 0 ? 0 : ov.different * w.overlap) + ov.same * w.sameNetOverlap + ov.pre * w.preexistingOverlap;
 
   // A collision the INPUT already had (e.g. a part dropped too close to a neighbour by hand)
   // is a large finite cost — fixing it is rewarded — instead of making every layout Infinity.
@@ -619,4 +640,38 @@ function countTightPairs(events: readonly Point[], grid: number): number {
 /** Touching event pairs of `doc`, for `QualityWeights.baselineTightEvents`. */
 export function tightEventPairs(doc: SchematicDocument): number {
   return countTightPairs(extractVisualEvents(doc).events, doc.grid || GRID);
+}
+
+/** Cross-net wire overlaps of `doc` as "a|b" pairs (for `QualityWeights.baselineOverlaps`). */
+export function overlappingPairs(doc: SchematicDocument, nets: ReadonlyMap<string, number>): Set<string> {
+  const out = new Set<string>();
+  const rows = new Map<number, { id: string; lo: number; hi: number }[]>();
+  const cols = new Map<number, { id: string; lo: number; hi: number }[]>();
+  for (const w of doc.wires) {
+    for (let i = 0; i + 1 < w.points.length; i++) {
+      const a = w.points[i], b = w.points[i + 1];
+      if (a.y === b.y && a.x !== b.x) {
+        const l = rows.get(a.y) ?? [];
+        l.push({ id: w.id, lo: Math.min(a.x, b.x), hi: Math.max(a.x, b.x) });
+        rows.set(a.y, l);
+      } else if (a.x === b.x && a.y !== b.y) {
+        const l = cols.get(a.x) ?? [];
+        l.push({ id: w.id, lo: Math.min(a.y, b.y), hi: Math.max(a.y, b.y) });
+        cols.set(a.x, l);
+      }
+    }
+  }
+  for (const m of [rows, cols]) {
+    for (const list of m.values()) {
+      for (let i = 0; i < list.length; i++) {
+        for (let j = i + 1; j < list.length; j++) {
+          const A = list[i], B = list[j];
+          if (A.id === B.id || Math.min(A.hi, B.hi) <= Math.max(A.lo, B.lo)) continue;
+          if ((nets.get(A.id) ?? -1) === (nets.get(B.id) ?? -2)) continue;
+          out.add(A.id < B.id ? `${A.id}|${B.id}` : `${B.id}|${A.id}`);
+        }
+      }
+    }
+  }
+  return out;
 }

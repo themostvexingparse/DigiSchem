@@ -41,7 +41,9 @@ import {
   wireNetIndex,
   collidingPairs,
   tightEventPairs,
+  overlappingPairs,
 } from "./quality";
+import { repairDrawingConflicts } from "../editor/safe-route";
 import { realignProblems, realignWithReroute } from "./realign";
 import {
   documentArea,
@@ -77,6 +79,8 @@ export interface PackOptions {
    * re-routing their wires. The only stage allowed to change wire shapes (never adding bends).
    */
   realign?: boolean;
+  /** Re-route drawing conflicts (touching but not connected) before packing (default true). */
+  cleanConflicts?: boolean;
 }
 
 export interface PackResult {
@@ -98,6 +102,10 @@ export interface PackResult {
   realigned?: SchematicDocument;
   /** Components the realign stage moved, and the wires it re-routed. */
   realignedParts: string[];
+  /** The layout after the drawing clean-up stage, when it fixed anything (see `conflictsFixed`). */
+  cleaned?: SchematicDocument;
+  /** Places where the drawing touched something it is not connected to, fixed before packing. */
+  conflictsFixed?: number;
   rerouted: string[];
 }
 
@@ -1127,6 +1135,7 @@ function packCore(doc: SchematicDocument, opts?: PackOptions): PackResult {
     baselineNets: wireNetIndex(doc),
     baselineCollisions: collidingPairs(doc, componentGap),
     baselineTightEvents: tightEventPairs(doc),
+    baselineOverlaps: overlappingPairs(doc, wireNetIndex(doc)),
     ...opts?.qualityWeights,
   };
 
@@ -1285,6 +1294,31 @@ function packCore(doc: SchematicDocument, opts?: PackOptions): PackResult {
  * their wires; the remaining stages preserve every wire's shape (rules 1–9). Pure function.
  */
 export function packSchematic(doc: SchematicDocument, opts?: PackOptions): PackResult {
+  // Stage -1: make the drawing agree with the stored connections first — every place where a
+  // wire touches something it is not connected to is re-routed locally (junctions kept).
+  if (opts?.cleanConflicts !== false && doc.links) {
+    const cleaned = repairDrawingConflicts(doc, opts?.ids);
+    if (cleaned.fixed > 0) {
+      const res = packSchematic(cleaned.doc, { ...opts, cleanConflicts: false });
+      const gap = Math.max(0, Math.round(opts?.componentGap ?? 2));
+      const nets0 = wireNetIndex(doc);
+      return {
+        ...res,
+        areaBefore: opts?.ids ? subsetArea(doc, opts.ids) : documentArea(doc),
+        qualityBefore: layoutQuality(doc, {
+          componentGap: gap,
+          baselineNets: nets0,
+          baselineCollisions: collidingPairs(doc, gap),
+          baselineTightEvents: tightEventPairs(doc),
+          baselineOverlaps: overlappingPairs(doc, nets0),
+          ...opts?.qualityWeights,
+        }),
+        passes: res.passes + 1,
+        cleaned: cleaned.doc,
+        conflictsFixed: cleaned.fixed,
+      };
+    }
+  }
   if (opts?.realign === false || (opts?.maxPasses ?? 8) === 0) return packCore(doc, opts);
   const componentGap = Math.max(0, Math.round(opts?.componentGap ?? 2));
   const qWeights: QualityWeights = {
@@ -1292,6 +1326,7 @@ export function packSchematic(doc: SchematicDocument, opts?: PackOptions): PackR
     baselineNets: wireNetIndex(doc),
     baselineCollisions: collidingPairs(doc, componentGap),
     baselineTightEvents: tightEventPairs(doc),
+    baselineOverlaps: overlappingPairs(doc, wireNetIndex(doc)),
     ...opts?.qualityWeights,
   };
   const budget = opts?.timeBudgetMs ?? Math.min(4000, DEFAULT_TIME_BUDGET_MS + 25 * doc.components.length);
@@ -1322,6 +1357,14 @@ export function packSchematic(doc: SchematicDocument, opts?: PackOptions): PackR
  * the shape-preserving stages with rules 1–9 relative to the realigned layout.
  */
 export function validateCompaction(before: SchematicDocument, res: PackResult, opts?: PackOptions): string[] {
+  if (res.cleaned) {
+    // clean-up: same stored connections, no part moved; then the rest against the cleaned layout
+    const out: string[] = [];
+    if (JSON.stringify(res.cleaned.links) !== JSON.stringify(before.links)) out.push("Clean-up: connections changed");
+    if (res.cleaned.components.some((c, i) => c.x !== before.components[i]?.x || c.y !== before.components[i]?.y))
+      out.push("Clean-up: a component moved");
+    return [...out, ...validateCompaction(res.cleaned, { ...res, cleaned: undefined }, opts)];
+  }
   if (!res.realigned) return validatePacking(before, res.doc, opts);
   return [...realignProblems(before, res.realigned, opts?.ids), ...validatePacking(res.realigned, res.doc, opts)];
 }

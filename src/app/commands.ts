@@ -174,6 +174,7 @@ export class AppCommands {
         const parts = [pct > 0 ? `${pct}% less area` : "same area"];
         if (res.qualityAfter.spacing < res.qualityBefore.spacing || res.qualityAfter.alignment < res.qualityBefore.alignment) parts.push("aligned & evenly spaced");
         if (res.qualityAfter.clutter < res.qualityBefore.clutter) parts.push("less clutter");
+        if (res.conflictsFixed) parts.push(`${res.conflictsFixed} wire conflict${res.conflictsFixed > 1 ? "s" : ""} cleaned up`);
         if (res.realignedParts.length > 0) parts.push(`${res.realignedParts.length} part${res.realignedParts.length > 1 ? "s" : ""} moved back into line`);
         const secs = ((performance.now() - t0) / 1000).toFixed(1);
         notify(`Compacted in ${secs}s: ${parts.join(", ")} (Ctrl+Z to undo)`);
