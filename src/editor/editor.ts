@@ -1443,7 +1443,9 @@ export class Editor {
             x: this.cursorWorldSnapped.x - this.interaction.startWorldSnapped.x,
             y: this.cursorWorldSnapped.y - this.interaction.startWorldSnapped.y,
           };
-          if (this.interaction.guide) {
+          // Back on the exact start: never snap it away from there (guides would pull it onto a
+          // nearby peer's line, so dropping a part where it came from would still move it).
+          if (this.interaction.guide && !(delta.x === 0 && delta.y === 0)) {
             const st = getSettings();
             const snapDist = st.snapToGuides ? st.guideSnapCells * this.grid() : 0;
             const g = computeGuides(this.interaction.guide.anchorOrig, this.interaction.guide.peers, delta, snapDist);
@@ -1452,6 +1454,9 @@ export class Editor {
             const changed = JSON.stringify(g) !== JSON.stringify(this.interaction.guides);
             this.interaction.guides = g;
             if (changed && pointsEqual(delta, this.interaction.lastDelta)) this.renderOverlay();
+          } else if (this.interaction.guides) {
+            this.interaction.guides = null;
+            if (pointsEqual(delta, this.interaction.lastDelta)) this.renderOverlay();
           }
           if (!pointsEqual(delta, this.interaction.lastDelta)) {
             this.interaction.lastDelta = delta;
@@ -1487,6 +1492,10 @@ export class Editor {
                 if (w) w.points = pts0.map((p) => ({ ...p }));
                 else if (!kept.has(id)) draft.wires.push({ id, points: pts0.map((p) => ({ ...p })) });
               }
+              // keep the drag-start wire order (a wire restored after collapsing in an earlier
+              // frame must not move to the end of the list)
+              const rank = new Map([...inter.startWires.keys()].map((id, i) => [id, i]));
+              draft.wires.sort((a, b) => (rank.get(a.id) ?? 1e9) - (rank.get(b.id) ?? 1e9));
               for (const aw of inter.attachedWires) {
                 const w = draft.wires.find((x) => x.id === aw.wireId);
                 if (!w) continue;

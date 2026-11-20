@@ -82,3 +82,24 @@ describe("re-routing a wire chain after its component moves", () => {
     expect(nets(s.doc)).toEqual(before);
   });
 });
+
+describe("landing a dragged part back on its starting position", () => {
+  it("leaves its wires exactly as they were (no free re-route that could drop a branch)", async () => {
+    const { repairWires, sameNetWires } = await import("../src/editor/safe-route");
+    const s = chain();
+    const before = nets(s.doc);
+    const shapes = JSON.stringify(s.doc.wires);
+    // A drag frame whose delta is back to zero: the attached wire is "stretched" to its own
+    // original shape and handed to the repair with improve — it must not be re-routed.
+    s.update("drag back to start", (d) => {
+      const wn = d.wires.find((w) => w.id === "wn")!;
+      repairWires(d, ["wn"], undefined, {
+        improve: true,
+        nets: sameNetWires(d),
+        before: new Map([["wn", wn.points.map((p) => ({ ...p }))]]),
+      });
+    });
+    expect(nets(s.doc)).toEqual(before);
+    expect(JSON.stringify(s.doc.wires)).toBe(shapes);
+  });
+});

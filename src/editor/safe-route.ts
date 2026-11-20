@@ -790,7 +790,14 @@ export function repairWires(
     // (only contacts with wires of the SAME net before the edit — never an accidental short)
     const sameNet = nets.get(wid) ?? new Set<string>();
     const branches = branchPointsOf(doc, wid, orig, idSet).filter((b) => b.t > 0 && b.t < total && sameNet.has(b.other));
-    if ((!startMoved && !endMoved) || branches.length === 0) {
+    if (!startMoved && !endMoved) {
+      // Neither end moved (e.g. a drag that landed back on its start): the wire keeps its exact
+      // original shape. Re-routing it freely could drop a branch point and changes the layout
+      // the user returned to.
+      w.points = orig.map((p) => ({ ...p }));
+      continue;
+    }
+    if (branches.length === 0) {
       passthrough.push(wid);
       continue;
     }
