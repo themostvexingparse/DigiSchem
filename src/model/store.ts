@@ -12,6 +12,7 @@
 import type { SchematicDocument } from "./types";
 import { emptyDocument } from "./types";
 import { inferLinks, maintainLinks } from "./links";
+import { mergeWireSeams } from "./merge";
 
 export type ChangeKind = "doc" | "selection" | "replace";
 export type Listener = (kind: ChangeKind) => void;
@@ -63,6 +64,8 @@ export class DocumentStore {
     mutator(draft);
     // Connectivity is kept, never re-derived from an edited drawing (see model/links.ts).
     maintainLinks(before, draft);
+    // Wires drawn end to end become one wire — but never mid-gesture (a drag tracks wires by id).
+    if (this.gestureDepth === 0) mergeWireSeams(draft);
     // No-op edits (re-setting the same value, a drag back to its start) must not create
     // undo entries or mark the document dirty.
     if (JSON.stringify(draft) === JSON.stringify(before)) return;
@@ -98,6 +101,15 @@ export class DocumentStore {
 
   endGesture(): void {
     if (this.gestureDepth === 0) return;
+    if (this.gestureDepth === 1 && this.gestureRecorded) {
+      // Merge end-to-end seams the gesture left, as part of the same undo step.
+      const merged = clone(this._doc);
+      if (mergeWireSeams(merged) > 0) {
+        this._doc = merged;
+        this.pruneSelection();
+        this.emit("doc");
+      }
+    }
     if (--this.gestureDepth === 0 && this.gestureRecorded) {
       // A gesture that ended where it started (e.g. dragged away and back) leaves no history.
       const top = this.undoStack[this.undoStack.length - 1];

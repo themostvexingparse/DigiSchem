@@ -115,7 +115,9 @@ describe("orphan wire sweep", () => {
     const store = new DocumentStore(build());
     store.setSelection(["g1"]);
     deleteSelectionInStore(store, { sweepOrphans: false });
-    expect(store.doc.wires).toHaveLength(6);
+    // no wire is deleted; the two end-to-end seams (drop+branch, stub1+stub2) merge into one wire each
+    expect(store.doc.wires).toHaveLength(4);
+    expect(store.doc.wires.map((w) => w.id).sort()).toEqual(["branch", "main", "other", "stub1"]);
     const store2 = new DocumentStore(build());
     store2.setSelection(["g1"]);
     deleteSelectionInStore(store2, { sweepOrphans: true });
