@@ -288,8 +288,8 @@ function makeHalfAdderDoc(): SchematicDocument {
   const doc = emptyDocument("Half Adder");
   const inA: ComponentInstance = { id: "inA", type: "input-pin", x: 0, y: 10, rotation: 0, props: { name: "A", width: 1 } };
   const inB: ComponentInstance = { id: "inB", type: "input-pin", x: 0, y: 230, rotation: 0, props: { name: "B", width: 1 } };
-  const xorG: ComponentInstance = { id: "xor1", type: "xor", x: 320, y: 0, rotation: 0, props: { inputs: 2 }, label: "U1" };
-  const andG: ComponentInstance = { id: "and1", type: "and", x: 320, y: 200, rotation: 0, props: { inputs: 2 }, label: "U2" };
+  const xorG: ComponentInstance = { id: "xor1", type: "xor", x: 320, y: 10, rotation: 0, props: { inputs: 2 }, label: "U1" };
+  const andG: ComponentInstance = { id: "and1", type: "and", x: 320, y: 210, rotation: 0, props: { inputs: 2 }, label: "U2" };
   const outS: ComponentInstance = { id: "outS", type: "output-pin", x: 640, y: 20, rotation: 0, props: { name: "S", width: 1 } };
   const outC: ComponentInstance = { id: "outC", type: "output-pin", x: 640, y: 220, rotation: 0, props: { name: "C", width: 1 } };
   doc.components.push(inA, inB, xorG, andG, outS, outC);
@@ -330,12 +330,12 @@ function makeMux4to1GatesDoc(): SchematicDocument {
   const not0: ComponentInstance = { id: "not0", type: "not", x: 180, y: 590, rotation: 0, props: {}, label: "N0" };
   const not1: ComponentInstance = { id: "not1", type: "not", x: 180, y: 710, rotation: 0, props: {}, label: "N1" };
 
-  const and0: ComponentInstance = { id: "and0", type: "and", x: 480, y: 10, rotation: 0, props: { inputs: 3 }, label: "A0" };
-  const and1: ComponentInstance = { id: "and1", type: "and", x: 480, y: 150, rotation: 0, props: { inputs: 3 }, label: "A1" };
-  const and2: ComponentInstance = { id: "and2", type: "and", x: 480, y: 290, rotation: 0, props: { inputs: 3 }, label: "A2" };
-  const and3: ComponentInstance = { id: "and3", type: "and", x: 480, y: 430, rotation: 0, props: { inputs: 3 }, label: "A3" };
+  const and0: ComponentInstance = { id: "and0", type: "and", x: 480, y: 20, rotation: 0, props: { inputs: 3 }, label: "A0" };
+  const and1: ComponentInstance = { id: "and1", type: "and", x: 480, y: 160, rotation: 0, props: { inputs: 3 }, label: "A1" };
+  const and2: ComponentInstance = { id: "and2", type: "and", x: 480, y: 300, rotation: 0, props: { inputs: 3 }, label: "A2" };
+  const and3: ComponentInstance = { id: "and3", type: "and", x: 480, y: 440, rotation: 0, props: { inputs: 3 }, label: "A3" };
 
-  const or4: ComponentInstance = { id: "or4", type: "or", x: 800, y: 200, rotation: 0, props: { inputs: 4 }, label: "OR1" };
+  const or4: ComponentInstance = { id: "or4", type: "or", x: 800, y: 210, rotation: 0, props: { inputs: 4 }, label: "OR1" };
   const outY: ComponentInstance = { id: "outY", type: "output-pin", x: 1080, y: 240, rotation: 0, props: { name: "Y" } };
 
   doc.components.push(d0, d1, d2, d3, s0, s1, not0, not1, and0, and1, and2, and3, or4, outY);
@@ -617,7 +617,7 @@ function makeTransformedComponentsDoc(): SchematicDocument {
 function makeAlreadyTightDoc(): SchematicDocument {
   const doc = emptyDocument("Already Tight");
   // and gate width = 80, height = 60, out at (80, 30)
-  const g1: ComponentInstance = { id: "g1", type: "and", x: 0, y: 0, rotation: 0, props: { inputs: 2 } };
+  const g1: ComponentInstance = { id: "g1", type: "and", x: 0, y: 10, rotation: 0, props: { inputs: 2 } };
   // not gate at x = 100 (exact 20px = 2 grid gap!), in0 at (100, 30)
   const g2: ComponentInstance = { id: "g2", type: "not", x: 100, y: 10, rotation: 0, props: {} };
   doc.components.push(g1, g2);
@@ -748,7 +748,7 @@ describe("layout/packSchematic", () => {
   it("supports partial packing via opts.ids while treating other elements as fixed obstacles", () => {
     const doc = emptyDocument("Partial Pack");
     const fixedLeft: ComponentInstance = { id: "f1", type: "input-pin", x: 0, y: 10, rotation: 0, props: { name: "A" } };
-    const movGate: ComponentInstance = { id: "m1", type: "and", x: 300, y: 0, rotation: 0, props: { inputs: 2 }, label: "U1" };
+    const movGate: ComponentInstance = { id: "m1", type: "and", x: 300, y: 10, rotation: 0, props: { inputs: 2 }, label: "U1" };
     const movOut: ComponentInstance = { id: "m2", type: "output-pin", x: 620, y: 20, rotation: 0, props: { name: "Y" } };
     const fixedBelow: ComponentInstance = { id: "f2", type: "not", x: 160, y: 200, rotation: 0, props: {}, label: "FIX" };
     doc.components.push(fixedLeft, movGate, movOut, fixedBelow);
@@ -816,11 +816,11 @@ describe("layout/packSchematic", () => {
 
   it("preserves direct pin-to-pin abutment while packing surrounding circuitry", () => {
     const doc = emptyDocument("Pin Abutment");
-    const g1: ComponentInstance = { id: "g1", type: "and", x: 0, y: 0, rotation: 0, props: { inputs: 2 }, label: "U1" };
+    const g1: ComponentInstance = { id: "g1", type: "and", x: 0, y: 10, rotation: 0, props: { inputs: 2 }, label: "U1" };
     const g1Out = pinPos(g1, "out"); // (80, 30)
     // Abut g2.in0 directly onto g1.out (not.in0 is at local (0, 20))
     const g2: ComponentInstance = { id: "g2", type: "not", x: g1Out.x, y: g1Out.y - 20, rotation: 0, props: {}, label: "U2" };
-    const g3: ComponentInstance = { id: "g3", type: "or", x: 480, y: 160, rotation: 0, props: { inputs: 2 }, label: "U3" };
+    const g3: ComponentInstance = { id: "g3", type: "or", x: 480, y: 170, rotation: 0, props: { inputs: 2 }, label: "U3" };
     doc.components.push(g1, g2, g3);
 
     const g2Out = pinPos(g2, "out");
@@ -880,7 +880,7 @@ describe("layout/packSchematic", () => {
   it("packs movable items on BOTH sides of a fixed obstacle (opts.ids with negative-cycle bracket)", () => {
     const doc = emptyDocument("Bracketed Partial Pack");
     const mLeft: ComponentInstance = { id: "mL", type: "input-pin", x: 0, y: 20, rotation: 0, props: { name: "L" } };
-    const fMid: ComponentInstance = { id: "fM", type: "and", x: 300, y: 0, rotation: 0, props: { inputs: 2 }, label: "FIX" };
+    const fMid: ComponentInstance = { id: "fM", type: "and", x: 300, y: 10, rotation: 0, props: { inputs: 2 }, label: "FIX" };
     const mRight: ComponentInstance = { id: "mR", type: "output-pin", x: 640, y: 20, rotation: 0, props: { name: "R" } };
     doc.components.push(mLeft, fMid, mRight);
     doc.wires.push(
@@ -893,7 +893,7 @@ describe("layout/packSchematic", () => {
     expect(res.areaAfter).toBeLessThan(res.areaBefore);
     assertAllNineRules(doc, res.doc, { ids });
     const fAfter = res.doc.components.find((c) => c.id === "fM")!;
-    expect({ x: fAfter.x, y: fAfter.y }).toEqual({ x: 300, y: 0 });
+    expect({ x: fAfter.x, y: fAfter.y }).toEqual({ x: 300, y: 10 }); // fixed obstacle never moves
     // Both left and right movable components pulled inward toward fMid
     expect(res.doc.components.find((c) => c.id === "mL")!.x).toBeGreaterThan(0);
     expect(res.doc.components.find((c) => c.id === "mR")!.x).toBeLessThan(640);
@@ -972,8 +972,8 @@ describe("layout/validatePacking catches deliberate rule violations", () => {
     // Body-body closer than componentGap=2 (20px)
     const beforeBodies = emptyDocument("Bodies");
     beforeBodies.components.push(
-      { id: "a", type: "and", x: 0, y: 0, rotation: 0, props: { inputs: 2 } },
-      { id: "b", type: "and", x: 200, y: 0, rotation: 0, props: { inputs: 2 } },
+      { id: "a", type: "and", x: 0, y: 10, rotation: 0, props: { inputs: 2 } },
+      { id: "b", type: "and", x: 200, y: 10, rotation: 0, props: { inputs: 2 } },
     );
     const afterClose = structuredClone(beforeBodies);
     afterClose.components[1].x = 90; // only 10px gap (< 20px)
@@ -981,7 +981,7 @@ describe("layout/validatePacking catches deliberate rule violations", () => {
 
     // Label overlaps wire
     const beforeLabel = emptyDocument("LabelWire");
-    beforeLabel.components.push({ id: "g", type: "and", x: 0, y: 40, rotation: 0, props: { inputs: 2 }, label: "U1" });
+    beforeLabel.components.push({ id: "g", type: "and", x: 0, y: 50, rotation: 0, props: { inputs: 2 }, label: "U1" });
     beforeLabel.wires.push({ id: "w", points: [{ x: 0, y: 0 }, { x: 80, y: 0 }] });
     const afterLabelHit = structuredClone(beforeLabel);
     afterLabelHit.wires[0].points[0].y = 30;
@@ -1002,7 +1002,7 @@ describe("layout/validatePacking catches deliberate rule violations", () => {
 
   it("flags Rule 7 when a wire creates an accidental connection or alters junction dots", () => {
     const before = emptyDocument("AccidentalShort");
-    before.components.push({ id: "g", type: "and", x: 100, y: 0, rotation: 0, props: { inputs: 2 } });
+    before.components.push({ id: "g", type: "and", x: 100, y: 10, rotation: 0, props: { inputs: 2 } });
     // Separate wire below gate
     before.wires.push({ id: "w", points: [{ x: 0, y: 100 }, { x: 200, y: 100 }] });
     const after = structuredClone(before);
@@ -1016,8 +1016,8 @@ describe("layout/validatePacking catches deliberate rule violations", () => {
   it("flags Rule 8 when relative component ordering flips or a pin exit leg collapses", () => {
     const before = emptyDocument("Ordering");
     before.components.push(
-      { id: "a", type: "and", x: 0, y: 0, rotation: 0, props: { inputs: 2 } },
-      { id: "b", type: "and", x: 200, y: 0, rotation: 0, props: { inputs: 2 } },
+      { id: "a", type: "and", x: 0, y: 10, rotation: 0, props: { inputs: 2 } },
+      { id: "b", type: "and", x: 200, y: 10, rotation: 0, props: { inputs: 2 } },
     );
     const after = structuredClone(before);
     after.components[0].x = 200;
@@ -1026,7 +1026,7 @@ describe("layout/validatePacking catches deliberate rule violations", () => {
 
     // Pin exit leg shortened below 1 grid
     const beforeLeg = emptyDocument("PinLeg");
-    const g: ComponentInstance = { id: "g", type: "and", x: 0, y: 0, rotation: 0, props: { inputs: 2 } };
+    const g: ComponentInstance = { id: "g", type: "and", x: 0, y: 10, rotation: 0, props: { inputs: 2 } };
     beforeLeg.components.push(g);
     const outP = pinPos(g, "out");
     beforeLeg.wires.push({ id: "w", points: [outP, { x: outP.x + 40, y: outP.y }, { x: outP.x + 40, y: outP.y + 40 }] });
