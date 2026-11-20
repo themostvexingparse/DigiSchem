@@ -178,8 +178,41 @@ function canonicalDocument(doc: SchematicDocument): SchematicDocument {
     wires: doc.wires.map(canonicalWire),
     texts: doc.texts.map(canonicalText),
     ...(doc.meta !== undefined ? { meta: sortRecord(doc.meta) } : {}),
+    ...(doc.links !== undefined ? { links: canonicalLinks(doc.links) } : {}),
   };
   return out;
+}
+
+function canonicalLinks(links: readonly [string, string][]): [string, string][] {
+  const set = new Map<string, [string, string]>();
+  for (const [a, b] of links) {
+    if (a === b) continue;
+    const pair: [string, string] = a < b ? [a, b] : [b, a];
+    set.set(`${pair[0]}\u0000${pair[1]}`, pair);
+  }
+  return [...set.values()].sort((x, y) => (x[0] < y[0] ? -1 : x[0] > y[0] ? 1 : x[1] < y[1] ? -1 : x[1] > y[1] ? 1 : 0));
+}
+
+/** Keep well-formed links whose wires / components exist (unknown pins are ignored by the netlist). */
+function sanitizeLinks(raw: unknown, doc: SchematicDocument, warnings: string[]): [string, string][] | undefined {
+  if (raw === undefined) return undefined;
+  if (!Array.isArray(raw)) {
+    warnings.push("Invalid links field (expected array), connectivity will be read from the drawing");
+    return undefined;
+  }
+  const wires = new Set(doc.wires.map((w) => w.id));
+  const comps = new Set(doc.components.map((c) => c.id));
+  const ok = (t: unknown): t is string =>
+    typeof t === "string" &&
+    ((t.startsWith("w:") && wires.has(t.slice(2))) || (t.startsWith("p:") && comps.has(t.slice(2, t.indexOf("|") < 0 ? undefined : t.indexOf("|")))));
+  const out: [string, string][] = [];
+  let dropped = 0;
+  for (const e of raw) {
+    if (Array.isArray(e) && e.length === 2 && ok(e[0]) && ok(e[1])) out.push([e[0], e[1]]);
+    else dropped++;
+  }
+  if (dropped > 0) warnings.push(`links: dropped ${dropped} invalid connection(s)`);
+  return canonicalLinks(out);
 }
 
 /**
@@ -646,6 +679,8 @@ export function parseProjectWithWarnings(text: string): ParseProjectResult {
     texts,
     ...(meta !== undefined ? { meta } : {}),
   };
+  const links = sanitizeLinks(migrated.links, doc, warnings);
+  if (links !== undefined) doc.links = links;
 
   return { doc, warnings };
 }

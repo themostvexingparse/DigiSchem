@@ -147,3 +147,5 @@ dialog.app-dialog .dlg-close { border: none; background: transparent; font-size:
 button.tb-zoom { border: none; background: transparent; padding: 0 4px; height: 30px; }
 button.tb-zoom:hover { text-decoration: underline; background: transparent; }
 .tb-btn.on { color: var(--accent); }
+
+#statusbar.has-conflicts { color: #b91c1c; }

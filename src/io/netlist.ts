@@ -94,10 +94,64 @@ interface IndexedPin {
   component: ComponentInstance;
 }
 
+/** A terminal of the connectivity graph: a wire (`w:<id>`) or a component pin (`p:<comp>|<pin>`). */
+export type Terminal = string;
+export const wireTerm = (id: string): Terminal => `w:${id}`;
+export const pinTerm = (comp: string, pin: string): Terminal => `p:${comp}|${pin}`;
+
+/** One geometric contact between two terminals, at a point. */
+export interface Contact {
+  a: Terminal;
+  b: Terminal;
+  at: Point;
+}
+
 /**
- * Extract electrical nets from a schematic document via geometric connectivity + tunnels.
+ * Every geometric contact in the document (the rule shared with junctionPoints): two items
+ * connect at a point that is a VERTEX of one and lies ON a segment of the other — shared
+ * vertices, T-junctions, overlapping collinear wires, pins on wires — and coincident pins.
+ * Plain crossings (no vertex at the crossing) do not connect.
  */
-export function buildNetlist(doc: SchematicDocument): Netlist {
+export function geometricContacts(doc: SchematicDocument): Contact[] {
+  const wires = doc.wires.filter((w) => w.points.length >= 2);
+  const segIndex = new SegmentIndex(wires);
+  const out: Contact[] = [];
+  const seen = new Set<string>();
+  const add = (a: Terminal, b: Terminal, at: Point) => {
+    if (a === b) return;
+    const [x, y] = a < b ? [a, b] : [b, a];
+    const k = `${x}\u0000${y}`;
+    if (seen.has(k)) return;
+    seen.add(k);
+    out.push({ a: x, b: y, at: { x: at.x, y: at.y } });
+  };
+  wires.forEach((w, wi) => {
+    for (const p of w.points) for (const other of segIndex.wiresAt(p)) if (other !== wi) add(wireTerm(w.id), wireTerm(wires[other].id), p);
+  });
+  const pinAt = new Map<string, Terminal>();
+  for (const comp of doc.components) {
+    for (const wp of worldPins(comp)) {
+      const t = pinTerm(comp.id, wp.pin.id);
+      const k = ptKey(wp.pos);
+      const prev = pinAt.get(k);
+      if (prev) add(t, prev, wp.pos);
+      else pinAt.set(k, t);
+      for (const wi of segIndex.wiresAt(wp.pos)) add(t, wireTerm(wires[wi].id), wp.pos);
+    }
+  }
+  return out;
+}
+
+/** Connectivity source: the stored links (`logical`), the drawing (`geometric`), or links when present (`auto`). */
+export type NetlistMode = "auto" | "logical" | "geometric";
+
+/**
+ * Extract electrical nets. With stored links (`doc.links`) the nets are what the user CONNECTED —
+ * an accidental overlap after a move does not join or split anything; without links (or with
+ * mode "geometric") they come from the drawing's geometric contacts. Tunnels join same-named nets.
+ */
+export function buildNetlist(doc: SchematicDocument, mode: NetlistMode = "auto"): Netlist {
+  const useLinks = mode === "logical" || (mode === "auto" && Array.isArray(doc.links));
   const indexedWires: IndexedWire[] = [];
   for (const wire of doc.wires) {
     if (wire.points.length < 2) continue;
@@ -123,30 +177,16 @@ export function buildNetlist(doc: SchematicDocument): Netlist {
 
   const uf = new UnionFind(wireCount + indexedPins.length);
 
-  // Shared connectivity rule (see junctionPoints in model/geometry.ts): two items connect at
-  // a point that is a VERTEX of one and lies ON a segment of the other. This covers shared
-  // vertices, T-junctions, overlapping collinear wires and pins on wires; plain crossings
-  // (no vertex at the crossing) stay unconnected. Lookups use an axis-aligned segment index.
-  const segIndex = new SegmentIndex(indexedWires.map((iw) => iw.wire));
-
-  // 1-2. Wire-to-wire: every vertex of every wire joins all wires whose segments contain it.
-  for (const iw of indexedWires) {
-    for (const p of iw.wire.points) {
-      for (const other of segIndex.wiresAt(p)) {
-        if (other !== iw.node) uf.union(iw.node, other);
-      }
-    }
-  }
-
-  // 3. Pins: coincident pins connect; a pin connects to every wire whose segment contains it.
-  const pinPosToNode = new Map<string, number>();
-  for (const ip of indexedPins) {
-    const pos = ip.worldPin.pos;
-    const k = ptKey(pos);
-    const existingPin = pinPosToNode.get(k);
-    if (existingPin !== undefined) uf.union(ip.node, existingPin);
-    else pinPosToNode.set(k, ip.node);
-    for (const wi of segIndex.wiresAt(pos)) uf.union(ip.node, wi);
+  // Contact edges: stored links, or the geometric contacts of the drawing.
+  const nodeOf = new Map<Terminal, number>();
+  for (const iw of indexedWires) nodeOf.set(wireTerm(iw.wire.id), iw.node);
+  for (const ip of indexedPins) nodeOf.set(pinTerm(ip.component.id, ip.worldPin.pin.id), ip.node);
+  const edges: [Terminal, Terminal][] = useLinks
+    ? (doc.links ?? [])
+    : geometricContacts(doc).map((c) => [c.a, c.b] as [Terminal, Terminal]);
+  for (const [a, b] of edges) {
+    const na = nodeOf.get(a), nb = nodeOf.get(b);
+    if (na !== undefined && nb !== undefined) uf.union(na, nb);
   }
 
   // 4. Components of type "tunnel" with the same non-empty prop "name" join their nets.

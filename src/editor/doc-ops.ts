@@ -30,6 +30,7 @@ import {
   nextAutoLabel,
   nextCopyLabel,
   normalizeDocWires,
+  pruneCollapsedWires,
   stretchWireForMove,
   stretchWireStart,
   normalizeWirePoints,
@@ -57,10 +58,25 @@ export function keepWiresAttached(
     for (const wp of worldPins(c)) before.set(key(wp.pos), `${c.id}:${wp.pin.id}`);
   }
   const attached: { wire: Wire; start?: string; end?: string }[] = [];
+  // with stored connectivity, only wires CONNECTED to the pin follow it
+  const links = doc.links ? new Set(doc.links.map(([a, b]) => `${a}\u0000${b}`)) : null;
+  const linkedTo = (wid: string, cp: string | undefined) => {
+    if (!cp || !links) return cp;
+    const [cid, pid] = [cp.slice(0, cp.indexOf(":")), cp.slice(cp.indexOf(":") + 1)];
+    const a = `w:${wid}`, b = `p:${cid}|${pid}`;
+    return links.has(a < b ? `${a}\u0000${b}` : `${b}\u0000${a}`) ? cp : undefined;
+  };
   for (const w of doc.wires) {
     if (excludeWireIds.has(w.id) || w.points.length < 2) continue;
-    const start = before.get(key(w.points[0]));
-    const end = before.get(key(w.points[w.points.length - 1]));
+    let start = linkedTo(w.id, before.get(key(w.points[0])));
+    const end = linkedTo(w.id, before.get(key(w.points[w.points.length - 1])));
+    const p0 = w.points[0], p1 = w.points[w.points.length - 1];
+    if (start && end && links && p0.x === p1.x && p0.y === p1.y) {
+      // collapsed wire: if it is also connected to a pin that stays put, only one end follows
+      const fixed = doc.components.some((c) => !componentIds.has(c.id) && worldPins(c).some((wp) =>
+        wp.pos.x === p0.x && wp.pos.y === p0.y && links.has(`p:${c.id}|${wp.pin.id}` < `w:${w.id}` ? `p:${c.id}|${wp.pin.id}\u0000w:${w.id}` : `w:${w.id}\u0000p:${c.id}|${wp.pin.id}`)));
+      if (fixed) start = undefined;
+    }
     if (start || end) attached.push({ wire: w, start, end });
   }
   mutate();
@@ -89,7 +105,7 @@ export function keepWiresAttached(
   // Stretching may run a wire over another pin / wire or through a body: re-route those.
   repairWires(doc, changed, undefined, { improve: true, nets: netsBefore, before: beforePts });
   // A pin may have moved onto the wire's other end: drop wires that collapsed (< 2 points).
-  doc.wires = doc.wires.filter((w) => w.points.length >= 2);
+  pruneCollapsedWires(doc);
 }
 
 export interface ClipboardData {

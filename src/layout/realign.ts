@@ -76,7 +76,7 @@ export interface RealignOptions {
 
 /** Canonical connectivity signature (pins per net). */
 export function netSignature(doc: SchematicDocument): string {
-  return buildNetlist(doc)
+  return buildNetlist(doc, "geometric")
     .nets.map((n) => n.pins.map((p) => `${p.componentId}.${p.pinId}`).sort().join(","))
     .filter((s) => s.length > 0)
     .sort()

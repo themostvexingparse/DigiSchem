@@ -94,15 +94,44 @@ export function normalizeDocWires(doc: SchematicDocument): void {
   const keep = new Set<string>();
   for (const [k, n] of vertexOwners) if (n >= 2) keep.add(k);
   for (const c of doc.components) for (const wp of worldPins(c)) keep.add(pointKey(wp.pos));
+  const linked = linkedWireIds(doc);
   const kept: Wire[] = [];
   for (const w of doc.wires) {
     const pts = normalizeWirePoints(w.points, keep);
     if (pts.length >= 2) {
       w.points = pts;
       kept.push(w);
+    } else if (linked.has(w.id) && w.points.length > 0) {
+      // A CONNECTED wire that collapsed (a pin moved onto its other end) is kept as a zero-length
+      // wire, so its connections survive and it stretches back out when the part moves away.
+      w.points = [{ ...w.points[0] }, { ...w.points[0] }];
+      kept.push(w);
     }
   }
   doc.wires = kept;
+}
+
+/** Ids of wires that take part in stored connectivity (doc.links). */
+export function linkedWireIds(doc: SchematicDocument): Set<string> {
+  const out = new Set<string>();
+  for (const [a, b] of doc.links ?? []) {
+    if (a.startsWith("w:")) out.add(a.slice(2));
+    if (b.startsWith("w:")) out.add(b.slice(2));
+  }
+  return out;
+}
+
+/** Drop collapsed wires (< 2 points), except connected ones, which become zero-length wires. */
+export function pruneCollapsedWires(doc: SchematicDocument): void {
+  const linked = linkedWireIds(doc);
+  doc.wires = doc.wires.filter((w) => {
+    if (w.points.length >= 2) return true;
+    if (linked.has(w.id) && w.points.length === 1) {
+      w.points = [{ ...w.points[0] }, { ...w.points[0] }];
+      return true;
+    }
+    return false;
+  });
 }
 
 /**
@@ -318,19 +347,42 @@ export function captureAttachedWires(
   selectedWireIds: ReadonlySet<string>,
 ): AttachedWireSnapshot[] {
   if (movedComponentIds.size === 0 && selectedWireIds.size === 0) return [];
-  const movedPinKeys = new Set<string>();
+  // moved pin position → pin terminals there
+  const movedPins = new Map<string, string[]>();
   for (const c of doc.components) {
     if (!movedComponentIds.has(c.id)) continue;
     for (const wp of worldPins(c)) {
-      movedPinKeys.add(pointKey(wp.pos));
+      const k = pointKey(wp.pos);
+      movedPins.set(k, [...(movedPins.get(k) ?? []), `p:${c.id}|${wp.pin.id}`]);
+    }
+  }
+  // With stored connectivity, a wire follows a pin only if it is CONNECTED to it — a wire of
+  // another net that merely touches the pin (after an earlier overlapping move) stays put.
+  const links = doc.links ? new Set(doc.links.map(([a, b]) => `${a}\u0000${b}`)) : null;
+  const linked = (a: string, b: string) => !links || links.has(a < b ? `${a}\u0000${b}` : `${b}\u0000${a}`);
+  const attachedAt = (wid: string, p: Point) =>
+    (movedPins.get(pointKey(p)) ?? []).some((pt) => linked(`w:${wid}`, pt));
+  // pins that stay put, for collapsed (zero-length) wires sitting on a moved AND a fixed pin
+  const fixedPins = new Map<string, string[]>();
+  for (const c of doc.components) {
+    if (movedComponentIds.has(c.id)) continue;
+    for (const wp of worldPins(c)) {
+      const k = pointKey(wp.pos);
+      fixedPins.set(k, [...(fixedPins.get(k) ?? []), `p:${c.id}|${wp.pin.id}`]);
     }
   }
 
   const byId = new Map<string, AttachedWireSnapshot>();
   for (const w of doc.wires) {
     if (selectedWireIds.has(w.id) || w.points.length < 2) continue;
-    const startAttached = movedPinKeys.has(pointKey(w.points[0]));
-    const endAttached = movedPinKeys.has(pointKey(w.points[w.points.length - 1]));
+    let startAttached = attachedAt(w.id, w.points[0]);
+    const endAttached = attachedAt(w.id, w.points[w.points.length - 1]);
+    const p0 = w.points[0], p1 = w.points[w.points.length - 1];
+    if (startAttached && endAttached && p0.x === p1.x && p0.y === p1.y && links &&
+        (fixedPins.get(pointKey(p0)) ?? []).some((fp) => linked(`w:${w.id}`, fp))) {
+      // collapsed wire between a moved pin and a fixed one: only one end follows the move
+      startAttached = false;
+    }
     if (startAttached || endAttached) {
       byId.set(w.id, { wireId: w.id, origPoints: w.points.map((p) => ({ ...p })), startAttached, endAttached });
     }
@@ -343,14 +395,14 @@ export function captureAttachedWires(
     (w) => selectedWireIds.has(w.id) || (byId.get(w.id)?.startAttached && byId.get(w.id)?.endAttached),
   );
   if (rigid.length > 0) {
-    const onRigid = (p: Point) =>
-      rigid.some((rw) => rw.points.some((_, i) => i + 1 < rw.points.length && pointOnSegment(p, rw.points[i], rw.points[i + 1])));
+    const onRigid = (p: Point, wid: string) =>
+      rigid.some((rw) => linked(`w:${wid}`, `w:${rw.id}`) && rw.points.some((_, i) => i + 1 < rw.points.length && pointOnSegment(p, rw.points[i], rw.points[i + 1])));
     for (const w of doc.wires) {
       if (selectedWireIds.has(w.id) || w.points.length < 2) continue;
       const snap0 = byId.get(w.id);
       if (snap0?.startAttached && snap0?.endAttached) continue;
-      const s = snap0?.startAttached || onRigid(w.points[0]);
-      const e = snap0?.endAttached || onRigid(w.points[w.points.length - 1]);
+      const s = snap0?.startAttached || onRigid(w.points[0], w.id);
+      const e = snap0?.endAttached || onRigid(w.points[w.points.length - 1], w.id);
       if (s || e) byId.set(w.id, { wireId: w.id, origPoints: w.points.map((p) => ({ ...p })), startAttached: s, endAttached: e });
     }
   }

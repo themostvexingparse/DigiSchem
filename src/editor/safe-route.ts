@@ -13,7 +13,7 @@ import type { ComponentInstance, Point, SchematicDocument } from "../model/types
 import type { Side } from "../model/component-def";
 import { GRID } from "../model/component-def";
 import { componentBounds, SegmentIndex, worldPins, type Rect } from "../model/geometry";
-import { normalizeWirePoints, pinExitVector, stretchWireStart } from "./wire-utils";
+import { normalizeWirePoints, pinExitVector, pruneCollapsedWires, stretchWireStart } from "./wire-utils";
 import { buildNetlist } from "../io/netlist";
 import { getSettings } from "../model/settings";
 
@@ -472,7 +472,10 @@ function repairWiresCore(
 ): void {
   const ids = [...new Set(wireIds)].filter((id) => {
     const w = doc.wires.find((x) => x.id === id);
-    return !!w && w.points.length >= 2;
+    if (!w || w.points.length < 2) return false;
+    // a zero-length (collapsed, kept-for-its-connections) wire has nothing to route
+    const a0 = w.points[0], b0 = w.points[w.points.length - 1];
+    return !(a0.x === b0.x && a0.y === b0.y);
   });
   if (ids.length === 0) return;
   const nets = opts.nets ?? sameNetWires(doc);
@@ -898,7 +901,7 @@ export function repairWires(
       repairWires(doc, [...moved.keys()], allowed, { ...opts, before: moved, depth: depth + 1 });
     }
   }
-  doc.wires = doc.wires.filter((w) => w.points.length >= 2);
+  pruneCollapsedWires(doc);
 }
 
 /** Move a path's start to `p`, keeping the rest of it (adds a bend if needed). */

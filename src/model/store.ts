@@ -11,6 +11,7 @@
  */
 import type { SchematicDocument } from "./types";
 import { emptyDocument } from "./types";
+import { inferLinks, maintainLinks } from "./links";
 
 export type ChangeKind = "doc" | "selection" | "replace";
 export type Listener = (kind: ChangeKind) => void;
@@ -39,7 +40,7 @@ export class DocumentStore {
   filePath: string | null = null;
 
   constructor(doc: SchematicDocument = emptyDocument()) {
-    this._doc = doc;
+    this._doc = withLinks(doc);
   }
 
   get doc(): Readonly<SchematicDocument> {
@@ -60,6 +61,8 @@ export class DocumentStore {
     const before = this._doc;
     const draft = clone(before);
     mutator(draft);
+    // Connectivity is kept, never re-derived from an edited drawing (see model/links.ts).
+    maintainLinks(before, draft);
     // No-op edits (re-setting the same value, a drag back to its start) must not create
     // undo entries or mark the document dirty.
     if (JSON.stringify(draft) === JSON.stringify(before)) return;
@@ -157,7 +160,7 @@ export class DocumentStore {
   /** Replace the whole document (open / new). Clears history. */
   replace(doc: SchematicDocument, filePath: string | null = null): void {
     this.resetGesture();
-    this._doc = doc;
+    this._doc = withLinks(doc);
     this.undoStack = [];
     this.redoStack = [];
     this._selection.clear();
@@ -194,4 +197,10 @@ export class DocumentStore {
     if (filePath) this.filePath = filePath;
     this.emit("selection");
   }
+}
+
+/** A document with stored connectivity (inferred once from the drawing when it has none). */
+function withLinks(doc: SchematicDocument): SchematicDocument {
+  if (doc.links) return doc;
+  return { ...doc, links: inferLinks(doc) };
 }

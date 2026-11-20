@@ -70,6 +70,13 @@ export interface SchematicDocument {
   texts: TextNote[];
   /** Free-form metadata (author, course, lab number...). */
   meta?: Record<string, string>;
+  /**
+   * What connects to what, independent of the drawing: pairs of terminals — a wire `w:<id>` or a
+   * pin `p:<componentId>|<pinId>`. Maintained by the DocumentStore (moves never change it; new
+   * items connect by touch). Optional and additive: without it, connectivity is read from the
+   * geometry (older files, documents built in code). Sorted, deduplicated.
+   */
+  links?: [string, string][];
 }
 
 export function emptyDocument(name = "Untitled"): SchematicDocument {

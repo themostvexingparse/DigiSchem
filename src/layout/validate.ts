@@ -147,7 +147,7 @@ function segRectSeparation(a: Point, b: Point, r: Rect): number {
 }
 
 function canonicalNetSignatures(doc: SchematicDocument): string[] {
-  const { nets } = buildNetlist(doc);
+  const { nets } = buildNetlist(doc, "geometric"); // the drawing itself must stay consistent
   return nets
     .map((net) => {
       const pins = net.pins

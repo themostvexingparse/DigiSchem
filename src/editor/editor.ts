@@ -46,6 +46,7 @@ import {
   type AttachedWireSnapshot,
   type SnapTarget,
 } from "./wire-utils";
+import { connectionConflicts, type ConnectionConflict } from "../model/links";
 import { movedEndContacts, netWiresAt, RouteObstacles, repairWires, safeRoute, sameNetWires, trimToBranchPoints } from "./safe-route";
 import { computeGuides, guidePeers, type GuideResult } from "./guides";
 import { getSettings, onSettingsChange, updateSettings } from "../model/settings";
@@ -610,6 +611,8 @@ export class Editor {
         `.ds-pin-tag-text{fill:${this.theme.text};font-family:"Segoe UI",Arial,sans-serif;font-size:10px;font-weight:600}`,
         `.ds-marquee{fill:${accentSoft};stroke:${accent};stroke-width:1.2;stroke-dasharray:4 3;vector-effect:non-scaling-stroke}`,
         `.ds-unconn-pin{fill:${this.theme.background};stroke:${unconnStroke};stroke-width:1.3}`,
+        `.ds-conflict{fill:rgba(220,38,38,0.12);stroke:#dc2626;stroke-width:2;vector-effect:non-scaling-stroke}`,
+        `.ds-conflict-x{stroke:#dc2626;stroke-width:1.6;vector-effect:non-scaling-stroke}`,
         `.ds-guide{stroke:#e0338a;stroke-width:1;stroke-dasharray:4 3;vector-effect:non-scaling-stroke;fill:none}`,
         `.ds-spacing{stroke:#e0338a;stroke-width:1.5;vector-effect:non-scaling-stroke;fill:none}`,
         `.ds-resize-handle{fill:${this.theme.background};stroke:${accent};stroke-width:1.5;vector-effect:non-scaling-stroke}`,
@@ -675,15 +678,35 @@ export class Editor {
 
     // Render unconnected pin markers
     const unconn = getSettings().showUnconnectedPins ? unconnectedPins(doc) : [];
-    this.unconnectedGroup.innerHTML = unconn
-      .map((p) => `<circle class="ds-unconn-pin" cx="${p.x}" cy="${p.y}" r="2.5"/>`)
-      .join("");
+    // Connection conflicts: where the drawing disagrees with what is connected (the connections
+    // themselves are kept — see model/links.ts). Red ring + cross at each point.
+    const conflicts = this.connectionConflicts();
+    this.unconnectedGroup.innerHTML =
+      unconn.map((p) => `<circle class="ds-unconn-pin" cx="${p.x}" cy="${p.y}" r="2.5"/>`).join("") +
+      conflicts
+        .map((c) => `<g><title>${c.kind === "unintended" ? "Touching, but not connected" : "Connected, but not touching"}</title>` +
+          `<circle class="ds-conflict" cx="${c.at.x}" cy="${c.at.y}" r="7"/>` +
+          `<path class="ds-conflict-x" d="M${c.at.x - 3} ${c.at.y - 3}L${c.at.x + 3} ${c.at.y + 3}M${c.at.x + 3} ${c.at.y - 3}L${c.at.x - 3} ${c.at.y + 3}"/></g>`)
+        .join("");
 
     if (!this.interaction && this.hasCursor) {
       this.updateHoverFromCursor();
       this.updateCursorStyle();
     }
     this.renderOverlay();
+  }
+
+  private conflictCache: { doc: unknown; list: ConnectionConflict[] } | null = null;
+  /** Where the drawing disagrees with the stored connections (cached per document version). */
+  connectionConflicts(): ConnectionConflict[] {
+    const doc = this.store.doc;
+    if (this.conflictCache?.doc !== doc) this.conflictCache = { doc, list: connectionConflicts(doc as Parameters<typeof connectionConflicts>[0]) };
+    return this.conflictCache.list;
+  }
+
+  /** True while a pointer interaction (drag, wiring, resize…) is in progress. */
+  isBusy(): boolean {
+    return this.interaction !== null;
   }
 
   private renderOverlay(): void {
