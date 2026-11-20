@@ -87,6 +87,30 @@ describe("orphan wire sweep", () => {
     expect(d.wires.map((w) => w.id)).toContain("branch"); // still connects g3 to the drop wire
   });
 
+  it("is recursive: orphans created by removing orphans are swept too (chains and T-branches)", () => {
+    const d = emptyDocument();
+    const g: ComponentInstance = { id: "g", type: "not", x: 0, y: 0, rotation: 0, props: {} };
+    const keep: ComponentInstance = { id: "k", type: "not", x: 600, y: 300, rotation: 0, props: {} };
+    d.components.push(g, keep);
+    const o = pin(g, "out");
+    // 4-wire chain from the deleted part, each wire only reachable through the previous one…
+    d.wires.push({ id: "c1", points: [o, { x: o.x + 40, y: o.y }] });
+    d.wires.push({ id: "c2", points: [{ x: o.x + 40, y: o.y }, { x: o.x + 40, y: o.y + 60 }] });
+    d.wires.push({ id: "c3", points: [{ x: o.x + 40, y: o.y + 60 }, { x: o.x + 120, y: o.y + 60 }] });
+    // …a branch T-junctioned onto the middle of c3 (orphaned only once c3 is gone)…
+    d.wires.push({ id: "t1", points: [{ x: o.x + 80, y: o.y + 60 }, { x: o.x + 80, y: o.y + 140 }] });
+    // …and a branch of that branch.
+    d.wires.push({ id: "t2", points: [{ x: o.x + 80, y: o.y + 140 }, { x: o.x + 160, y: o.y + 140 }] });
+    // An unrelated wire on the surviving part must stay.
+    const ki = pin(keep, "in0");
+    d.wires.push({ id: "safe", points: [{ x: ki.x - 60, y: ki.y }, ki] });
+    const seeds = worldPins(g).map((p) => p.pos);
+    d.components = d.components.filter((c) => c.id !== "g");
+    const removed = sweepOrphanWires(d, seeds);
+    expect(removed.sort()).toEqual(["c1", "c2", "c3", "t1", "t2"]);
+    expect(d.wires.map((w) => w.id)).toEqual(["safe"]);
+  });
+
   it("is controlled by the option (off keeps all wires)", () => {
     const store = new DocumentStore(build());
     store.setSelection(["g1"]);

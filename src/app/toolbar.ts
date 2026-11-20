@@ -147,7 +147,15 @@ export function mountToolbar(host: HTMLElement, cmds: AppCommands, editor: Edito
   zoomLabel.title = "Reset zoom to 100%";
   zoomLabel.addEventListener("click", () => editor.zoomBy(1 / editor.getZoom()));
   const gridBtn = button({ icon: ICONS.grid, title: "Toggle grid (G)", action: () => updateSettings({ showGrid: !getSettings().showGrid }) });
-  const syncGrid = () => gridBtn.classList.toggle("on", getSettings().showGrid);
+  const panelBtn = button({
+    icon: ICONS.panelRight,
+    title: "Show / hide the properties panel (P)",
+    action: () => updateSettings({ showPropertiesPanel: !getSettings().showPropertiesPanel }),
+  });
+  const syncGrid = () => {
+    gridBtn.classList.toggle("on", getSettings().showGrid);
+    panelBtn.classList.toggle("on", getSettings().showPropertiesPanel);
+  };
   onSettingsChange(syncGrid);
   syncGrid();
   const themeSel = document.createElement("select");
@@ -164,6 +172,7 @@ export function mountToolbar(host: HTMLElement, cmds: AppCommands, editor: Edito
     button({ icon: ICONS.fit, title: "Zoom to fit (F)", action: () => editor.zoomToFit() }),
     gridBtn,
     themeSel,
+    panelBtn,
     button({ icon: ICONS.settings, title: "Settings", action: () => showSettingsDialog() }),
     button({ icon: ICONS.help, title: "Keyboard shortcuts (?)", action: () => showShortcutsDialog() }),
   );

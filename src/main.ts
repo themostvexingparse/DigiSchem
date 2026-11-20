@@ -9,6 +9,7 @@ import { mountPalette } from "./ui/palette";
 import { mountProperties } from "./ui/properties";
 import { AppCommands, installGlobalShortcuts } from "./app/commands";
 import { mountToolbar } from "./app/toolbar";
+import { getSettings, onSettingsChange, updateSettings } from "./model/settings";
 
 registerBuiltinComponents();
 
@@ -51,6 +52,24 @@ if (isTauri()) {
     if (!discard) event.preventDefault();
   });
 }
+
+// Right-hand properties panel: toggled from the toolbar / P key, remembered between sessions.
+const appEl = document.getElementById("app")!;
+const applyPanel = () => {
+  appEl.classList.toggle("no-props", !getSettings().showPropertiesPanel);
+  // The canvas just changed size: keep the view stable and redraw.
+  window.dispatchEvent(new Event("resize"));
+};
+onSettingsChange(applyPanel);
+applyPanel();
+window.addEventListener("keydown", (e) => {
+  if (e.key.toLowerCase() !== "p" || e.ctrlKey || e.metaKey || e.altKey) return;
+  const t = e.target as HTMLElement | null;
+  if (t && (t.tagName === "TEXTAREA" || (t.tagName === "INPUT" && !["checkbox", "radio"].includes((t as HTMLInputElement).type)))) return;
+  if (document.querySelector("dialog[open]")) return;
+  e.preventDefault();
+  updateSettings({ showPropertiesPanel: !getSettings().showPropertiesPanel });
+});
 
 // Exposed for debugging in devtools.
 (window as any).digischem = { store, editor };

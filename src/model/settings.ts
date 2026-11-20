@@ -12,6 +12,8 @@ export interface Settings {
   showUnconnectedPins: boolean;
   /** Show the dotted grid on the canvas. */
   showGrid: boolean;
+  /** Show the properties panel on the right. */
+  showPropertiesPanel: boolean;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -21,6 +23,7 @@ export const DEFAULT_SETTINGS: Settings = {
   guideSnapCells: 2,
   showUnconnectedPins: true,
   showGrid: true,
+  showPropertiesPanel: true,
 };
 
 const KEY = "digischem.settings.v1";
