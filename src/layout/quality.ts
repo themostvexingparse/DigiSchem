@@ -33,6 +33,12 @@ export interface QualityBreakdown {
   junctions: number;
   /** Wire bend penalty (>= 0; lower per bend than a junction). Constant under shape-preserving packing. */
   bends: number;
+  /**
+   * Touching events: pairs of crossings / junction dots within one grid cell of each other (they
+   * read as one blob). Infinity if the layout has MORE such pairs than its baseline, else a stiff
+   * finite cost per pair.
+   */
+  tightEvents: number;
   /** Superlinear local density penalty over (crossings ∪ junctions) (>= 0). */
   clutter: number;
   /** Alignment reward (<= 0) for same-type, same-size components sharing a row or column. */
@@ -63,6 +69,10 @@ export interface QualityWeights {
   crossing?: number;
   /** Penalty per junction dot — strictly lower than `crossing` (default: `5`). */
   junction?: number;
+  /** Cost per touching event pair the baseline already had (default `150`); more pairs than the baseline → Infinity. */
+  tightEvent?: number;
+  /** Number of touching event pairs in the layout BEFORE editing (see `tightEventPairs`). */
+  baselineTightEvents?: number;
   /** Penalty per wire bend (default: `3`, below a junction). */
   bend?: number;
   /** Weight multiplying the superlinear pairwise clutter density (default: `8`). */
@@ -112,7 +122,7 @@ export function wireNetIndex(doc: SchematicDocument): Map<string, number> {
  *   clutter is strictly superlinear in local event density (pairwise quadratic decay within R = 5 cells)
  *   area weight (0.05 / grid²) keeps layouts compact while letting visual quality win over the last few percent of area.
  */
-export const DEFAULT_QUALITY_WEIGHTS: Readonly<Required<Omit<QualityWeights, "baselineNets" | "baselineCollisions">>> = Object.freeze({
+export const DEFAULT_QUALITY_WEIGHTS: Readonly<Required<Omit<QualityWeights, "baselineNets" | "baselineCollisions" | "baselineTightEvents">>> = Object.freeze({
   overlap: Infinity,
   sameNetOverlap: 40,
   componentCollision: Infinity,
@@ -120,6 +130,7 @@ export const DEFAULT_QUALITY_WEIGHTS: Readonly<Required<Omit<QualityWeights, "ba
   crossing: 12,
   junction: 5,
   bend: 3,
+  tightEvent: 150,
   clutter: 8,
   clutterRadius: 5,
   pinClutter: 2,
@@ -460,7 +471,7 @@ function computeAlignmentAndSpacing(
  * Lower `total` is better; hard defects (wire overlaps, component collisions) yield `+Infinity`.
  */
 export function layoutQuality(doc: SchematicDocument, opts?: QualityWeights): QualityBreakdown {
-  const w: Required<Omit<QualityWeights, "baselineNets" | "baselineCollisions">> = {
+  const w: Required<Omit<QualityWeights, "baselineNets" | "baselineCollisions" | "baselineTightEvents">> = {
     overlap: opts?.overlap ?? DEFAULT_QUALITY_WEIGHTS.overlap,
     sameNetOverlap: opts?.sameNetOverlap ?? DEFAULT_QUALITY_WEIGHTS.sameNetOverlap,
     componentCollision: opts?.componentCollision ?? DEFAULT_QUALITY_WEIGHTS.componentCollision,
@@ -468,6 +479,7 @@ export function layoutQuality(doc: SchematicDocument, opts?: QualityWeights): Qu
     crossing: opts?.crossing ?? DEFAULT_QUALITY_WEIGHTS.crossing,
     junction: opts?.junction ?? DEFAULT_QUALITY_WEIGHTS.junction,
     bend: opts?.bend ?? DEFAULT_QUALITY_WEIGHTS.bend,
+    tightEvent: opts?.tightEvent ?? DEFAULT_QUALITY_WEIGHTS.tightEvent,
     clutter: opts?.clutter ?? DEFAULT_QUALITY_WEIGHTS.clutter,
     clutterRadius: opts?.clutterRadius ?? DEFAULT_QUALITY_WEIGHTS.clutterRadius,
     pinClutter: opts?.pinClutter ?? DEFAULT_QUALITY_WEIGHTS.pinClutter,
@@ -511,6 +523,9 @@ export function layoutQuality(doc: SchematicDocument, opts?: QualityWeights): Qu
 
   // 3. Superlinear local density / clutter over crossings ∪ junctions
   const events: Point[] = [...crossingPts, ...jPts];
+  const tightCount = countTightPairs(events, grid);
+  const tightEvents =
+    tightCount === 0 ? 0 : tightCount > (opts?.baselineTightEvents ?? 0) ? Infinity : tightCount * w.tightEvent;
   const rawClutter = computeEventClutter(events, grid, w.clutterRadius, pinProximityWeights(doc, events, grid, w.pinClutter, w.pinClutterRadius));
   const clutter = normZero(rawClutter === 0 ? 0 : rawClutter * w.clutter);
 
@@ -525,9 +540,9 @@ export function layoutQuality(doc: SchematicDocument, opts?: QualityWeights): Qu
   const area = normZero(areaGrid2 === 0 ? 0 : areaGrid2 * w.area);
 
   const total =
-    overlaps === Infinity || componentCollisions === Infinity
+    overlaps === Infinity || componentCollisions === Infinity || tightEvents === Infinity
       ? Infinity
-      : normZero(overlaps + componentCollisions + crossings + junctions + bends + clutter + alignment + spacing + area);
+      : normZero(overlaps + componentCollisions + crossings + junctions + bends + tightEvents + clutter + alignment + spacing + area);
 
   return {
     area,
@@ -536,6 +551,7 @@ export function layoutQuality(doc: SchematicDocument, opts?: QualityWeights): Qu
     componentCollisions,
     junctions,
     bends,
+    tightEvents,
     clutter,
     alignment,
     spacing,
@@ -582,4 +598,25 @@ export function pinProximityWeights(
         }
     return 1 + boost * Math.max(0, 1 - best / radiusCells);
   });
+}
+
+/** Pairs of events (crossings ∪ junctions) within one grid cell of each other (Chebyshev). */
+function countTightPairs(events: readonly Point[], grid: number): number {
+  if (events.length < 2) return 0;
+  const sorted = [...events].sort((a, b) => a.x - b.x || a.y - b.y);
+  let n = 0;
+  for (let i = 0; i < sorted.length; i++) {
+    for (let j = i + 1; j < sorted.length; j++) {
+      const dx = sorted[j].x - sorted[i].x;
+      if (dx > grid) break;
+      const d = Math.max(dx, Math.abs(sorted[j].y - sorted[i].y));
+      if (d > 0 && d <= grid) n++;
+    }
+  }
+  return n;
+}
+
+/** Touching event pairs of `doc`, for `QualityWeights.baselineTightEvents`. */
+export function tightEventPairs(doc: SchematicDocument): number {
+  return countTightPairs(extractVisualEvents(doc).events, doc.grid || GRID);
 }

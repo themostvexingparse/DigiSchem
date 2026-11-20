@@ -38,6 +38,7 @@ describe("layout/quality — default weights & invariants", () => {
       componentCollisions: 0,
       junctions: 0,
       bends: 0,
+      tightEvents: 0,
       clutter: 0,
       alignment: 0,
       spacing: 0,
@@ -285,5 +286,26 @@ describe("clutter near component pins costs more", () => {
     const near = mk(0), far = mk(600);
     expect(near.crossings).toBe(far.crossings);
     expect(near.clutter).toBeGreaterThan(far.clutter * 1.5);
+  });
+});
+
+describe("touching junctions / crossings", () => {
+  it("are infinite when a layout has more than its baseline, finite otherwise", async () => {
+    const { tightEventPairs } = await import("../src/layout/quality");
+    const d = emptyDocument("tight");
+    // a vertical trunk with two branches one grid cell apart → two junction dots touching
+    d.wires.push(
+      { id: "t", points: [{ x: 100, y: 0 }, { x: 100, y: 200 }] },
+      { id: "a", points: [{ x: 100, y: 100 }, { x: 200, y: 100 }] },
+      { id: "b", points: [{ x: 100, y: 110 }, { x: 0, y: 110 }] },
+    );
+    expect(tightEventPairs(d)).toBe(1);
+    expect(layoutQuality(d).tightEvents).toBe(Infinity);
+    const q = layoutQuality(d, { baselineTightEvents: 1 });
+    expect(q.tightEvents).toBe(DEFAULT_QUALITY_WEIGHTS.tightEvent);
+    expect(Number.isFinite(q.total)).toBe(true);
+    // two cells apart: fine
+    d.wires[2].points = [{ x: 100, y: 120 }, { x: 0, y: 120 }];
+    expect(tightEventPairs(d)).toBe(0);
   });
 });

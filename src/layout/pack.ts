@@ -22,7 +22,7 @@
  *     If `qualityAfter.total` does not strictly improve over `qualityBefore.total` (and no
  *     partial-pack subset area improvement occurred), returns an unmodified deep copy.
  */
-import type { SchematicDocument } from "../model/types";
+import type { Point, SchematicDocument } from "../model/types";
 import { componentBounds, documentBounds } from "../model/geometry";
 import {
   buildCompactionModel,
@@ -40,6 +40,7 @@ import {
   type QualityWeights,
   wireNetIndex,
   collidingPairs,
+  tightEventPairs,
 } from "./quality";
 import { realignProblems, realignWithReroute } from "./realign";
 import {
@@ -196,8 +197,13 @@ function runSchedule(
       continue;
     }
 
-    const sol = model.solveStrategy(strategy);
-    const candidate = model.materialize(sol);
+    let sol = model.solveStrategy(strategy);
+    let candidate = model.materialize(sol);
+    const fixed = separateTightEvents(model, sol, candidate, qWeights.baselineTightEvents ?? 0);
+    if (fixed) {
+      sol = fixed.sol;
+      candidate = fixed.doc;
+    }
     const candMetrics = measureMetrics(candidate, qWeights, compOpts.ids);
 
     // Must obey Rule 9 area bound against baseline and improve quality
@@ -226,6 +232,61 @@ function runSchedule(
   }
 
   return { doc: bestDoc, metrics: bestMetrics, passes: bestPasses };
+}
+
+
+/**
+ * Touching junctions / crossings (within one grid cell) read as one blob, so a layout may not
+ * have more of them than its input. A compaction pass that squeezes some together is repaired
+ * instead of discarded: for each new touching pair separated along the pass axis, add a
+ * "keep ≥ 2 cells apart" constraint between the groups carrying the two events and re-solve —
+ * the rest of the pass's gain survives. Returns null if it cannot get back to the baseline.
+ */
+function separateTightEvents(
+  model: CompactionModel,
+  sol: Float64Array,
+  doc: SchematicDocument,
+  baselineTight: number,
+): { sol: Float64Array; doc: SchematicDocument } | null {
+  const { grid, axis } = model;
+  const isX = axis === "x";
+  let curSol = sol;
+  let curDoc = doc;
+  const edges: { from: number; to: number; w: number }[] = [];
+  for (let iter = 0; iter < 6; iter++) {
+    const { events } = extractVisualEvents(curDoc);
+    const sorted = [...events].sort((a, b) => a.x - b.x || a.y - b.y);
+    const pairs: [Point, Point][] = [];
+    for (let i = 0; i < sorted.length; i++) {
+      for (let j = i + 1; j < sorted.length; j++) {
+        const dx = sorted[j].x - sorted[i].x;
+        if (dx > grid) break;
+        const d = Math.max(dx, Math.abs(sorted[j].y - sorted[i].y));
+        if (d > 0 && d <= grid) pairs.push([sorted[i], sorted[j]]);
+      }
+    }
+    if (pairs.length <= baselineTight) return { sol: curSol, doc: curDoc };
+    let added = 0;
+    for (const [a, b] of pairs) {
+      const pa = isX ? a.x : a.y;
+      const pb = isX ? b.x : b.y;
+      if (pa === pb) continue; // same lane on this axis: only the other axis can separate them
+      const [lo, hi, plo, phi] = pa < pb ? [a, b, pa, pb] : [b, a, pb, pa];
+      const gLo = [...model.groupsAffectingEvents(curDoc, [lo])][0];
+      const gHi = [...model.groupsAffectingEvents(curDoc, [hi])][0];
+      if (gLo === undefined || gHi === undefined || gLo === gHi) continue;
+      const offLo = plo - curSol[gLo];
+      const offHi = phi - curSol[gHi];
+      edges.push({ from: gLo, to: gHi, w: 2 * grid + offLo - offHi });
+      added++;
+    }
+    if (added === 0) return null;
+    const next = model.solveWithExtraEdges(edges, curSol);
+    if (!next) return null;
+    curSol = next;
+    curDoc = model.materialize(next);
+  }
+  return null;
 }
 
 /** Fast Rule-9 area guard during local search (avoids full validation on every trial move). */
@@ -914,7 +975,10 @@ function runBeamSearch(
         for (const edges of chainMoves(model, st.doc, qWeights, CHAIN_MOVES_PER_KIND)) {
           if (timeUp()) break;
           const sol = model.solveWithExtraEdges(edges, model.groupOrig);
-          if (sol) push(st, model.materialize(sol));
+          if (!sol) continue;
+          const cand = model.materialize(sol);
+          const fixed = separateTightEvents(model, sol, cand, qWeights.baselineTightEvents ?? 0);
+          push(st, fixed ? fixed.doc : cand);
         }
       }
     }
@@ -1062,6 +1126,7 @@ function packCore(doc: SchematicDocument, opts?: PackOptions): PackResult {
     componentGap,
     baselineNets: wireNetIndex(doc),
     baselineCollisions: collidingPairs(doc, componentGap),
+    baselineTightEvents: tightEventPairs(doc),
     ...opts?.qualityWeights,
   };
 
@@ -1226,6 +1291,7 @@ export function packSchematic(doc: SchematicDocument, opts?: PackOptions): PackR
     componentGap,
     baselineNets: wireNetIndex(doc),
     baselineCollisions: collidingPairs(doc, componentGap),
+    baselineTightEvents: tightEventPairs(doc),
     ...opts?.qualityWeights,
   };
   const budget = opts?.timeBudgetMs ?? Math.min(4000, DEFAULT_TIME_BUDGET_MS + 25 * doc.components.length);

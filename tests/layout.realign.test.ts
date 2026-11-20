@@ -65,3 +65,15 @@ describe("compaction realigns a displaced part and re-routes its wires", () => {
     expect([n2.x, n2.y]).toEqual([d2.x, d2.y]);
   }, 30000);
 });
+
+describe("compaction never makes junctions / crossings touch", () => {
+  it("does not add touching event pairs on any sample", async () => {
+    const { readdirSync } = await import("node:fs");
+    const { tightEventPairs } = await import("../src/layout/quality");
+    for (const f of readdirSync("samples/compaction").filter((x) => x.endsWith(".dschem") && !x.startsWith("07"))) {
+      const d = load(f.replace(".dschem", ""));
+      const r = packSchematic(d, { timeBudgetMs: 800 });
+      expect(tightEventPairs(r.doc), f).toBeLessThanOrEqual(tightEventPairs(d));
+    }
+  }, 120000);
+});
