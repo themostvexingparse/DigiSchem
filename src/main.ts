@@ -27,8 +27,9 @@ let lastConflicts = 0;
 const updateStatus = () => {
   const name = store.filePath ? store.filePath.split(/[\\/]/).pop() : store.doc.name;
   const nConf = editor.connectionConflicts().length;
-  status.textContent = `${name}${store.dirty ? " •" : ""}   |   ${store.doc.components.length} components, ${store.doc.wires.length} wires   |   ${editor.statusText()}${nConf > 0 ? `   |   ⚠ ${nConf} connection conflict${nConf > 1 ? "s" : ""} (connections kept)` : ""}`;
-  status.classList.toggle("has-conflicts", nConf > 0);
+  const nUnrouted = editor.unroutedWires().size;
+  status.textContent = `${name}${store.dirty ? " •" : ""}   |   ${store.doc.components.length} components, ${store.doc.wires.length} wires   |   ${editor.statusText()}${nConf > 0 ? `   |   ⚠ ${nConf} connection conflict${nConf > 1 ? "s" : ""} (connections kept)` : ""}${nUnrouted > 0 ? `   |   ⚠ ${nUnrouted} wire${nUnrouted > 1 ? "s" : ""} waiting for a clean route` : ""}`;
+  status.classList.toggle("has-conflicts", nConf > 0 || nUnrouted > 0);
   // Warn once when an edit (not each drag frame) leaves NEW conflicts.
   if (!editor.isBusy()) {
     if (nConf > lastConflicts) {
@@ -43,6 +44,16 @@ const updateStatus = () => {
   document.title = `${name}${store.dirty ? " •" : ""} — DigiSchem`;
 };
 store.subscribe(updateStatus);
+editor.onUnroutedChange((added, total) => {
+  updateStatus();
+  if (added > 0) {
+    notify(
+      `⚠ ${added} wire${added > 1 ? "s" : ""} could not be routed without touching other wires or a part's outline ` +
+        `(dashed red). ${total > 1 || added > 1 ? "They" : "It"} will be restored automatically as soon as there is room.`,
+      true,
+    );
+  }
+});
 editor.onStateChange(updateStatus);
 updateStatus();
 

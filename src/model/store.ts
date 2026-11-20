@@ -81,6 +81,22 @@ export class DocumentStore {
     this.emit("doc");
   }
 
+  /**
+   * Amend the CURRENT step (no new undo entry): automatic follow-ups of an edit — e.g. a wire that
+   * could not be routed being restored once there is room — belong to the edit that caused them.
+   */
+  amend(mutator: (draft: SchematicDocument) => void): void {
+    const before = this._doc;
+    const draft = clone(before);
+    mutator(draft);
+    if (JSON.stringify(draft) === JSON.stringify(before)) return;
+    maintainLinks(before, draft);
+    this._doc = draft;
+    this.dirty = true;
+    this.pruneSelection();
+    this.emit("doc");
+  }
+
   beginGesture(): void {
     if (this.gestureDepth++ === 0) {
       this.gestureRecorded = false;

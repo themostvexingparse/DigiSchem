@@ -47,6 +47,7 @@ import {
   type SnapTarget,
 } from "./wire-utils";
 import { connectionConflicts, type ConnectionConflict } from "../model/links";
+import { badWireIds, restoreWires } from "./safe-route";
 import { movedEndContacts, netWiresAt, RouteObstacles, repairWires, safeRoute, sameNetWires, trimToBranchPoints } from "./safe-route";
 import { computeGuides, guidePeers, type GuideResult } from "./guides";
 import { getSettings, onSettingsChange, updateSettings } from "../model/settings";
@@ -295,6 +296,7 @@ export class Editor {
     this.applyTheme();
     this.updateViewport();
     this.rebuildScene();
+    this.knownBad = badWireIds(this.store.doc as SchematicDocument);
 
     this.store.subscribe((kind) => {
       if (kind === "doc" || kind === "replace") {
@@ -303,6 +305,11 @@ export class Editor {
           this.placing = null;
           this.interaction = null;
           this.closeTextEditor(false);
+          // a freshly opened drawing: what is already unclean is not ours to re-route
+          this.unrouted.clear();
+          this.knownBad = badWireIds(this.store.doc as SchematicDocument);
+        } else {
+          this.scheduleRouteWatch();
         }
         this.rebuildScene();
         if (kind === "replace") this.emitState();
@@ -613,6 +620,7 @@ export class Editor {
         `.ds-unconn-pin{fill:${this.theme.background};stroke:${unconnStroke};stroke-width:1.3}`,
         `.ds-conflict{fill:rgba(220,38,38,0.12);stroke:#dc2626;stroke-width:2;vector-effect:non-scaling-stroke}`,
         `.ds-conflict-x{stroke:#dc2626;stroke-width:1.6;vector-effect:non-scaling-stroke}`,
+        `.ds-unrouted{fill:none;stroke:#dc2626;stroke-width:5;stroke-dasharray:6 4;stroke-linecap:round;stroke-linejoin:round;opacity:0.55}`,
         `.ds-guide{stroke:#e0338a;stroke-width:1;stroke-dasharray:4 3;vector-effect:non-scaling-stroke;fill:none}`,
         `.ds-spacing{stroke:#e0338a;stroke-width:1.5;vector-effect:non-scaling-stroke;fill:none}`,
         `.ds-resize-handle{fill:${this.theme.background};stroke:${accent};stroke-width:1.5;vector-effect:non-scaling-stroke}`,
@@ -750,6 +758,75 @@ export class Editor {
     });
   }
 
+  // ---- wires that could not be routed cleanly: warned about, and restored when possible ----
+  /** Wires an edit left unclean (touching / on a part outline) — retried after every edit. */
+  private unrouted = new Set<string>();
+  /** Unclean wires as of the last check (anything unclean that is NOT new is the user's own). */
+  private knownBad = new Set<string>();
+  private routeWatchQueued = false;
+  private routeWatchRunning = false;
+  private unroutedListeners = new Set<(added: number, total: number) => void>();
+
+  /** Wires currently waiting for a clean route. */
+  unroutedWires(): ReadonlySet<string> {
+    return this.unrouted;
+  }
+
+  /** Called when the set of waiting wires changes: `added` new ones, `total` waiting. */
+  onUnroutedChange(fn: (added: number, total: number) => void): () => void {
+    this.unroutedListeners.add(fn);
+    return () => this.unroutedListeners.delete(fn);
+  }
+
+  private scheduleRouteWatch(): void {
+    if (this.routeWatchQueued || this.routeWatchRunning) return;
+    this.routeWatchQueued = true;
+    setTimeout(() => {
+      this.routeWatchQueued = false;
+      this.runRouteWatch();
+    }, 0);
+  }
+
+  /**
+   * After every finished edit: wires that became unclean join the waiting list (warned about);
+   * every waiting wire is retried, and restored as soon as a clean route exists — as part of the
+   * edit that made it possible (no extra undo step).
+   */
+  private runRouteWatch(): void {
+    if (this.interaction || this.store.inGesture()) {
+      this.scheduleRouteWatchLater();
+      return;
+    }
+    this.routeWatchRunning = true;
+    try {
+      const doc = this.store.doc as SchematicDocument;
+      const bad = badWireIds(doc);
+      let added = 0;
+      for (const id of bad) if (!this.knownBad.has(id) && !this.unrouted.has(id)) {
+        this.unrouted.add(id);
+        added++;
+      }
+      for (const id of [...this.unrouted]) if (!bad.has(id)) this.unrouted.delete(id);
+      if (this.unrouted.size > 0) {
+        let restored: string[] = [];
+        this.store.amend((draft) => {
+          restored = restoreWires(draft, this.unrouted);
+        });
+        for (const id of restored) this.unrouted.delete(id);
+      }
+      this.knownBad = badWireIds(this.store.doc as SchematicDocument);
+      for (const id of [...this.unrouted]) if (!this.knownBad.has(id)) this.unrouted.delete(id);
+      for (const fn of this.unroutedListeners) fn(added, this.unrouted.size);
+      this.renderOverlay();
+    } finally {
+      this.routeWatchRunning = false;
+    }
+  }
+
+  private scheduleRouteWatchLater(): void {
+    setTimeout(() => this.scheduleRouteWatch(), 120);
+  }
+
   private conflictCache: { doc: unknown; list: ConnectionConflict[] } | null = null;
   /** Where the drawing disagrees with the stored connections (cached per document version). */
   connectionConflicts(): ConnectionConflict[] {
@@ -769,6 +846,14 @@ export class Editor {
     const doc = this.store.doc;
     const sel = this.store.selection;
     const parts: string[] = [];
+
+    // 0. Wires waiting for a clean route: dashed red halo
+    if (this.unrouted.size > 0 && !this.interaction) {
+      for (const w of doc.wires) {
+        if (!this.unrouted.has(w.id) || w.points.length < 2) continue;
+        parts.push(`<polyline class="ds-unrouted" points="${w.points.map((p) => `${p.x},${p.y}`).join(" ")}"><title>No clean route yet — it will be restored automatically when there is room</title></polyline>`);
+      }
+    }
 
     // 1. Selection highlights
     if (sel.size > 0) {

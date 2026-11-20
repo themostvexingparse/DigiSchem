@@ -219,7 +219,7 @@ export class RouteObstacles {
 
   /** Does the unit step a→b cut through a component body? */
   stepBlocked(a: Point, b: Point): boolean {
-    for (const b2 of this.bodies) if (segmentCrossesInterior(a, b, b2.r)) return true;
+    for (const b2 of this.bodies) if (segmentCrossesInterior(a, b, b2.r) || segmentOnOutline(a, b, b2.r)) return true;
     return false;
   }
 
@@ -280,7 +280,7 @@ export class RouteObstacles {
           if (!isEnd(vk) && this.foreignVertex(vk, self, allowed)) return true;
         }
       }
-      for (const b2 of this.bodies) if (segmentCrossesInterior(a, b, b2.r)) return true;
+      for (const b2 of this.bodies) if (segmentCrossesInterior(a, b, b2.r) || segmentOnOutline(a, b, b2.r)) return true;
     }
     return false;
   }
@@ -294,6 +294,25 @@ function push<K, V>(m: Map<K, V[]>, k: K, v: V) {
   const l = m.get(k);
   if (l) l.push(v);
   else m.set(k, [v]);
+}
+
+/**
+ * True if axis-aligned segment ab runs ALONG an edge of rect r (collinear with it, touching its
+ * span — a corner counts). A wire drawn on a part's outline reads as part of the symbol.
+ */
+function segmentOnOutline(a: Point, b: Point, r: Rect): boolean {
+  const x0 = r.x, x1 = r.x + r.w, y0 = r.y, y1 = r.y + r.h;
+  if (a.y === b.y && a.x !== b.x) {
+    if (a.y !== y0 && a.y !== y1) return false;
+    const lo = Math.min(a.x, b.x), hi = Math.max(a.x, b.x);
+    return hi >= x0 && lo <= x1;
+  }
+  if (a.x === b.x && a.y !== b.y) {
+    if (a.x !== x0 && a.x !== x1) return false;
+    const lo = Math.min(a.y, b.y), hi = Math.max(a.y, b.y);
+    return hi >= y0 && lo <= y1;
+  }
+  return false;
 }
 
 /** True if axis-aligned segment ab passes through the OPEN interior of rect r. */
@@ -792,7 +811,7 @@ function resolveRemainingShorts(doc: SchematicDocument, work: string[], allowed:
  * branch point with a wire of its own net) and each bad leg is re-routed in the smallest window
  * of its own vertices that works — so its junctions stay where they are.
  */
-function localRepairWire(
+export function localRepairWire(
   doc: SchematicDocument,
   v: { id: string; points: Point[] },
   nets: Map<string, Set<string>>,
@@ -887,6 +906,53 @@ export function repairDrawingConflicts(
   }
   const after = count();
   return after < before ? { doc: d, fixed: before - after } : { doc, fixed: 0 };
+}
+
+/**
+ * Wires whose drawing is not clean: they touch something they are not connected to (a pin or a
+ * vertex of another net), bend on another wire, cut through a part, or run along a part's outline.
+ */
+export function badWireIds(doc: SchematicDocument): Set<string> {
+  const nets = sameNetWires(doc);
+  const obs = new RouteObstacles(doc);
+  const out = new Set<string>();
+  for (const w of doc.wires) {
+    if (w.points.length < 2) continue;
+    const a = w.points[0], b = w.points[w.points.length - 1];
+    if (a.x === b.x && a.y === b.y) continue; // collapsed (kept for its connections)
+    if (obs.routeIsBad(w.points, new Set([w.id, ...(nets.get(w.id) ?? [])]))) out.add(w.id);
+  }
+  return out;
+}
+
+/**
+ * Try to restore the listed wires to a clean route (locally, junctions kept). A wire's new route
+ * is kept only if it is clean and no stored connection is left broken in the drawing. Returns the
+ * ids that were restored.
+ */
+export function restoreWires(doc: SchematicDocument, ids: Iterable<string>, budgetMs = 40): string[] {
+  const t0 = performance.now();
+  const nets = sameNetWires(doc);
+  const restored: string[] = [];
+  const broken = () => connectionConflicts(doc).filter((c) => c.kind === "broken").length;
+  let brokenNow = broken();
+  for (const id of ids) {
+    if (performance.now() - t0 > budgetMs) break;
+    const w = doc.wires.find((x) => x.id === id);
+    if (!w || w.points.length < 2) continue;
+    const before = w.points.map((p) => ({ ...p }));
+    localRepairWire(doc, w, nets);
+    const obs = new RouteObstacles(doc);
+    const clean = !obs.routeIsBad(w.points, new Set([w.id, ...(nets.get(w.id) ?? [])]));
+    const b = broken();
+    if (clean && b <= brokenNow) {
+      brokenNow = b;
+      if (JSON.stringify(before) !== JSON.stringify(w.points)) restored.push(id);
+    } else {
+      w.points = before;
+    }
+  }
+  return restored;
 }
 
 const SHORT_PENALTY = 1e8;
