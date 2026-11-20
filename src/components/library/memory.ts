@@ -52,6 +52,7 @@ function ramLayout(props: Record<string, PropValue>) {
     subtitle: `${formatWords(1 << addrBits)}×${dataW}`,
     minBodyW: 90,
     minBodyH: 80,
+    tbSpacing: 30,
   });
 }
 

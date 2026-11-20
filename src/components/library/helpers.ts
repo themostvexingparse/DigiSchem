@@ -70,7 +70,7 @@ export interface BoxSpec {
   minBodyH?: number;
   /** Force spacing on left/right sides (default: 20 when <= 8 pins, 10 when > 8). */
   sideSpacing?: number;
-  /** Force spacing on top/bottom sides (default: 20 when <= 6 pins, 10 when > 6). */
+  /** Minimum spacing on top/bottom sides (always >= 20 and >= label-width clearance). */
   tbSpacing?: number;
   /** Pin stub length on sides that have pins (default: PIN_LEN = 20). */
   margin?: number;
@@ -95,6 +95,28 @@ function estimateLabelWidth(p: PinSpec): number {
 }
 
 /**
+ * Minimum grid-aligned spacing between adjacent pins on a horizontal edge (top/bottom)
+ * so labels are never closer than (label.length * 6 + 4) units apart.
+ */
+export function minEdgePinSpacing(pins: PinSpec[], minSpacing = 2 * GRID): number {
+  let spacing = Math.max(2 * GRID, minSpacing);
+  if (pins.length >= 2) {
+    for (const p of pins) {
+      spacing = Math.max(spacing, ceilGrid(p.name.length * 6 + 4));
+    }
+  }
+  return spacing;
+}
+
+function horizontalEdgeNeedW(pins: PinSpec[], spacing: number): number {
+  if (pins.length === 0) return 0;
+  const firstPad = Math.max(GRID, ceilGrid((pins[0].name.length * 6 + 4) / 2));
+  const lastPad = Math.max(GRID, ceilGrid((pins[pins.length - 1].name.length * 6 + 4) / 2));
+  const edgePad = Math.max(firstPad, lastPad);
+  return (pins.length - 1) * spacing + 2 * edgePad;
+}
+
+/**
  * Compute grid-aligned bounding box and pin coordinates for a rectangular IC / block.
  * Pin stubs extend outward from the body rectangle to the exact bounding box edge.
  */
@@ -107,13 +129,9 @@ export function layoutBox(spec: BoxSpec): BoxLayout {
 
   const maxLR = Math.max(left.length, right.length);
   const sideSpacing = spec.sideSpacing ?? (maxLR <= 8 ? 2 * GRID : GRID);
-  const maxTB = Math.max(top.length, bottom.length);
-  const maxTBLabelLen = Math.max(
-    0,
-    ...top.map((p) => p.name.length),
-    ...bottom.map((p) => p.name.length),
-  );
-  const tbSpacing = spec.tbSpacing ?? (maxTB <= 6 ? (maxTBLabelLen >= 3 ? 3 * GRID : 2 * GRID) : 2 * GRID);
+  const minTB = Math.max(2 * GRID, spec.tbSpacing ?? 2 * GRID);
+  const topSpacing = minEdgePinSpacing(top, minTB);
+  const botSpacing = minEdgePinSpacing(bottom, minTB);
 
   const maxLeftW = left.reduce((m, p) => Math.max(m, estimateLabelWidth(p)), 0);
   const maxRightW = right.reduce((m, p) => Math.max(m, estimateLabelWidth(p)), 0);
@@ -121,8 +139,8 @@ export function layoutBox(spec: BoxSpec): BoxLayout {
   const subW = spec.subtitle ? spec.subtitle.length * 6.4 + 16 : 0;
   const headerW = Math.max(titleW, subW);
 
-  const topNeedW = top.length > 0 ? Math.max((top.length + 1) * tbSpacing, top.reduce((s, p) => s + Math.max(tbSpacing, p.name.length * 6.5 + 8), 10)) : 0;
-  const botNeedW = bottom.length > 0 ? Math.max((bottom.length + 1) * tbSpacing, bottom.reduce((s, p) => s + Math.max(tbSpacing, p.name.length * 6.5 + 8), 10)) : 0;
+  const topNeedW = horizontalEdgeNeedW(top, topSpacing);
+  const botNeedW = horizontalEdgeNeedW(bottom, botSpacing);
 
   // Put title in top header strip when there are no top pins and enough height;
   // otherwise ensure center has room between left and right pin labels.
@@ -132,8 +150,10 @@ export function layoutBox(spec: BoxSpec): BoxLayout {
   const minBodyW = spec.minBodyW ?? 60;
   const bodyW = ceilGrid(Math.max(minBodyW, maxLeftW + maxRightW + centerGap, headerW, topNeedW, botNeedW));
 
-  const topPad = top.length > 0 ? 20 : titleInHeader ? (spec.subtitle ? 30 : 20) : 10;
-  const botPad = bottom.length > 0 ? 20 : 10;
+  const topHasClock = top.some((p) => p.clock);
+  const botHasClock = bottom.some((p) => p.clock);
+  const topPad = top.length > 0 ? (topHasClock ? 30 : 20) : titleInHeader ? (spec.subtitle ? 30 : 20) : 10;
+  const botPad = bottom.length > 0 ? (botHasClock ? 30 : 20) : 10;
   const lrSpan = maxLR > 0 ? (maxLR - 1) * sideSpacing : 0;
   const minBodyH = spec.minBodyH ?? 40;
   const bodyH = ceilGrid(Math.max(minBodyH, topPad + lrSpan + botPad));
@@ -169,9 +189,9 @@ export function layoutBox(spec: BoxSpec): BoxLayout {
     }
   };
 
-  const placeHorizontal = (list: PinSpec[], side: "top" | "bottom", y: number) => {
+  const placeHorizontal = (list: PinSpec[], side: "top" | "bottom", y: number, spacing: number) => {
     if (list.length === 0) return;
-    const span = (list.length - 1) * tbSpacing;
+    const span = (list.length - 1) * spacing;
     const startX = bodyX + Math.max(GRID, snapGrid((bodyW - span) / 2));
     for (let i = 0; i < list.length; i++) {
       const p = list[i];
@@ -179,7 +199,7 @@ export function layoutBox(spec: BoxSpec): BoxLayout {
       pins.push({
         id: p.id,
         name: p.name,
-        x: startX + i * tbSpacing,
+        x: startX + i * spacing,
         y,
         dir: p.dir,
         side,
@@ -192,8 +212,8 @@ export function layoutBox(spec: BoxSpec): BoxLayout {
 
   placeVertical(left, "left", 0);
   placeVertical(right, "right", width);
-  placeHorizontal(top, "top", 0);
-  placeHorizontal(bottom, "bottom", height);
+  placeHorizontal(top, "top", 0, topSpacing);
+  placeHorizontal(bottom, "bottom", height, botSpacing);
 
   return {
     geometry: { width, height, pins },
