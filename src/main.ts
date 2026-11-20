@@ -1,3 +1,6 @@
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { ask } from "@tauri-apps/plugin-dialog";
+import { isTauri } from "./platform/files";
 import { registerBuiltinComponents } from "./components/library";
 import { DocumentStore } from "./model/store";
 import { emptyDocument } from "./model/types";
@@ -28,9 +31,26 @@ store.subscribe(updateStatus);
 editor.onStateChange(updateStatus);
 updateStatus();
 
-window.addEventListener("beforeunload", (e) => {
-  if (store.dirty) e.preventDefault();
-});
+// Browser dev build: the standard leave-page warning (the desktop app uses the prompt below).
+if (!isTauri()) {
+  window.addEventListener("beforeunload", (e) => {
+    if (store.dirty) e.preventDefault();
+  });
+}
+
+// Desktop app: `beforeunload` doesn't fire on window close, so ask before discarding work.
+if (isTauri()) {
+  void getCurrentWindow().onCloseRequested(async (event) => {
+    if (!store.dirty) return;
+    const discard = await ask("You have unsaved changes. Close DigiSchem and discard them?", {
+      title: "Unsaved changes",
+      kind: "warning",
+      okLabel: "Discard and close",
+      cancelLabel: "Keep editing",
+    });
+    if (!discard) event.preventDefault();
+  });
+}
 
 // Exposed for debugging in devtools.
 (window as any).digischem = { store, editor };
