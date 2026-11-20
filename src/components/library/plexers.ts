@@ -12,6 +12,7 @@ import {
   drawBusTick,
   drawPinStub,
   layoutBox,
+  minEdgePinSpacing,
   PIN_LEN,
   renderBox,
   snapGrid,
@@ -45,10 +46,11 @@ function layoutMuxDemux(props: Record<string, PropValue>, isDemux: boolean): Tra
   const selectMode = propStr(props, "selectMode", "bits");
   const numChannels = 1 << selectBits;
 
-  const chSpacing = numChannels <= 4 ? 2 * GRID : GRID;
-  const rawBodyH = Math.max(4 * GRID, (numChannels + 1) * chSpacing);
+  // Always use 20-unit spacing for data channels so labels stay well separated even for selectBits >= 3.
+  const chSpacing = 2 * GRID;
+  const rawBodyH = Math.max(8 * GRID, (numChannels + 1) * chSpacing);
   const bodyH = ceilEvenGrid(rawBodyH);
-  const slope = Math.min(20, Math.max(10, Math.floor((bodyH - 20) / 2)));
+  const slope = Math.min(20, Math.max(10, Math.floor((bodyH - 40) / 2)));
 
   const bottomPinsSpec: PinSpec[] = [];
   if (selectMode === "bus") {
@@ -62,8 +64,18 @@ function layoutMuxDemux(props: Record<string, PropValue>, isDemux: boolean): Tra
     bottomPinsSpec.push({ id: "en", name: "EN", dir: "in" });
   }
 
-  const botSpacing = 2 * GRID;
-  const bodyW = ceilEvenGrid(Math.max(60, (bottomPinsSpec.length + 1) * botSpacing));
+  const botSpacing = minEdgePinSpacing(bottomPinsSpec, 2 * GRID);
+  const title = isDemux ? "DMUX" : "MUX";
+  const maxChLabelLen = String(numChannels - 1).length;
+  const leftLabelW = (isDemux ? 1 : maxChLabelLen) * 6 + 12;
+  const rightLabelW = (isDemux ? maxChLabelLen : 1) * 6 + 12;
+  const titleW = title.length * 9 + 12;
+  const subW = dataWidth > 1 ? `${dataWidth}-bit`.length * 6.4 + 12 : 0;
+  const centerW = Math.max(titleW, subW);
+  const botNeedW =
+    bottomPinsSpec.length > 0 ? (bottomPinsSpec.length - 1) * botSpacing + 2 * 30 : 0;
+
+  const bodyW = ceilEvenGrid(Math.max(80, leftLabelW + centerW + rightLabelW, botNeedW));
   const bodyX = PIN_LEN;
   const bodyTop = 0;
   const totalW = bodyX + bodyW + PIN_LEN;
@@ -166,10 +178,10 @@ function renderMuxDemux(props: Record<string, PropValue>, isDemux: boolean): str
   for (const pin of geometry.pins) {
     if (pin.side === "left") {
       svg += drawPinStub(pin, bodyX, pin.y);
-      svg += `<text class="ds-text" x="${bodyX + 4}" y="${pin.y + 3.5}" text-anchor="start">${escapeXml(pin.name)}</text>`;
+      svg += `<text class="ds-text" x="${bodyX + 6}" y="${pin.y + 3.5}" text-anchor="start">${escapeXml(pin.name)}</text>`;
     } else if (pin.side === "right") {
       svg += drawPinStub(pin, bodyRight, pin.y);
-      svg += `<text class="ds-text" x="${bodyRight - 4}" y="${pin.y + 3.5}" text-anchor="end">${escapeXml(pin.name)}</text>`;
+      svg += `<text class="ds-text" x="${bodyRight - 6}" y="${pin.y + 3.5}" text-anchor="end">${escapeXml(pin.name)}</text>`;
     } else if (pin.side === "bottom") {
       const ey = +bottomEdgeY(pin.x).toFixed(2);
       svg += drawPinStub(pin, pin.x, ey);

@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { ALL_DEFS, registerBuiltinComponents } from "../src/components/library";
+import { layoutBox } from "../src/components/library/helpers";
 import { CATEGORY_ORDER, getDef, listDefs } from "../src/model/registry";
-import { GRID, type ComponentDef, type PropDef } from "../src/model/component-def";
+import { GRID, type ComponentDef, type PinDef, type PropDef, type Side } from "../src/model/component-def";
 import { emptyDocument, type PropValue } from "../src/model/types";
 import { worldPins } from "../src/model/geometry";
 import { renderDocumentSvg } from "../src/render/svg";
@@ -358,5 +359,204 @@ describe("specific textbook component behaviors", () => {
     const shared = ram.geometry({ addressBits: 8, dataWidth: 16, dataPortMode: "shared", pinMode: "bus", chipSelect: false });
     expect(shared.pins.some((p) => p.id === "dq" && p.dir === "inout")).toBe(true);
     expect(shared.pins.some((p) => p.id === "oe")).toBe(true);
+  });
+});
+
+/** Extract <text ...>label</text> positions from an SVG fragment for overlap assertions. */
+function parseTextElements(svg: string): { text: string; x: number; y: number; anchor: string; cls: string }[] {
+  const out: { text: string; x: number; y: number; anchor: string; cls: string }[] = [];
+  const re = /<text\b([^>]*)>([^<]*)<\/text>/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(svg)) !== null) {
+    const attrs = m[1];
+    const text = m[2];
+    const x = Number(/x="([^"]+)"/.exec(attrs)?.[1] ?? NaN);
+    const y = Number(/y="([^"]+)"/.exec(attrs)?.[1] ?? NaN);
+    const anchor = /text-anchor="([^"]+)"/.exec(attrs)?.[1] ?? "start";
+    const cls = /class="([^"]+)"/.exec(attrs)?.[1] ?? "";
+    out.push({ text, x, y, anchor, cls });
+  }
+  return out;
+}
+
+function textSpanX(t: { text: string; x: number; anchor: string; cls: string }): [number, number] {
+  const charW = t.cls.includes("ds-title") ? 8 : 6;
+  const w = t.text.length * charW;
+  if (t.anchor === "middle") return [t.x - w / 2, t.x + w / 2];
+  if (t.anchor === "end") return [t.x - w, t.x];
+  return [t.x, t.x + w];
+}
+
+describe("pin spacing and label clearance invariants", () => {
+  const SIDES: Side[] = ["left", "right", "top", "bottom"];
+
+  for (const def of ALL_DEFS) {
+    it(`${def.type} keeps same-side pins >= 10 apart and top/bottom pins >= 20 apart across prop sweep`, () => {
+      const configs = sweepProps(def);
+
+      for (const props of configs) {
+        const ctx = `${def.type}(${JSON.stringify(props)})`;
+        const g = def.geometry(props);
+        const svg = def.symbol(props);
+        const isBoxStyle = svg.includes('<rect class="ds-body"');
+
+        for (const side of SIDES) {
+          const sidePins: PinDef[] = g.pins.filter((p) => p.side === side);
+          if (sidePins.length < 2) continue;
+
+          const horizontal = side === "top" || side === "bottom";
+          const sorted = [...sidePins].sort((a, b) => (horizontal ? a.x - b.x : a.y - b.y));
+
+          for (let i = 1; i < sorted.length; i++) {
+            const a = sorted[i - 1];
+            const b = sorted[i];
+            const dist = Math.hypot(b.x - a.x, b.y - a.y);
+            expect(dist, `${ctx}: pins ${a.id} and ${b.id} on ${side} too close (${dist})`).toBeGreaterThanOrEqual(GRID);
+
+            if (horizontal) {
+              const axisDist = b.x - a.x;
+              if (isBoxStyle) {
+                expect(
+                  axisDist,
+                  `${ctx}: box ${side} pins ${a.id} and ${b.id} must be >= 20 apart (got ${axisDist})`,
+                ).toBeGreaterThanOrEqual(2 * GRID);
+              }
+              const minLabelDist = Math.max(a.name.length, b.name.length) * 6 + 4;
+              expect(
+                axisDist,
+                `${ctx}: ${side} pin labels "${a.name}" and "${b.name}" need >= ${minLabelDist} clearance (got ${axisDist})`,
+              ).toBeGreaterThanOrEqual(minLabelDist);
+            }
+          }
+        }
+      }
+    });
+  }
+
+  it("MUX uses 20-unit data pin spacing for selectBits >= 3 and avoids title/Y overlap", () => {
+    const mux = getDef("mux")!;
+    for (const selectBits of [1, 2, 3, 4, 5]) {
+      for (const extra of [
+        { dataWidth: 1, enable: false },
+        { dataWidth: 8, enable: true },
+      ]) {
+        const props = { selectBits, ...extra, selectMode: "bits" };
+        const g = mux.geometry(props);
+        const dataPins = g.pins.filter((p) => p.side === "left").sort((a, b) => a.y - b.y);
+        expect(dataPins).toHaveLength(1 << selectBits);
+        for (let i = 1; i < dataPins.length; i++) {
+          expect(dataPins[i].y - dataPins[i - 1].y).toBe(20);
+        }
+        // First/last data pins stay at least 20 units clear of the top/bottom slanted edges
+        const bodyH = g.height - 20;
+        expect(dataPins[0].y).toBeGreaterThanOrEqual(20);
+        expect(bodyH - dataPins[dataPins.length - 1].y).toBeGreaterThanOrEqual(20);
+
+        const texts = parseTextElements(mux.symbol(props));
+        const title = texts.find((t) => t.text === "MUX")!;
+        const outY = texts.find((t) => t.text === "Y")!;
+        expect(title).toBeDefined();
+        expect(outY).toBeDefined();
+        const [, titleRight] = textSpanX(title);
+        const [yLeft] = textSpanX(outY);
+        expect(yLeft, `MUX(${JSON.stringify(props)}): Y overlaps MUX title`).toBeGreaterThan(titleRight + 2);
+      }
+    }
+  });
+
+  it("DEMUX uses 20-unit output pin spacing and avoids D/DMUX title overlap", () => {
+    const demux = getDef("demux")!;
+    for (const selectBits of [1, 2, 3, 4, 5]) {
+      for (const extra of [
+        { dataWidth: 1, enable: false },
+        { dataWidth: 8, enable: true },
+      ]) {
+        const props = { selectBits, ...extra, selectMode: "bits" };
+        const g = demux.geometry(props);
+        const outPins = g.pins.filter((p) => p.side === "right").sort((a, b) => a.y - b.y);
+        expect(outPins).toHaveLength(1 << selectBits);
+        for (let i = 1; i < outPins.length; i++) {
+          expect(outPins[i].y - outPins[i - 1].y).toBe(20);
+        }
+
+        const texts = parseTextElements(demux.symbol(props));
+        const title = texts.find((t) => t.text === "DMUX")!;
+        const inD = texts.find((t) => t.text === "D")!;
+        expect(title).toBeDefined();
+        expect(inD).toBeDefined();
+        const [, dRight] = textSpanX(inD);
+        const [titleLeft] = textSpanX(title);
+        expect(titleLeft, `DEMUX(${JSON.stringify(props)}): D overlaps DMUX title`).toBeGreaterThan(dRight + 2);
+      }
+    }
+  });
+
+  it("Register File with writePorts=2 spaces WE1 and WE2 at least 40 units apart", () => {
+    const rf = getDef("register-file")!;
+    const g = rf.geometry({ addressBits: 5, dataWidth: 32, readPorts: 2, writePorts: 2, pinMode: "bus" });
+    const we1 = g.pins.find((p) => p.id === "we1")!;
+    const we2 = g.pins.find((p) => p.id === "we2")!;
+    expect(we1).toBeDefined();
+    expect(we2).toBeDefined();
+    expect(Math.hypot(we2.x - we1.x, we2.y - we1.y)).toBeGreaterThanOrEqual(40);
+  });
+
+  it("Shifter spaces shamt pins cleanly and widens the body to fit", () => {
+    const shf = getDef("shifter")!;
+    for (const shiftBits of [3, 5]) {
+      const g = shf.geometry({ width: 8, shiftBits, pinMode: "bus", mode: "universal" });
+      const shPins = g.pins.filter((p) => p.side === "bottom").sort((a, b) => a.x - b.x);
+      expect(shPins).toHaveLength(shiftBits);
+      for (let i = 1; i < shPins.length; i++) {
+        // "SH0" is 3 chars -> 3*6 + 4 = 22 -> grid-snapped >= 30 (and >= 20)
+        expect(shPins[i].x - shPins[i - 1].x).toBeGreaterThanOrEqual(22);
+      }
+      // Outermost shamt pins stay inside the body with room for labels
+      expect(shPins[0].x).toBeGreaterThanOrEqual(40);
+      expect(g.width - shPins[shPins.length - 1].x).toBeGreaterThanOrEqual(40);
+    }
+  });
+
+  it("ALU spaces Y and N/Z/C/V flag outputs 20 units apart", () => {
+    const alu = getDef("alu")!;
+    const g = alu.geometry({
+      width: 32,
+      opBits: 3,
+      opPinMode: "bits",
+      flagN: true,
+      flagZ: true,
+      flagC: true,
+      flagV: true,
+    });
+    const rightPins = g.pins.filter((p) => p.side === "right").sort((a, b) => a.y - b.y);
+    expect(rightPins.map((p) => p.id)).toEqual(["y", "n", "z", "c", "v"]);
+    for (let i = 1; i < rightPins.length; i++) {
+      expect(rightPins[i].y - rightPins[i - 1].y).toBe(20);
+    }
+  });
+
+  it("layoutBox grows spacing and body width when top/bottom pin labels are wide", () => {
+    const layout = layoutBox({
+      left: [{ id: "a", name: "A", dir: "in" }],
+      right: [{ id: "y", name: "Y", dir: "out" }],
+      top: [
+        { id: "e0", name: "ENABLE0", dir: "in" },
+        { id: "e1", name: "ENABLE1", dir: "in" },
+      ],
+      bottom: [
+        { id: "s0", name: "SEL0", dir: "in" },
+        { id: "s1", name: "SEL1", dir: "in" },
+        { id: "s2", name: "SEL2", dir: "in" },
+      ],
+      minBodyW: 60,
+    });
+    const topPins = layout.geometry.pins.filter((p) => p.side === "top").sort((a, b) => a.x - b.x);
+    const botPins = layout.geometry.pins.filter((p) => p.side === "bottom").sort((a, b) => a.x - b.x);
+    // "ENABLE0" len 7 -> 7*6 + 4 = 46 -> >= 50
+    expect(topPins[1].x - topPins[0].x).toBeGreaterThanOrEqual(46);
+    // "SEL0" len 4 -> 4*6 + 4 = 28 -> >= 30
+    expect(botPins[1].x - botPins[0].x).toBeGreaterThanOrEqual(28);
+    expect(botPins[2].x - botPins[1].x).toBeGreaterThanOrEqual(28);
+    expect(layout.bodyW).toBeGreaterThan(60);
   });
 });

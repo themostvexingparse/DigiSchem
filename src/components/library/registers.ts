@@ -264,6 +264,7 @@ function registerFileLayout(props: Record<string, PropValue>) {
     subtitle: `${1 << addrBits}×${dataW}`,
     minBodyW: 100,
     minBodyH: 100,
+    tbSpacing: 40,
   });
 }
 

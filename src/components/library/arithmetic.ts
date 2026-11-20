@@ -237,7 +237,7 @@ function layoutAlu(props: Record<string, PropValue>): AluLayout {
   if (flagV) rightSpecs.push({ id: "v", name: "V", dir: "out" });
 
   const slope = 20;
-  const rightSpacing = rightSpecs.length <= 4 ? 20 : 10;
+  const rightSpacing = 2 * GRID;
   const rightSpan = (rightSpecs.length - 1) * rightSpacing;
   const flatRightH = Math.max(60, rightSpan + 20);
   const bodyH = ceilEvenGrid(Math.max(120, flatRightH + 2 * slope));
