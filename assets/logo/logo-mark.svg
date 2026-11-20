@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" role="img" aria-label="DigiSchem">
+  <g fill="none" stroke="#2463d1" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M2 9H5M2 15H5"/>
+    <path d="M15 12H19"/>
+    <path d="M22 7H19V17H22"/>
+  </g>
+  <path d="M5 6H9A6 6 0 0 1 9 18H5Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
+  <circle cx="19" cy="12" r="1.75" fill="#2463d1"/>
+</svg>

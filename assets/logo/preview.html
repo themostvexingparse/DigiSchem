@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>DigiSchem Logo Preview</title>
+  <style>
+    :root {
+      font-family: "Segoe UI", Arial, sans-serif;
+      color: #1d2430;
+      background: #f3f4f7;
+    }
+    body {
+      margin: 0;
+      padding: 28px 32px 48px;
+      max-width: 1200px;
+    }
+    h1 { margin: 0 0 6px; font-size: 22px; }
+    p.sub { margin: 0 0 24px; color: #5b6475; font-size: 13px; }
+    h2 { margin: 28px 0 12px; font-size: 15px; text-transform: uppercase; letter-spacing: .05em; color: #5b6475; }
+    .surface {
+      border-radius: 12px;
+      padding: 24px;
+      margin-bottom: 16px;
+      border: 1px solid #d9dde5;
+    }
+    .surface.light { background: #ffffff; color: #1d2430; }
+    .surface.dark { background: #1e1e1e; color: #e5e9f0; border-color: #333; }
+    .surface-label {
+      font-size: 12px;
+      font-weight: 600;
+      opacity: .7;
+      margin-bottom: 16px;
+    }
+    .row {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: flex-end;
+      gap: 24px;
+    }
+    .item {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 8px;
+    }
+    .item span {
+      font-size: 12px;
+      font-family: Consolas, monospace;
+      opacity: .75;
+    }
+    .master-wrap {
+      overflow-x: auto;
+      padding-bottom: 8px;
+    }
+    .mark-black { color: #000000; }
+    .mark-blue { color: #2463d1; }
+    .swatches {
+      display: flex;
+      gap: 12px;
+      margin-top: 8px;
+    }
+    .swatch {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+      font-family: Consolas, monospace;
+      background: #fff;
+      border: 1px solid #d9dde5;
+      border-radius: 6px;
+      padding: 5px 10px;
+    }
+    .chip {
+      width: 16px;
+      height: 16px;
+      border-radius: 4px;
+      border: 1px solid rgba(0, 0, 0, .15);
+    }
+  </style>
+</head>
+<body>
+  <h1>DigiSchem Logo Preview</h1>
+  <p class="sub">Review sheet for <code>logo.svg</code>, <code>logo-mark.svg</code>, and <code>wordmark.svg</code>.</p>
+  <div class="swatches">
+    <div class="swatch"><span class="chip" style="background:#2463d1"></span>#2463d1</div>
+    <div class="swatch"><span class="chip" style="background:#1d2430"></span>#1d2430</div>
+    <div class="swatch"><span class="chip" style="background:#ffffff"></span>#ffffff</div>
+  </div>
+
+  <h2>1. App Icon — logo.svg (256 / 64 / 32 / 16 px)</h2>
+  <div class="surface light">
+    <div class="surface-label">White background (#ffffff)</div>
+    <div class="row">
+      <div class="item"><img src="logo.svg" width="256" height="256" alt="logo 256px" /><span>256 px</span></div>
+      <div class="item"><img src="logo.svg" width="64" height="64" alt="logo 64px" /><span>64 px</span></div>
+      <div class="item"><img src="logo.svg" width="32" height="32" alt="logo 32px" /><span>32 px</span></div>
+      <div class="item"><img src="logo.svg" width="16" height="16" alt="logo 16px" /><span>16 px</span></div>
+    </div>
+  </div>
+  <div class="surface dark">
+    <div class="surface-label">Dark background (#1e1e1e)</div>
+    <div class="row">
+      <div class="item"><img src="logo.svg" width="256" height="256" alt="logo 256px dark" /><span>256 px</span></div>
+      <div class="item"><img src="logo.svg" width="64" height="64" alt="logo 64px dark" /><span>64 px</span></div>
+      <div class="item"><img src="logo.svg" width="32" height="32" alt="logo 32px dark" /><span>32 px</span></div>
+      <div class="item"><img src="logo.svg" width="16" height="16" alt="logo 16px dark" /><span>16 px</span></div>
+    </div>
+  </div>
+
+  <h2>2. UI Mark — logo-mark.svg (16 / 24 / 32 px, currentColor)</h2>
+  <div class="surface light">
+    <div class="surface-label">In black (#000000) — inline SVG for currentColor inheritance</div>
+    <div class="row mark-black">
+      <div class="item">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="16" height="16" aria-label="logo-mark 16px black">
+          <g fill="none" stroke="#2463d1" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 9H5M2 15H5"/><path d="M15 12H19"/><path d="M22 7H19V17H22"/></g>
+          <path d="M5 6H9A6 6 0 0 1 9 18H5Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
+          <circle cx="19" cy="12" r="1.75" fill="#2463d1"/>
+        </svg>
+        <span>16 px</span>
+      </div>
+      <div class="item">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" aria-label="logo-mark 24px black">
+          <g fill="none" stroke="#2463d1" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 9H5M2 15H5"/><path d="M15 12H19"/><path d="M22 7H19V17H22"/></g>
+          <path d="M5 6H9A6 6 0 0 1 9 18H5Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
+          <circle cx="19" cy="12" r="1.75" fill="#2463d1"/>
+        </svg>
+        <span>24 px</span>
+      </div>
+      <div class="item">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="32" height="32" aria-label="logo-mark 32px black">
+          <g fill="none" stroke="#2463d1" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 9H5M2 15H5"/><path d="M15 12H19"/><path d="M22 7H19V17H22"/></g>
+          <path d="M5 6H9A6 6 0 0 1 9 18H5Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
+          <circle cx="19" cy="12" r="1.75" fill="#2463d1"/>
+        </svg>
+        <span>32 px</span>
+      </div>
+      <div class="item">
+        <img src="logo-mark.svg" width="24" height="24" alt="logo-mark img 24px" />
+        <span>&lt;img&gt; 24 px</span>
+      </div>
+    </div>
+  </div>
+  <div class="surface light">
+    <div class="surface-label">In accent blue (#2463d1) — inline SVG for currentColor inheritance</div>
+    <div class="row mark-blue">
+      <div class="item">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="16" height="16" aria-label="logo-mark 16px blue">
+          <g fill="none" stroke="#2463d1" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 9H5M2 15H5"/><path d="M15 12H19"/><path d="M22 7H19V17H22"/></g>
+          <path d="M5 6H9A6 6 0 0 1 9 18H5Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
+          <circle cx="19" cy="12" r="1.75" fill="#2463d1"/>
+        </svg>
+        <span>16 px</span>
+      </div>
+      <div class="item">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" aria-label="logo-mark 24px blue">
+          <g fill="none" stroke="#2463d1" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 9H5M2 15H5"/><path d="M15 12H19"/><path d="M22 7H19V17H22"/></g>
+          <path d="M5 6H9A6 6 0 0 1 9 18H5Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
+          <circle cx="19" cy="12" r="1.75" fill="#2463d1"/>
+        </svg>
+        <span>24 px</span>
+      </div>
+      <div class="item">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="32" height="32" aria-label="logo-mark 32px blue">
+          <g fill="none" stroke="#2463d1" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 9H5M2 15H5"/><path d="M15 12H19"/><path d="M22 7H19V17H22"/></g>
+          <path d="M5 6H9A6 6 0 0 1 9 18H5Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
+          <circle cx="19" cy="12" r="1.75" fill="#2463d1"/>
+        </svg>
+        <span>32 px</span>
+      </div>
+    </div>
+  </div>
+
+  <h2>3. Wordmark — wordmark.svg</h2>
+  <div class="surface light">
+    <div class="surface-label">About / Help lockup (1× and 0.65×)</div>
+    <div class="row">
+      <div class="item"><img src="wordmark.svg" width="368" height="88" alt="DigiSchem wordmark 1x" /><span>368 × 88</span></div>
+      <div class="item"><img src="wordmark.svg" width="239" height="57" alt="DigiSchem wordmark 0.65x" /><span>239 × 57</span></div>
+    </div>
+  </div>
+
+  <h2>4. Master 1024 × 1024 — logo.svg</h2>
+  <div class="surface light master-wrap">
+    <div class="surface-label">1024 px on white (#ffffff)</div>
+    <img src="logo.svg" width="1024" height="1024" alt="logo 1024px white" />
+  </div>
+  <div class="surface dark master-wrap">
+    <div class="surface-label">1024 px on dark (#1e1e1e)</div>
+    <img src="logo.svg" width="1024" height="1024" alt="logo 1024px dark" />
+  </div>
+</body>
+</html>

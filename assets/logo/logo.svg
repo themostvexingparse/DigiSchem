@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024" role="img" aria-label="DigiSchem">
+  <rect x="0" y="0" width="1024" height="1024" rx="224" fill="#2463d1"/>
+  <g fill="none" stroke="#ffffff" stroke-width="68" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M120 392H232M120 632H232"/>
+    <path d="M632 512H792"/>
+    <path d="M904 312H792V712H904"/>
+  </g>
+  <path d="M232 272H392A240 240 0 0 1 392 752H232Z" fill="#1d2430" stroke="#ffffff" stroke-width="68" stroke-linejoin="round"/>
+  <circle cx="792" cy="512" r="60" fill="#ffffff"/>
+</svg>
