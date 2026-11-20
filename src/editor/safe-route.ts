@@ -13,7 +13,7 @@ import type { ComponentInstance, Point, SchematicDocument } from "../model/types
 import type { Side } from "../model/component-def";
 import { GRID } from "../model/component-def";
 import { componentBounds, SegmentIndex, worldPins, type Rect } from "../model/geometry";
-import { normalizeWirePoints, pinExitVector } from "./wire-utils";
+import { normalizeWirePoints, pinExitVector, stretchWireStart } from "./wire-utils";
 import { buildNetlist } from "../io/netlist";
 
 const key = (p: Point) => `${p.x},${p.y}`;
@@ -439,6 +439,14 @@ export interface RepairOptions {
    * the edit just created as "same net" and keep it.
    */
   nets?: Map<string, Set<string>>;
+  /**
+   * Pre-edit paths of the listed wires whose END(S) moved. With it, branch points on those
+   * wires are preserved: only the stretch between a moved end and the first branch point is
+   * re-routed (see `repairWires`).
+   */
+  before?: Map<string, Point[]>;
+  /** Internal: recursion depth while following a chain of detached branches. */
+  depth?: number;
 }
 
 
@@ -448,7 +456,7 @@ export interface RepairOptions {
  * more readable — replace it with the best safe route between its (unchanged) endpoints.
  * Endpoints never move, so wires stay attached. Mutates `doc`.
  */
-export function repairWires(
+function repairWiresCore(
   doc: SchematicDocument,
   wireIds: Iterable<string>,
   allowed?: ReadonlySet<string>,
@@ -523,13 +531,15 @@ export function repairWires(
     for (let c = 0; c < cands[i].length; c++) {
       const P = cands[i][c].pts;
       let cost = acc + cands[i][c].cost;
-      let ok = true;
-      for (let j = 0; j < i && ok; j++) {
+      for (let j = 0; j < i; j++) {
         const Q = cands[j][pick[j]].pts;
-        if (!sameNetPair(i, j) && pathsTouch(P, Q)) ok = false;
+        // Touching a wire of another net would short them: a huge penalty rather than a hard
+        // reject, so that when one wire has no valid route at all the others still get fixed
+        // (the search then picks the arrangement with the fewest shorts).
+        if (!sameNetPair(i, j) && pathsTouch(P, Q)) cost += SHORT_PENALTY;
         else cost += pathCrossings(P, Q) * 60 * g;
       }
-      if (!ok || cost >= bestCost) continue;
+      if (cost >= bestCost) continue;
       pick[i] = c;
       search(i + 1, cost);
     }
@@ -537,6 +547,8 @@ export function repairWires(
   search(0, 0);
   if (best) (best as number[]).forEach((c, i) => (doc.wires.find((x) => x.id === work[i])!.points = cands[i][c].pts));
 }
+
+const SHORT_PENALTY = 1e8;
 
 /** True if two orthogonal paths touch: a vertex of one lies on a segment of the other. */
 function pathsTouch(P: readonly Point[], Q: readonly Point[]): boolean {
@@ -616,4 +628,261 @@ function onSeg(p: Point, a: Point, b: Point): boolean {
   if (a.x === b.x) return p.x === a.x && p.y >= Math.min(a.y, b.y) && p.y <= Math.max(a.y, b.y);
   if (a.y === b.y) return p.y === a.y && p.x >= Math.min(a.x, b.x) && p.x <= Math.max(a.x, b.x);
   return false;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Branch-point-preserving repair
+// ---------------------------------------------------------------------------------------------
+
+/** A point where another wire connects to wire W (before the edit). */
+interface BranchPoint {
+  p: Point;
+  /** Arc-length position along W's original path. */
+  t: number;
+  /** The other wire, and which of its ends sits on W (null = one of its interior vertices). */
+  other: string;
+  otherEnd: "start" | "end" | null;
+}
+
+function onSegment(p: Point, a: Point, b: Point): boolean {
+  if (a.x === b.x) return p.x === a.x && p.y >= Math.min(a.y, b.y) && p.y <= Math.max(a.y, b.y);
+  if (a.y === b.y) return p.y === a.y && p.x >= Math.min(a.x, b.x) && p.x <= Math.max(a.x, b.x);
+  return false;
+}
+
+/** Arc-length position of `p` along `path` (or -1 if it is not on the path). */
+function arcPos(path: readonly Point[], p: Point): number {
+  let acc = 0;
+  for (let i = 0; i + 1 < path.length; i++) {
+    const a = path[i], b = path[i + 1];
+    if (onSegment(p, a, b)) return acc + Math.abs(p.x - a.x) + Math.abs(p.y - a.y);
+    acc += Math.abs(b.x - a.x) + Math.abs(b.y - a.y);
+  }
+  return -1;
+}
+
+function onPath(path: readonly Point[], p: Point): boolean {
+  return arcPos(path, p) >= 0;
+}
+
+/** Path from the start up to arc position `t` (ending exactly at the point there). */
+function cutBefore(path: readonly Point[], t: number): Point[] {
+  const out: Point[] = [{ ...path[0] }];
+  let acc = 0;
+  for (let i = 0; i + 1 < path.length; i++) {
+    const a = path[i], b = path[i + 1];
+    const len = Math.abs(b.x - a.x) + Math.abs(b.y - a.y);
+    if (acc + len >= t) {
+      const r = t - acc;
+      out.push({ x: a.x + Math.sign(b.x - a.x) * r, y: a.y + Math.sign(b.y - a.y) * r });
+      return out;
+    }
+    out.push({ ...b });
+    acc += len;
+  }
+  return out;
+}
+
+/** Path from arc position `t` to the end. */
+function cutAfter(path: readonly Point[], t: number): Point[] {
+  const total = arcPos(path, path[path.length - 1]);
+  return cutBefore([...path].reverse(), total - t).reverse();
+}
+
+/** Every point where another wire (not in `exclude`) connects to `orig` (W's pre-edit path). */
+function branchPointsOf(doc: SchematicDocument, wid: string, orig: readonly Point[], exclude: ReadonlySet<string>): BranchPoint[] {
+  const out: BranchPoint[] = [];
+  const seen = new Set<string>();
+  const add = (p: Point, other: string, otherEnd: BranchPoint["otherEnd"]) => {
+    const t = arcPos(orig, p);
+    if (t < 0) return;
+    const k = `${other}|${p.x},${p.y}`;
+    if (seen.has(k)) return;
+    seen.add(k);
+    out.push({ p: { x: p.x, y: p.y }, t, other, otherEnd });
+  };
+  for (const w of doc.wires) {
+    if (w.id === wid || exclude.has(w.id) || w.points.length < 2) continue;
+    const n = w.points.length;
+    // the other wire's vertices lying on W …
+    w.points.forEach((p, i) => add(p, w.id, i === 0 ? "start" : i === n - 1 ? "end" : null));
+    // … and W's interior vertices lying on the other wire
+    for (let i = 1; i + 1 < orig.length; i++) if (onPath(w.points, orig[i])) add(orig[i], w.id, null);
+  }
+  return out;
+}
+
+/** Closest grid point on `path` to `p`. */
+function nearestOnPath(path: readonly Point[], p: Point, grid: number): Point {
+  let best: Point = { ...path[0] };
+  let bestD = Infinity;
+  for (let i = 0; i + 1 < path.length; i++) {
+    const a = path[i], b = path[i + 1];
+    const q =
+      a.x === b.x
+        ? { x: a.x, y: Math.min(Math.max(p.y, Math.min(a.y, b.y)), Math.max(a.y, b.y)) }
+        : { x: Math.min(Math.max(p.x, Math.min(a.x, b.x)), Math.max(a.x, b.x)), y: a.y };
+    const snapped = a.x === b.x ? { x: q.x, y: Math.round(q.y / grid) * grid } : { x: Math.round(q.x / grid) * grid, y: q.y };
+    const d = Math.abs(snapped.x - p.x) + Math.abs(snapped.y - p.y);
+    if (d < bestD && onSegment(snapped, a, b)) {
+      bestD = d;
+      best = snapped;
+    }
+  }
+  return best;
+}
+
+/**
+ * Repair after an edit, keeping BRANCH POINTS fixed. For each wire whose end(s) moved (its
+ * pre-edit path given in `before`), only the stretch between the moved end and the first point
+ * where another wire branches off is re-routed — it simply gets longer or shorter — and the
+ * rest of the wire, with every branch on it, stays exactly where it was. So rerouting does not
+ * propagate into the rest of the net. Only when a branch point cannot survive (the part moved
+ * past it, so the wire would fold back over itself) is the detached branch followed: its end is
+ * moved onto the new path and the branch is repaired the same way, recursively.
+ */
+export function repairWires(
+  doc: SchematicDocument,
+  wireIds: Iterable<string>,
+  allowed?: ReadonlySet<string>,
+  opts: RepairOptions = {},
+): void {
+  const before = opts.before;
+  const ids = [...new Set(wireIds)];
+  if (!before || before.size === 0) {
+    repairWiresCore(doc, ids, allowed, opts);
+    return;
+  }
+  const nets = opts.nets ?? sameNetWires(doc);
+  const idSet = new Set(ids);
+  const grid = doc.grid || GRID;
+
+  type Split = { wid: string; legS?: string; legE?: string; mid: Point[] | null; branches: BranchPoint[]; keep: Set<string> };
+  const splits: Split[] = [];
+  const legIds: string[] = [];
+  const passthrough: string[] = [];
+  const alias = new Map<string, string>(); // leg id → wire id
+
+  for (const wid of ids) {
+    const w = doc.wires.find((x) => x.id === wid);
+    const orig = before.get(wid);
+    if (!w || !orig || orig.length < 2 || w.points.length < 2) {
+      passthrough.push(wid);
+      continue;
+    }
+    const S = w.points;
+    const startMoved = !(S[0].x === orig[0].x && S[0].y === orig[0].y);
+    const endMoved = !(S[S.length - 1].x === orig[orig.length - 1].x && S[S.length - 1].y === orig[orig.length - 1].y);
+    const total = arcPos(orig, orig[orig.length - 1]);
+    // branch points strictly inside the wire's original path (the ends are the wire's own anchors)
+    // (only contacts with wires of the SAME net before the edit — never an accidental short)
+    const sameNet = nets.get(wid) ?? new Set<string>();
+    const branches = branchPointsOf(doc, wid, orig, idSet).filter((b) => b.t > 0 && b.t < total && sameNet.has(b.other));
+    if ((!startMoved && !endMoved) || branches.length === 0) {
+      passthrough.push(wid);
+      continue;
+    }
+    const ts = branches.map((b) => b.t);
+    const tS = startMoved ? Math.min(...ts) : 0;
+    const tE = endMoved ? Math.max(...ts) : total;
+    const keep = new Set(branches.map((b) => `${b.p.x},${b.p.y}`));
+    const split: Split = { wid, mid: null, branches, keep };
+    // the untouched middle: from the first to the last branch point
+    const mid = cutAfter(cutBefore(orig, tE), tS);
+    split.mid = mid.length >= 2 && tE > tS ? mid : null;
+    if (startMoved) {
+      const leg = normalizeWirePoints(stretchLeg(cutBefore(orig, tS), S[0]));
+      if (leg.length >= 2) {
+        split.legS = `${wid}~s`;
+        doc.wires.push({ id: split.legS, points: leg });
+        legIds.push(split.legS);
+        alias.set(split.legS, wid);
+      }
+    }
+    if (endMoved) {
+      const tail = cutAfter(orig, tE);
+      const leg = normalizeWirePoints(stretchLeg([...tail].reverse(), S[S.length - 1]).reverse());
+      if (leg.length >= 2) {
+        split.legE = `${wid}~e`;
+        doc.wires.push({ id: split.legE, points: leg });
+        legIds.push(split.legE);
+        alias.set(split.legE, wid);
+      }
+    }
+    // while repairing, W itself is just its untouched middle (a fixed obstacle / same net)
+    w.points = split.mid ?? [orig[0], orig[0]];
+    splits.push(split);
+  }
+
+  // Nets / allowed contacts for the temporary legs: a leg belongs to its wire's net.
+  const netsX = new Map<string, Set<string>>();
+
+  const legsOf = new Map<string, string[]>();
+  for (const [leg, wid] of alias) legsOf.set(wid, [...(legsOf.get(wid) ?? []), leg]);
+  const expand = (s: Iterable<string>) => {
+    const out = new Set<string>();
+    for (const id of s) {
+      out.add(id);
+      for (const l of legsOf.get(id) ?? []) out.add(l);
+    }
+    return out;
+  };
+  for (const [id, set] of nets) netsX.set(id, expand(set));
+  for (const [leg, wid] of alias) {
+    const s = expand([wid, ...(nets.get(wid) ?? [])]);
+    s.delete(leg);
+    netsX.set(leg, s);
+  }
+  let allowedX = allowed;
+  if (allowed && alias.size > 0) {
+    const a = new Set(allowed);
+    for (const k of allowed) {
+      const at = k.indexOf("@");
+      for (const l of legsOf.get(k.slice(0, at)) ?? []) a.add(`${l}${k.slice(at)}`);
+    }
+    allowedX = a;
+  }
+
+  repairWiresCore(doc, [...passthrough, ...legIds], allowedX, { ...opts, nets: netsX });
+
+  // Merge the legs back into their wires (branch points kept as load-bearing vertices).
+  const detached: { other: string; end: "start" | "end"; wid: string }[] = [];
+  for (const sp of splits) {
+    const w = doc.wires.find((x) => x.id === sp.wid)!;
+    const legS = sp.legS ? doc.wires.find((x) => x.id === sp.legS)?.points ?? [] : [];
+    const legE = sp.legE ? doc.wires.find((x) => x.id === sp.legE)?.points ?? [] : [];
+    const merged = [...legS, ...(sp.mid ?? []), ...legE];
+    w.points = normalizeWirePoints(merged, sp.keep);
+    for (const b of sp.branches) {
+      if (b.otherEnd && !onPath(w.points, b.p)) detached.push({ other: b.other, end: b.otherEnd, wid: sp.wid });
+    }
+  }
+  const legSet = new Set(legIds);
+  doc.wires = doc.wires.filter((w) => !legSet.has(w.id));
+
+
+  // Follow the chain where a branch point could not survive.
+  const depth = opts.depth ?? 0;
+  if (detached.length > 0 && depth < 8) {
+    const moved = new Map<string, Point[]>();
+    for (const d of detached) {
+      const x = doc.wires.find((w) => w.id === d.other);
+      const w = doc.wires.find((v) => v.id === d.wid);
+      if (!x || !w || moved.has(x.id)) continue;
+      const orig = x.points.map((p) => ({ ...p }));
+      const endPt = d.end === "start" ? orig[0] : orig[orig.length - 1];
+      const q = nearestOnPath(w.points, endPt, grid);
+      x.points = d.end === "start" ? normalizeWirePoints(stretchLeg(orig, q)) : normalizeWirePoints(stretchLeg([...orig].reverse(), q).reverse());
+      moved.set(x.id, orig);
+    }
+    if (moved.size > 0) {
+      repairWires(doc, [...moved.keys()], allowed, { ...opts, before: moved, depth: depth + 1 });
+    }
+  }
+  doc.wires = doc.wires.filter((w) => w.points.length >= 2);
+}
+
+/** Move a path's start to `p`, keeping the rest of it (adds a bend if needed). */
+function stretchLeg(path: readonly Point[], p: Point): Point[] {
+  return stretchWireStart(path, p);
 }

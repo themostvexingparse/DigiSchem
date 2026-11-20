@@ -71,8 +71,10 @@ export function keepWiresAttached(
     for (const wp of worldPins(c)) after.set(`${c.id}:${wp.pin.id}`, wp.pos);
   }
   const changed: string[] = [];
+  const beforePts = new Map<string, Point[]>();
   for (const a of attached) {
     const orig = a.wire.points.map((p) => ({ ...p }));
+    beforePts.set(a.wire.id, orig);
     let pts = orig;
     const ns = a.start ? after.get(a.start) : undefined;
     const ne = a.end ? after.get(a.end) : undefined;
@@ -85,7 +87,7 @@ export function keepWiresAttached(
     changed.push(a.wire.id);
   }
   // Stretching may run a wire over another pin / wire or through a body: re-route those.
-  repairWires(doc, changed, undefined, { improve: true, nets: netsBefore });
+  repairWires(doc, changed, undefined, { improve: true, nets: netsBefore, before: beforePts });
   // A pin may have moved onto the wire's other end: drop wires that collapsed (< 2 points).
   doc.wires = doc.wires.filter((w) => w.points.length >= 2);
 }
@@ -364,7 +366,11 @@ export function nudgeSelectionInStore(store: DocumentStore, dx: number, dy: numb
         true,
       );
     }
-    repairWires(draft, attached.map((a) => a.wireId), movedEndContacts(draft, attached), { improve: true, nets: netsBefore });
+    repairWires(draft, attached.map((a) => a.wireId), movedEndContacts(draft, attached), {
+      improve: true,
+      nets: netsBefore,
+      before: new Map(attached.map((a) => [a.wireId, a.origPoints.map((p) => ({ ...p }))])),
+    });
     normalizeDocWires(draft);
   });
 }

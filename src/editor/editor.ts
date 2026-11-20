@@ -147,6 +147,8 @@ type Interaction =
       pointerId: number;
       /** Electrical nets at drag start (so the router never mistakes a fresh short for a net). */
       netsBefore: Map<string, Set<string>>;
+      /** Every wire's path at drag start (chain-following may edit wires outside the selection). */
+      startWires: Map<string, Point[]>;
       /** Smart-guide anchor (component grabbed) and its same-type/same-size peers. */
       guide: { anchorOrig: Rect; peers: Rect[] } | null;
       guides: GuideResult | null;
@@ -1386,6 +1388,7 @@ export class Editor {
     this.interaction = {
       kind: "move-selection",
       netsBefore: sameNetWires(this.store.doc),
+      startWires: new Map(this.store.doc.wires.map((w) => [w.id, w.points.map((p) => ({ ...p }))])),
       guide,
       guides: null,
       startWorldSnapped: { ...this.cursorWorldSnapped },
@@ -1475,14 +1478,28 @@ export class Editor {
                   t.y = orig.y + delta.y;
                 }
               }
+              // Every other wire starts from its drag-start shape (a branch that the previous
+              // frame had to follow along a chain is recomputed, not left behind).
+              const kept = new Set(draft.wires.map((w) => w.id));
+              for (const [id, pts0] of inter.startWires) {
+                if (inter.origWires.has(id)) continue;
+                const w = draft.wires.find((x) => x.id === id);
+                if (w) w.points = pts0.map((p) => ({ ...p }));
+                else if (!kept.has(id)) draft.wires.push({ id, points: pts0.map((p) => ({ ...p })) });
+              }
               for (const aw of inter.attachedWires) {
                 const w = draft.wires.find((x) => x.id === aw.wireId);
                 if (!w) continue;
                 // Keep wire alive during intermediate drag; normalize on end
                 w.points = stretchWireForMove(aw.origPoints, aw.startAttached, aw.endAttached, delta, true);
               }
-              // Never let a stretched wire run over another pin/wire or through a body.
-              repairWires(draft, inter.attachedWires.map((aw) => aw.wireId), movedEndContacts(draft, inter.attachedWires), { improve: true, nets: inter.netsBefore });
+              // Never let a stretched wire run over another pin/wire or through a body; keep
+              // branch points fixed, following the chain only where one cannot survive.
+              repairWires(draft, inter.attachedWires.map((aw) => aw.wireId), movedEndContacts(draft, inter.attachedWires), {
+                improve: true,
+                nets: inter.netsBefore,
+                before: new Map(inter.attachedWires.map((aw) => [aw.wireId, aw.origPoints.map((p) => ({ ...p }))])),
+              });
             });
           }
           if (snappedChanged) this.emitState();
