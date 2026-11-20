@@ -4,7 +4,8 @@ import { emptyDocument } from "./model/types";
 import { Editor } from "./editor/editor";
 import { mountPalette } from "./ui/palette";
 import { mountProperties } from "./ui/properties";
-import { AppCommands, installGlobalShortcuts, mountToolbar } from "./app/commands";
+import { AppCommands, installGlobalShortcuts } from "./app/commands";
+import { mountToolbar } from "./app/toolbar";
 
 registerBuiltinComponents();
 

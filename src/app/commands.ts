@@ -1,8 +1,9 @@
 /** App-level commands: file operations, export, toolbar and global shortcuts. Owned by the shell. */
 import type { DocumentStore } from "../model/store";
 import { emptyDocument } from "../model/types";
-import type { Editor, Tool } from "../editor/editor";
+import type { Editor } from "../editor/editor";
 import { THEMES } from "../render/svg";
+import { exportNetlistText } from "../io/netlist";
 import { PROJECT_EXTENSION, parseProject, serializeProject } from "../io/project";
 import { exportPngBlob, exportSvgString } from "../io/export";
 import { openText, saveBinary, saveText } from "../platform/files";
@@ -104,6 +105,18 @@ export class AppCommands {
     }
   }
 
+  async exportNetlist() {
+    try {
+      const text = exportNetlistText(this.store.doc) || "(empty schematic)";
+      const p = await saveText(`${text}\n`, `${baseName(this.store.filePath, this.store.doc.name)}-netlist.txt`, [
+        { name: "Text netlist", extensions: ["txt"] },
+      ]);
+      if (p) notify(`Exported ${p}`);
+    } catch (e) {
+      notify(`Netlist export failed: ${(e as Error).message ?? e}`, true);
+    }
+  }
+
   /** Small modal for export settings. */
   showExportDialog(kind: "svg" | "png") {
     const dlg = document.createElement("dialog");
@@ -142,79 +155,6 @@ export class AppCommands {
     });
     dlg.showModal();
   }
-}
-
-interface ToolbarItem {
-  label: string;
-  title: string;
-  action: () => void;
-  tool?: Tool;
-}
-
-export function mountToolbar(host: HTMLElement, cmds: AppCommands, editor: Editor, store: DocumentStore) {
-  const groups: ToolbarItem[][] = [
-    [
-      { label: "New", title: "New schematic (Ctrl+N)", action: () => cmds.newDocument() },
-      { label: "Open", title: "Open project (Ctrl+O)", action: () => void cmds.open() },
-      { label: "Save", title: "Save project (Ctrl+S)", action: () => void cmds.save() },
-      { label: "Save As", title: "Save project as (Ctrl+Shift+S)", action: () => void cmds.save(true) },
-    ],
-    [
-      { label: "SVG", title: "Export SVG (Ctrl+E)", action: () => cmds.showExportDialog("svg") },
-      { label: "PNG", title: "Export PNG (Ctrl+Shift+E)", action: () => cmds.showExportDialog("png") },
-    ],
-    [
-      { label: "Undo", title: "Undo (Ctrl+Z)", action: () => store.undo() },
-      { label: "Redo", title: "Redo (Ctrl+Y)", action: () => store.redo() },
-    ],
-    [
-      { label: "Select", title: "Select / move (V)", action: () => editor.setTool("select"), tool: "select" },
-      { label: "Wire", title: "Draw wire (W)", action: () => editor.setTool("wire"), tool: "wire" },
-      { label: "Text", title: "Add text note (T)", action: () => editor.setTool("text"), tool: "text" },
-    ],
-    [
-      { label: "Rotate", title: "Rotate selection (R)", action: () => editor.rotateSelection() },
-      { label: "Mirror", title: "Mirror selection (M)", action: () => editor.mirrorSelection() },
-      { label: "Delete", title: "Delete selection (Del)", action: () => editor.deleteSelection() },
-    ],
-    [
-      { label: "Fit", title: "Zoom to fit (F)", action: () => editor.zoomToFit() },
-      { label: "−", title: "Zoom out", action: () => editor.zoomBy(1 / 1.25) },
-      { label: "+", title: "Zoom in", action: () => editor.zoomBy(1.25) },
-    ],
-  ];
-  host.innerHTML = `<span class="brand">DigiSchem</span>`;
-  const toolButtons: [HTMLButtonElement, Tool][] = [];
-  for (const g of groups) {
-    const div = document.createElement("div");
-    div.className = "tb-group";
-    for (const it of g) {
-      const b = document.createElement("button");
-      b.textContent = it.label;
-      b.title = it.title;
-      b.onclick = it.action;
-      if (it.tool) toolButtons.push([b, it.tool]);
-      div.appendChild(b);
-    }
-    host.appendChild(div);
-  }
-  const themeSel = document.createElement("select");
-  themeSel.title = "Canvas theme";
-  themeSel.innerHTML = `<option value="light">Light</option><option value="dark">Dark</option><option value="print">Print</option>`;
-  themeSel.onchange = () => {
-    editor.setTheme(THEMES[themeSel.value]);
-    document.documentElement.dataset.theme = themeSel.value === "dark" ? "dark" : "light";
-  };
-  const grp = document.createElement("div");
-  grp.className = "tb-group";
-  grp.appendChild(themeSel);
-  host.appendChild(grp);
-
-  const sync = () => {
-    for (const [b, t] of toolButtons) b.classList.toggle("active", editor.tool === t);
-  };
-  editor.onStateChange(sync);
-  sync();
 }
 
 /** Global shortcuts for file operations. Editing shortcuts are handled by the Editor. */

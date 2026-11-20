@@ -1,0 +1,24 @@
+/** Inline 24×24 stroke icons (currentColor) for the toolbar. */
+const wrap = (body: string) =>
+  `<svg class="ico" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${body}</svg>`;
+
+export const ICONS = {
+  newFile: wrap(`<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M12 12v6M9 15h6"/>`),
+  open: wrap(`<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>`),
+  save: wrap(`<path d="M5 3h11l5 5v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"/><path d="M7 3v5h8V3"/><rect x="7" y="13" width="10" height="8"/>`),
+  saveAs: wrap(`<path d="M5 3h11l5 5v5"/><path d="M3 5v14a2 2 0 0 0 2 2h7"/><path d="M7 3v5h8V3"/><path d="M17 15l4 4-4 4" transform="translate(-1 -3)"/>`),
+  export: wrap(`<path d="M12 3v12"/><path d="M7 8l5-5 5 5"/><path d="M5 15v4a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4"/>`),
+  undo: wrap(`<path d="M9 14L4 9l5-5"/><path d="M4 9h11a5 5 0 0 1 0 10h-3"/>`),
+  redo: wrap(`<path d="M15 14l5-5-5-5"/><path d="M20 9H9a5 5 0 0 0 0 10h3"/>`),
+  select: wrap(`<path d="M5 3l14 8-6 2-3 6z"/>`),
+  wire: wrap(`<circle cx="5" cy="19" r="2"/><circle cx="19" cy="5" r="2"/><path d="M7 19h6V5h4"/>`),
+  text: wrap(`<path d="M5 6V4h14v2"/><path d="M12 4v16"/><path d="M9 20h6"/>`),
+  rotate: wrap(`<path d="M20 12a8 8 0 1 1-2.34-5.66"/><path d="M20 4v5h-5"/>`),
+  mirror: wrap(`<path d="M12 3v18" stroke-dasharray="2 2"/><path d="M9 7L3 17h6z"/><path d="M15 7l6 10h-6z"/>`),
+  duplicate: wrap(`<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M4 16V6a2 2 0 0 1 2-2h10"/>`),
+  trash: wrap(`<path d="M4 7h16"/><path d="M10 11v6M14 11v6"/><path d="M6 7l1 13h10l1-13"/><path d="M9 7V4h6v3"/>`),
+  zoomIn: wrap(`<circle cx="11" cy="11" r="7"/><path d="M21 21l-5-5"/><path d="M11 8v6M8 11h6"/>`),
+  zoomOut: wrap(`<circle cx="11" cy="11" r="7"/><path d="M21 21l-5-5"/><path d="M8 11h6"/>`),
+  fit: wrap(`<path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"/>`),
+  grid: wrap(`<circle cx="6" cy="6" r="1"/><circle cx="12" cy="6" r="1"/><circle cx="18" cy="6" r="1"/><circle cx="6" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="18" cy="12" r="1"/><circle cx="6" cy="18" r="1"/><circle cx="12" cy="18" r="1"/><circle cx="18" cy="18" r="1"/>`),
+};

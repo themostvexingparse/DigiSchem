@@ -348,6 +348,11 @@ export class Editor {
     this.emitState();
   }
 
+  /** Current zoom factor (1 = 100%). */
+  getZoom(): number {
+    return this.zoom;
+  }
+
   zoomBy(factor: number): void {
     const { w, h } = this.hostSize();
     this.zoomAtScreenPoint(w / 2, h / 2, factor);
