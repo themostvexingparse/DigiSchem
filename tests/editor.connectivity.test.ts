@@ -189,3 +189,22 @@ describe("compaction cleans up drawing conflicts first", () => {
     expect(nets(after, "geometric")).toEqual(before);
   }, 30000);
 });
+
+describe("moves never visually break a stored connection", () => {
+  it("random moves on real circuits leave no broken connections in the drawing", async () => {
+    let seed = 99;
+    const rnd = () => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 2 ** 32);
+    for (const f of ["04-sync-counter", "05-datapath", "06-annotated-lab"]) {
+      const tidy = packSchematic(parseProject(readFileSync(`samples/compaction/${f}.dschem`, "utf8")), { timeBudgetMs: 500 }).doc;
+      const base = new DocumentStore(tidy).doc;
+      const pre = connectionConflicts(base).filter((c) => c.kind === "broken").length;
+      const ids = base.components.map((c) => c.id);
+      for (let i = 0; i < 40; i++) {
+        const s = new DocumentStore(structuredClone(base));
+        s.setSelection([ids[Math.floor(rnd() * ids.length)]]);
+        nudgeSelectionInStore(s, Math.round((rnd() - 0.5) * 16) * 10, Math.round((rnd() - 0.5) * 16) * 10);
+        expect(connectionConflicts(s.doc).filter((c) => c.kind === "broken").length, `${f} move ${i}`).toBeLessThanOrEqual(pre);
+      }
+    }
+  }, 120000);
+});
