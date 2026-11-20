@@ -1,86 +1,135 @@
 /**
- * REFERENCE IMPLEMENTATION — parametric gates.
- * Shows the pattern every component must follow: geometry() derives the pin list
- * from props, so changing a prop (e.g. number of inputs) adds/removes real,
- * connectable pins. symbol() draws to match geometry().
+ * Parametric logic gates (IEEE/ANSI & Harris & Harris textbook style).
+ * When inputs > 5 (or pins extend beyond the gate core height), straight vertical
+ * "wings" extend the gate's back edge so the body keeps crisp proportions, and
+ * OR/XOR input stubs reach the exact concave curve or wing.
  */
 import type { ComponentDef, Geometry, PinDef } from "../../model/component-def";
-import { GRID, propNum } from "../../model/component-def";
+import { GRID } from "../../model/component-def";
 import type { PropValue } from "../../model/types";
-
-const PIN_LEN = 20;
+import { BUBBLE_R, ceilEvenGrid, clampInt, PIN_LEN, snapGrid } from "./helpers";
 
 type GateKind = "and" | "or" | "xor" | "buf";
 
-/** Body height grows with input count; inputs spaced 2 grid units apart (1 when many). */
 function gateGeometry(inputs: number, invertedOut: boolean): Geometry {
   const spacing = inputs <= 5 ? 2 * GRID : GRID;
-  const bodyH = Math.max(4 * GRID, (inputs + 1) * spacing);
+  const rawH = Math.max(4 * GRID, (inputs + 1) * spacing);
+  // Even multiple of GRID ensures midY = bodyH / 2 is always on the 10-unit grid.
+  const bodyH = ceilEvenGrid(rawH);
   const bodyW = 4 * GRID;
   const pins: PinDef[] = [];
-  const firstY = (bodyH - (inputs - 1) * spacing) / 2;
+  const span = (inputs - 1) * spacing;
+  const firstY = Math.max(GRID, snapGrid((bodyH - span) / 2));
   for (let i = 0; i < inputs; i++) {
-    pins.push({ id: `in${i}`, name: `I${i}`, x: 0, y: snapGrid(firstY + i * spacing), dir: "in", side: "left" });
+    pins.push({
+      id: `in${i}`,
+      name: `I${i}`,
+      x: 0,
+      y: firstY + i * spacing,
+      dir: "in",
+      side: "left",
+    });
   }
   const outX = PIN_LEN + bodyW + (invertedOut ? GRID : 0) + PIN_LEN;
   pins.push({
     id: "out",
     name: "Y",
     x: outX,
-    y: snapGrid(bodyH / 2),
+    y: bodyH / 2,
     dir: "out",
     side: "right",
     inverted: invertedOut,
   });
-  return { width: outX, height: snapGrid(bodyH), pins };
-}
-
-function snapGrid(v: number) {
-  return Math.round(v / GRID) * GRID;
+  return { width: outX, height: bodyH, pins };
 }
 
 function gateSymbol(kind: GateKind, props: Record<string, PropValue>, inverted: boolean): string {
-  const inputs = kind === "buf" ? 1 : propNum(props, "inputs", 2);
+  const inputs = kind === "buf" ? 1 : clampInt(props, "inputs", 2, 2, 16);
   const g = gateGeometry(inputs, inverted);
   const h = g.height;
-  const x0 = PIN_LEN, x1 = PIN_LEN + 4 * GRID;
+  const x0 = PIN_LEN;
+  const x1 = PIN_LEN + 4 * GRID;
   const midY = h / 2;
+
+  // Keep the gate body at clean textbook proportions; extend back with vertical wings if taller.
+  const coreH = inputs <= 2 ? 4 * GRID : 6 * GRID;
+  const coreTop = midY - coreH / 2;
+  const coreBot = midY + coreH / 2;
+
+  const inPins = g.pins.filter((p) => p.dir === "in");
+  const topPinY = inPins.length > 0 ? Math.min(...inPins.map((p) => p.y)) : coreTop;
+  const botPinY = inPins.length > 0 ? Math.max(...inPins.map((p) => p.y)) : coreBot;
+
   let body: string;
-  let inputEdgeX = (_y: number) => x0; // where input stubs end
+  let wings = "";
+  let inputEdgeX = (_y: number) => x0;
+
   if (kind === "and") {
-    const r = h / 2;
-    body = `<path class="ds-body" d="M${x0} 0 H${x1 - r} A${r} ${r} 0 0 1 ${x1 - r} ${h} H${x0} Z"/>`;
+    const ry = coreH / 2;
+    const rx = Math.min(ry, 24);
+    body = `<path class="ds-body" d="M${x0} ${coreTop} H${x1 - rx} A${rx} ${ry} 0 0 1 ${x1 - rx} ${coreBot} H${x0} Z"/>`;
+    if (topPinY < coreTop) {
+      wings += `<line class="ds-line" x1="${x0}" y1="${topPinY}" x2="${x0}" y2="${coreTop}"/>`;
+    }
+    if (botPinY > coreBot) {
+      wings += `<line class="ds-line" x1="${x0}" y1="${coreBot}" x2="${x0}" y2="${botPinY}"/>`;
+    }
   } else if (kind === "buf") {
     body = `<path class="ds-body" d="M${x0} ${midY - 2 * GRID} L${x1} ${midY} L${x0} ${midY + 2 * GRID} Z"/>`;
   } else {
-    // OR / XOR: concave back, pointed front.
-    const back = `Q${x0 + 12} ${midY} ${x0} 0`;
-    body = `<path class="ds-body" d="M${x0} 0 Q${x0 + 28} 0 ${x1} ${midY} Q${x0 + 28} ${h} ${x0} ${h} ${back} Z"/>`;
-    inputEdgeX = (y: number) => {
-      // approximate the concave back curve: quadratic from (x0,0) via (x0+12,mid) to (x0,h)
-      const t = y / h;
-      return x0 + 2 * (1 - t) * t * 12;
-    };
+    // OR / XOR: concave quadratic back from (x0, coreTop) via (x0+12, midY) to (x0, coreBot).
+    // Because midY = (coreTop + coreBot) / 2, y(t) is linear in t = (y - coreTop) / coreH.
+    const curveDepth = 12;
+    body =
+      `<path class="ds-body" d="M${x0} ${coreTop} ` +
+      `Q${x0 + 26} ${coreTop} ${x1} ${midY} ` +
+      `Q${x0 + 26} ${coreBot} ${x0} ${coreBot} ` +
+      `Q${x0 + curveDepth} ${midY} ${x0} ${coreTop} Z"/>`;
+
     if (kind === "xor") {
-      body = `<path class="ds-line" d="M${x0 - 6} 0 Q${x0 + 6} ${midY} ${x0 - 6} ${h}"/>` + body;
+      const xorX = x0 - 6;
+      body = `<path class="ds-line" d="M${xorX} ${coreTop} Q${xorX + curveDepth} ${midY} ${xorX} ${coreBot}"/>` + body;
+      inputEdgeX = (y: number) => {
+        if (y < coreTop || y > coreBot) return xorX;
+        const t = (y - coreTop) / coreH;
+        return +(xorX + 2 * (1 - t) * t * curveDepth).toFixed(2);
+      };
+      if (topPinY < coreTop) {
+        wings += `<line class="ds-line" x1="${xorX}" y1="${topPinY}" x2="${xorX}" y2="${coreTop}"/>`;
+      }
+      if (botPinY > coreBot) {
+        wings += `<line class="ds-line" x1="${xorX}" y1="${coreBot}" x2="${xorX}" y2="${botPinY}"/>`;
+      }
+    } else {
+      inputEdgeX = (y: number) => {
+        if (y < coreTop || y > coreBot) return x0;
+        const t = (y - coreTop) / coreH;
+        return +(x0 + 2 * (1 - t) * t * curveDepth).toFixed(2);
+      };
+      if (topPinY < coreTop) {
+        wings += `<line class="ds-line" x1="${x0}" y1="${topPinY}" x2="${x0}" y2="${coreTop}"/>`;
+      }
+      if (botPinY > coreBot) {
+        wings += `<line class="ds-line" x1="${x0}" y1="${coreBot}" x2="${x0}" y2="${botPinY}"/>`;
+      }
     }
   }
+
   let stubs = "";
-  for (const p of g.pins) {
-    if (p.dir === "in") {
-      const endX = kind === "xor" ? Math.min(inputEdgeX(p.y), x0 - 4) : inputEdgeX(p.y);
-      stubs += `<line class="ds-pin" x1="${p.x}" y1="${p.y}" x2="${endX}" y2="${p.y}"/>`;
-    }
+  for (const p of inPins) {
+    stubs += `<line class="ds-pin" x1="${p.x}" y1="${p.y}" x2="${inputEdgeX(p.y)}" y2="${p.y}"/>`;
   }
+
   const out = g.pins.find((p) => p.id === "out")!;
   let outStart = x1;
   let bubble = "";
   if (inverted) {
-    bubble = `<circle class="ds-bubble" cx="${x1 + GRID / 2}" cy="${midY}" r="${GRID / 2}"/>`;
-    outStart = x1 + GRID;
+    bubble = `<circle class="ds-bubble" cx="${x1 + BUBBLE_R}" cy="${midY}" r="${BUBBLE_R}"/>`;
+    outStart = x1 + 2 * BUBBLE_R;
   }
   stubs += `<line class="ds-pin" x1="${outStart}" y1="${out.y}" x2="${out.x}" y2="${out.y}"/>`;
-  return body + bubble + stubs;
+
+  return wings + body + bubble + stubs;
 }
 
 function makeGate(type: string, name: string, kind: GateKind, inverted: boolean): ComponentDef {
@@ -93,7 +142,7 @@ function makeGate(type: string, name: string, kind: GateKind, inverted: boolean)
     description: isBuf ? `${name} gate` : `${name} gate with configurable number of inputs`,
     props: isBuf ? [] : [{ key: "inputs", label: "Inputs", kind: "int", min: 2, max: 16 }],
     defaultProps: isBuf ? {} : { inputs: 2 },
-    geometry: (props) => gateGeometry(isBuf ? 1 : Math.max(2, propNum(props, "inputs", 2)), inverted),
+    geometry: (props) => gateGeometry(isBuf ? 1 : clampInt(props, "inputs", 2, 2, 16), inverted),
     symbol: (props) => gateSymbol(kind, props, inverted),
   };
 }
@@ -108,4 +157,3 @@ export const gateDefs: ComponentDef[] = [
   makeGate("buf", "Buffer", "buf", false),
   makeGate("not", "NOT", "buf", true),
 ];
-
