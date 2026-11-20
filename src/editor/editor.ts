@@ -3,7 +3,7 @@
  * Public API is used by src/main.ts, src/app/commands.ts, and src/ui/palette.ts.
  */
 import type { DocumentStore } from "../model/store";
-import type { ComponentInstance, Point, Rotation, TextNote, Wire } from "../model/types";
+import type { ComponentInstance, Point, Rotation, SchematicDocument, TextNote, Wire } from "../model/types";
 import { newId } from "../model/types";
 import { escapeXml, GRID } from "../model/component-def";
 import { getDef } from "../model/registry";
@@ -696,10 +696,66 @@ export class Editor {
     this.renderOverlay();
   }
 
+
+  /** One drag frame (light) or the final drop (full repair) of a move-selection gesture. */
+  private applyMoveFrame(draft: SchematicDocument, inter: Extract<Interaction, { kind: "move-selection" }>, delta: Point, light: boolean): void {
+    for (const c of draft.components) {
+      const orig = inter.origComponents.get(c.id);
+      if (orig) {
+        c.x = orig.x + delta.x;
+        c.y = orig.y + delta.y;
+      }
+    }
+    for (const w of draft.wires) {
+      const origPts = inter.origWires.get(w.id);
+      if (origPts) {
+        w.points = origPts.map((p) => ({ x: p.x + delta.x, y: p.y + delta.y }));
+      }
+    }
+    for (const t of draft.texts) {
+      const orig = inter.origTexts.get(t.id);
+      if (orig) {
+        t.x = orig.x + delta.x;
+        t.y = orig.y + delta.y;
+      }
+    }
+    // Every other wire starts from its drag-start shape (a branch that the previous
+    // frame had to follow along a chain is recomputed, not left behind).
+    const kept = new Set(draft.wires.map((w) => w.id));
+    for (const [id, pts0] of inter.startWires) {
+      if (inter.origWires.has(id)) continue;
+      const w = draft.wires.find((x) => x.id === id);
+      if (w) w.points = pts0.map((p) => ({ ...p }));
+      else if (!kept.has(id)) draft.wires.push({ id, points: pts0.map((p) => ({ ...p })) });
+    }
+    // keep the drag-start wire order (a wire restored after collapsing in an earlier
+    // frame must not move to the end of the list)
+    const rank = new Map([...inter.startWires.keys()].map((id, i) => [id, i]));
+    draft.wires.sort((a, b) => (rank.get(a.id) ?? 1e9) - (rank.get(b.id) ?? 1e9));
+    for (const aw of inter.attachedWires) {
+      const w = draft.wires.find((x) => x.id === aw.wireId);
+      if (!w) continue;
+      // Keep wire alive during intermediate drag; normalize on end
+      w.points = stretchWireForMove(aw.origPoints, aw.startAttached, aw.endAttached, delta, true);
+    }
+    // Never let a stretched wire run over another pin/wire or through a body; keep
+    // branch points fixed, following the chain only where one cannot survive.
+    repairWires(draft, inter.attachedWires.map((aw) => aw.wireId), movedEndContacts(draft, inter.attachedWires), {
+      improve: true,
+      // drag frames: the quick repair only; the full one (other wires, re-attachment,
+      // safety net) runs once on drop
+      light,
+      nets: inter.netsBefore,
+      before: new Map(inter.attachedWires.map((aw) => [aw.wireId, aw.origPoints.map((p) => ({ ...p }))])),
+    });
+  }
+
   private conflictCache: { doc: unknown; list: ConnectionConflict[] } | null = null;
   /** Where the drawing disagrees with the stored connections (cached per document version). */
   connectionConflicts(): ConnectionConflict[] {
     const doc = this.store.doc;
+    // Mid-drag the drawing is provisional (the full repair runs on drop): don't scan every frame.
+    if (this.interaction && this.conflictCache) return this.interaction.kind === "move-selection" ? [] : this.conflictCache.list;
     if (this.conflictCache?.doc !== doc) this.conflictCache = { doc, list: connectionConflicts(doc as Parameters<typeof connectionConflicts>[0]) };
     return this.conflictCache.list;
   }
@@ -1485,54 +1541,7 @@ export class Editor {
             this.interaction.lastDelta = delta;
             this.interaction.moved = true;
             const inter = this.interaction;
-            this.store.update("Move", (draft) => {
-              for (const c of draft.components) {
-                const orig = inter.origComponents.get(c.id);
-                if (orig) {
-                  c.x = orig.x + delta.x;
-                  c.y = orig.y + delta.y;
-                }
-              }
-              for (const w of draft.wires) {
-                const origPts = inter.origWires.get(w.id);
-                if (origPts) {
-                  w.points = origPts.map((p) => ({ x: p.x + delta.x, y: p.y + delta.y }));
-                }
-              }
-              for (const t of draft.texts) {
-                const orig = inter.origTexts.get(t.id);
-                if (orig) {
-                  t.x = orig.x + delta.x;
-                  t.y = orig.y + delta.y;
-                }
-              }
-              // Every other wire starts from its drag-start shape (a branch that the previous
-              // frame had to follow along a chain is recomputed, not left behind).
-              const kept = new Set(draft.wires.map((w) => w.id));
-              for (const [id, pts0] of inter.startWires) {
-                if (inter.origWires.has(id)) continue;
-                const w = draft.wires.find((x) => x.id === id);
-                if (w) w.points = pts0.map((p) => ({ ...p }));
-                else if (!kept.has(id)) draft.wires.push({ id, points: pts0.map((p) => ({ ...p })) });
-              }
-              // keep the drag-start wire order (a wire restored after collapsing in an earlier
-              // frame must not move to the end of the list)
-              const rank = new Map([...inter.startWires.keys()].map((id, i) => [id, i]));
-              draft.wires.sort((a, b) => (rank.get(a.id) ?? 1e9) - (rank.get(b.id) ?? 1e9));
-              for (const aw of inter.attachedWires) {
-                const w = draft.wires.find((x) => x.id === aw.wireId);
-                if (!w) continue;
-                // Keep wire alive during intermediate drag; normalize on end
-                w.points = stretchWireForMove(aw.origPoints, aw.startAttached, aw.endAttached, delta, true);
-              }
-              // Never let a stretched wire run over another pin/wire or through a body; keep
-              // branch points fixed, following the chain only where one cannot survive.
-              repairWires(draft, inter.attachedWires.map((aw) => aw.wireId), movedEndContacts(draft, inter.attachedWires), {
-                improve: true,
-                nets: inter.netsBefore,
-                before: new Map(inter.attachedWires.map((aw) => [aw.wireId, aw.origPoints.map((p) => ({ ...p }))])),
-              });
-            });
+            this.store.update("Move", (draft) => this.applyMoveFrame(draft, inter, delta, true));
           }
           if (snappedChanged) this.emitState();
           return;
@@ -1682,9 +1691,13 @@ export class Editor {
         break;
       case "move-selection":
         if (inter.moved) {
-          // Final normalization pass (drops any wire collapsed to <2 points)
+          // The drop: redo the last frame with the FULL repair (wires the part landed on are
+          // re-routed, broken connections re-attached, safety net) — still one undo step.
           if (inter.attachedWires.length > 0) {
-            this.store.update("Move", (draft) => normalizeDocWires(draft));
+            this.store.update("Move", (draft) => {
+              this.applyMoveFrame(draft, inter, inter.lastDelta, false);
+              normalizeDocWires(draft);
+            });
           }
         } else if (inter.narrowToIdOnClick) {
           this.store.setSelection([inter.narrowToIdOnClick]);

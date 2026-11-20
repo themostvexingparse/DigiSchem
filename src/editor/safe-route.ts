@@ -208,6 +208,15 @@ export class RouteObstacles {
     return this.bodies.some((b) => p.x > b.r.x && p.x < b.r.x + b.r.w && p.y > b.r.y && p.y < b.r.y + b.r.h);
   }
 
+  /**
+   * Is p on a pin, inside a part, or on a part's outline (its pin column)? A junction there cannot
+   * be kept: it would sit between the part's pins, so no wire can reach it cleanly.
+   */
+  onPartAt(p: Point): boolean {
+    if (this.pinsByKey.has(key(p))) return true;
+    return this.bodies.some((b) => p.x >= b.r.x && p.x <= b.r.x + b.r.w && p.y >= b.r.y && p.y <= b.r.y + b.r.h);
+  }
+
   /** Does the unit step a→b cut through a component body? */
   stepBlocked(a: Point, b: Point): boolean {
     for (const b2 of this.bodies) if (segmentCrossesInterior(a, b, b2.r)) return true;
@@ -613,6 +622,12 @@ export interface RepairOptions {
   search?: "classic" | "advanced";
   /** Wall-clock budget of the advanced search in ms (default 25 — fits a drag frame). */
   timeBudgetMs?: number;
+  /**
+   * Drag-frame mode: only the moved part's own wires are routed (stretch, branch points kept,
+   * joint choice). Skipped: re-routing wires it runs into, re-attachment, the safety net, the
+   * multi-order clean-up. The caller runs the full repair once when the drag ends.
+   */
+  light?: boolean;
 }
 
 
@@ -667,8 +682,8 @@ function repairWiresCore(
   // rejecting any pair that would touch (an accidental connection between different nets).
   const n = work.length;
   if ((opts.search ?? (getSettings().advancedRerouteSearch ? "advanced" : "classic")) === "advanced") {
-    advancedJointRepair(doc, work, nets, allowed, ignoreFor, opts.timeBudgetMs ?? 25);
-    resolveRemainingShorts(doc, work, allowed, opts);
+    advancedJointRepair(doc, work, nets, allowed, ignoreFor, opts.timeBudgetMs ?? (opts.light ? 10 : 25));
+    if (!opts.light) resolveRemainingShorts(doc, work, allowed, opts);
     return;
   }
   const K = n <= 2 ? 12 : n <= 3 ? 8 : n <= 4 ? 5 : n <= 6 ? 3 : 1;
@@ -720,7 +735,7 @@ function repairWiresCore(
   };
   search(0, 0);
   if (best) (best as number[]).forEach((c, i) => (doc.wires.find((x) => x.id === work[i])!.points = cands[i][c].pts));
-  resolveRemainingShorts(doc, work, allowed, opts);
+  if (!opts.light) resolveRemainingShorts(doc, work, allowed, opts);
 }
 
 /**
@@ -811,7 +826,8 @@ function localRepairWire(
         const win = leg.slice(a, b + 1);
         const fresh = safeRoute(legObs, win[0], win[win.length - 1], { self: new Set([v.id]), sameNet, allowed, prefer: win });
         const cand = fresh ? normalizeWirePoints([...leg.slice(0, a), ...fresh, ...leg.slice(b + 1)]) : null;
-        const folds = cand && prevDir && cand.length >= 2 && isOpposite(prevDir, dirOf(cand[0], cand[1]));
+        // only a detour starting AT the junction (window at the leg's start) can erase it
+        const folds = a === 0 && cand && prevDir && cand.length >= 2 && isOpposite(prevDir, dirOf(cand[0], cand[1]));
         if (cand && !folds) {
           route = cand;
           break;
@@ -1081,7 +1097,7 @@ export function repairWires(
   allowed?: ReadonlySet<string>,
   opts: RepairOptions = {},
 ): void {
-  if ((opts.depth ?? 0) > 0 || !doc.links) {
+  if ((opts.depth ?? 0) > 0 || !doc.links || opts.light) {
     repairWiresGuarded(doc, wireIds, allowed, opts);
     return;
   }
@@ -1106,6 +1122,14 @@ function reattachBroken(doc: SchematicDocument, nets: Map<string, Set<string>>, 
   const g = doc.grid || GRID;
   const pinPos = new Map<string, Point>();
   for (const c of doc.components) for (const wp of worldPins(c)) pinPos.set(`p:${c.id}|${wp.pin.id}`, wp.pos);
+  const links = new Set((doc.links ?? []).map(([a, b]) => `${a}\u0000${b}`));
+  const pinsAtPt = new Map<string, string[]>();
+  for (const [t, p] of pinPos) pinsAtPt.set(key(p), [...(pinsAtPt.get(key(p)) ?? []), t]);
+  const anchoredAt = (wid: string, e: Point) =>
+    (pinsAtPt.get(key(e)) ?? []).some((pt) => {
+      const a = `w:${wid}`;
+      return links.has(a < pt ? `${a}\u0000${pt}` : `${pt}\u0000${a}`);
+    });
   for (let round = 0; round < 3; round++) {
     const broken = connectionConflicts(doc).filter((c) => c.kind === "broken");
     if (broken.length === 0) return;
@@ -1119,8 +1143,13 @@ function reattachBroken(doc: SchematicDocument, nets: Map<string, Set<string>>, 
       const moves: { w: { id: string; points: Point[] }; atStart: boolean; to: Point; d: number }[] = [];
       const consider = (w: { id: string; points: Point[] } | undefined, target: (p: Point) => Point | null) => {
         if (!w || w.points.length < 2) return;
+        const s0 = w.points[0], s1 = w.points[w.points.length - 1];
+        const collapsed = s0.x === s1.x && s0.y === s1.y;
         for (const atStart of [true, false]) {
-          const e = atStart ? w.points[0] : w.points[w.points.length - 1];
+          const e = atStart ? s0 : s1;
+          // An end sitting on a pin it is connected to is anchored: moving it would just break
+          // that connection instead (ping-pong). A collapsed stub may still grow from one end.
+          if (!collapsed && anchoredAt(w.id, e)) continue;
           const t = target(e);
           if (t) moves.push({ w, atStart, to: t, d: Math.abs(t.x - e.x) + Math.abs(t.y - e.y) });
         }
@@ -1189,8 +1218,8 @@ function repairWiresGuarded(
     const allBranches = branchPointsOf(doc, wid, orig, new Set(), before).filter(
       (b) => b.t > 0 && b.t < total && sameNet.has(b.other),
     );
-    const branches = allBranches.filter((b) => !postEdit.pinOrBodyAt(b.p));
-    const stranded = allBranches.filter((b) => postEdit.pinOrBodyAt(b.p) && b.otherEnd);
+    const branches = allBranches.filter((b) => !postEdit.onPartAt(b.p));
+    const stranded = allBranches.filter((b) => postEdit.onPartAt(b.p) && b.otherEnd);
     if (!startMoved && !endMoved) {
       // Neither end moved (e.g. a drag that landed back on its start): the wire keeps its exact
       // original shape. Re-routing it freely could drop a branch point and changes the layout
@@ -1294,7 +1323,7 @@ function repairWiresGuarded(
       if (!x || !w || moved.has(x.id)) continue;
       const orig = x.points.map((p) => ({ ...p }));
       const endPt = d.end === "start" ? orig[0] : orig[orig.length - 1];
-      const q = nearestOnPath(w.points, endPt, grid, (pt) => postEdit.pinOrBodyAt(pt));
+      const q = nearestOnPath(w.points, endPt, grid, (pt) => postEdit.onPartAt(pt));
       x.points = d.end === "start" ? normalizeWirePoints(stretchLeg(orig, q)) : normalizeWirePoints(stretchLeg([...orig].reverse(), q).reverse());
       moved.set(x.id, orig);
     }
@@ -1302,7 +1331,7 @@ function repairWiresGuarded(
       repairWires(doc, [...moved.keys()], allowed, { ...opts, before: moved, depth: depth + 1 });
     }
   }
-  if (depth === 0) {
+  if (depth === 0 && !opts.light) {
     // Wires the edit ran into are re-routed (locally, junctions kept); then the edit's own wires
     // that are still bad — again only their bad stretches between junctions, never end to end,
     // which would drop every branch on them.
