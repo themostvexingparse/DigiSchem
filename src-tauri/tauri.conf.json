@@ -13,9 +13,12 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "DigiSchem — Digital Schematic Editor",
+        "title": "DigiSchem \u2014 Digital Schematic Editor",
         "width": 1400,
-        "height": 900
+        "height": 900,
+        "dragDropEnabled": false,
+        "minWidth": 900,
+        "minHeight": 600
       }
     ],
     "security": {

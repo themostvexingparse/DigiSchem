@@ -115,6 +115,76 @@ export function buildWirePreview(
   return normalizeWirePoints([...committed, ...leg.slice(1)]);
 }
 
+/** World-space unit vector pointing OUT of the component along a pin's stub. */
+export function pinExitVector(inst: ComponentInstance, side: "left" | "right" | "top" | "bottom"): Point {
+  let v: Point =
+    side === "left" ? { x: -1, y: 0 } : side === "right" ? { x: 1, y: 0 } : side === "top" ? { x: 0, y: -1 } : { x: 0, y: 1 };
+  if (inst.mirror) v = { x: -v.x, y: v.y };
+  switch (inst.rotation) {
+    case 90: v = { x: -v.y, y: v.x }; break;
+    case 180: v = { x: -v.x, y: -v.y }; break;
+    case 270: v = { x: v.y, y: -v.x }; break;
+  }
+  return { x: v.x + 0, y: v.y + 0 }; // normalize -0
+}
+
+/**
+ * Pin-aware orthogonal route from `from` to `to`.
+ * - `fromExit` / `toExit` are pin exit vectors (null for free points / wire junctions).
+ * - The wire leaves/enters a pin along the pin's stub axis, so it never runs along a
+ *   component edge across neighbouring pins (which would short them geometrically).
+ * - If a target lies "behind" a pin, a short stub (2 grid cells) is added first.
+ * - Both ends on the same axis → Z route with the jog at the snapped midpoint.
+ * - `flip` swaps the free-choice orientation (user toggle with '/').
+ */
+export function routePinAware(
+  from: Point,
+  fromExit: Point | null,
+  to: Point,
+  toExit: Point | null,
+  flip = false,
+  grid = GRID,
+): Point[] {
+  if (pointsEqual(from, to)) return [{ ...from }];
+  const stub = 2 * grid;
+  const head: Point[] = [{ ...from }];
+  const tail: Point[] = [{ ...to }];
+  let a = from;
+  let b = to;
+  if (fromExit && (to.x - from.x) * fromExit.x + (to.y - from.y) * fromExit.y <= 0) {
+    a = { x: from.x + fromExit.x * stub, y: from.y + fromExit.y * stub };
+    head.push(a);
+  }
+  if (toExit && (a.x - to.x) * toExit.x + (a.y - to.y) * toExit.y <= 0) {
+    b = { x: to.x + toExit.x * stub, y: to.y + toExit.y * stub };
+    tail.unshift(b);
+  }
+  // After a stub the next segment should turn; otherwise follow the pin axis.
+  const startH: boolean | null = fromExit ? (head.length > 1 ? fromExit.x === 0 : fromExit.x !== 0) : null;
+  const endH: boolean | null = toExit ? (tail.length > 1 ? toExit.x === 0 : toExit.x !== 0) : null;
+
+  let mid: Point[];
+  if (a.x === b.x || a.y === b.y) {
+    mid = [a, b];
+  } else if (startH !== null && endH !== null && startH === endH && !flip) {
+    if (startH) {
+      const mx = snap((a.x + b.x) / 2, grid);
+      mid = [a, { x: mx, y: a.y }, { x: mx, y: b.y }, b];
+    } else {
+      const my = snap((a.y + b.y) / 2, grid);
+      mid = [a, { x: a.x, y: my }, { x: b.x, y: my }, b];
+    }
+  } else {
+    let hFirst: boolean;
+    if (startH !== null) hFirst = startH;
+    else if (endH !== null) hFirst = !endH;
+    else hFirst = true;
+    if (flip) hFirst = !hFirst;
+    mid = routeOrthogonal(a, b, hFirst);
+  }
+  return normalizeWirePoints([...head.slice(0, -1), ...mid, ...tail.slice(1)]);
+}
+
 /** Whether a pin's stub points horizontally in world space (accounting for rotation). */
 export function pinExitHorizontal(inst: ComponentInstance, side: "left" | "right" | "top" | "bottom"): boolean {
   const localHoriz = side === "left" || side === "right";

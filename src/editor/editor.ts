@@ -34,6 +34,8 @@ import {
   normalizeDocWires,
   normalizeWirePoints,
   pinExitHorizontal,
+  pinExitVector,
+  routePinAware,
   pointsEqual,
   snapToGrid,
   stretchWireForMove,
@@ -181,7 +183,7 @@ export class Editor {
   // Active tools / modes
   private placing: { type: string; rotation: Rotation; mirror: boolean } | null = null;
   private dragDropGhostType: string | null = null;
-  private wireDraft: { points: Point[]; horizontalFirst: boolean } | null = null;
+  private wireDraft: { points: Point[]; horizontalFirst: boolean; startExit?: Point | null; flipped?: boolean } | null = null;
   private interaction: Interaction | null = null;
   private spaceDown = false;
   private clipboard: ClipboardData | null = null;
@@ -658,7 +660,7 @@ export class Editor {
     // 3. Wire draft preview
     if (this.wireDraft && this.wireDraft.points.length > 0) {
       const target = this.currentWireTargetPoint();
-      const previewPts = buildWirePreview(this.wireDraft.points, target, this.wireDraft.horizontalFirst);
+      const previewPts = this.routeDraftTo(target);
       if (previewPts.length >= 2) {
         const d = previewPts.map((p, i) => `${i ? "L" : "M"}${p.x} ${p.y}`).join(" ");
         parts.push(`<path class="ds-wire-preview" d="${d}"/>`);
@@ -709,6 +711,26 @@ export class Editor {
 
   private currentWireSnapTarget(): SnapTarget | null {
     return findSnapTarget(this.store.doc, this.cursorWorldExact, this.pinToleranceWorld(), this.cachedPins);
+  }
+
+  /** Exit vector of the pin under a snap target (null for wire junctions / free points). */
+  private snapExit(t: SnapTarget | null): Point | null {
+    if (!t || t.kind !== "pin") return null;
+    const comp = this.store.doc.components.find((c) => c.id === t.pin.componentId);
+    return comp ? pinExitVector(comp, t.pin.pin.side) : null;
+  }
+
+  /** Pin-aware route from the draft's committed points to `target`. */
+  private routeDraftTo(target: Point, snapTarget: SnapTarget | null = this.currentWireSnapTarget()): Point[] {
+    const draft = this.wireDraft!;
+    const pts = draft.points;
+    if (pts.length === 0) return [{ ...target }];
+    const last = pts[pts.length - 1];
+    const fromExit = pts.length === 1 ? (draft.startExit ?? null) : null;
+    const toExit = snapTarget && pointsEqual(snapTarget.pos, target) ? this.snapExit(snapTarget) : null;
+    if (!fromExit && !toExit) return buildWirePreview(pts, target, draft.horizontalFirst);
+    const leg = routePinAware(last, fromExit, target, toExit, !!draft.flipped, this.store.doc.grid || 10);
+    return normalizeWirePoints([...pts, ...leg.slice(1)]);
   }
 
   private currentWireTargetPoint(): Point {
@@ -944,14 +966,14 @@ export class Editor {
         const comp = this.store.doc.components.find((c) => c.id === snapTarget.pin.componentId);
         if (comp) horizFirst = pinExitHorizontal(comp, snapTarget.pin.pin.side);
       }
-      this.wireDraft = { points: [{ ...targetPt }], horizontalFirst: horizFirst };
+      this.wireDraft = { points: [{ ...targetPt }], horizontalFirst: horizFirst, startExit: this.snapExit(snapTarget) };
       this.renderOverlay();
       this.emitState();
       return;
     }
 
     const last = this.wireDraft.points[this.wireDraft.points.length - 1];
-    const nextPts = buildWirePreview(this.wireDraft.points, targetPt, this.wireDraft.horizontalFirst);
+    const nextPts = this.routeDraftTo(targetPt, snapTarget);
 
     // Double-click or clicking on the same last point finishes the wire
     if (isDoubleClick || pointsEqual(targetPt, last)) {
@@ -1231,7 +1253,11 @@ export class Editor {
             const pin = this.interaction.pin;
             const comp = this.store.doc.components.find((c) => c.id === pin.componentId);
             const horizFirst = comp ? pinExitHorizontal(comp, pin.pin.side) : true;
-            this.wireDraft = { points: [{ ...pin.pos }], horizontalFirst: horizFirst };
+            this.wireDraft = {
+              points: [{ ...pin.pos }],
+              horizontalFirst: horizFirst,
+              startExit: comp ? pinExitVector(comp, pin.pin.side) : null,
+            };
             this.interaction = {
               kind: "pin-wire-drag",
               startPin: pin,
@@ -1296,7 +1322,7 @@ export class Editor {
         this.updateCursorFromClient(e.clientX, e.clientY);
         if (this.wireDraft) {
           const target = this.currentWireTargetPoint();
-          const pts = buildWirePreview(this.wireDraft.points, target, this.wireDraft.horizontalFirst);
+          const pts = this.routeDraftTo(target);
           this.commitWireDraft(pts);
         }
         break;
@@ -1550,6 +1576,7 @@ export class Editor {
     if (e.key === "/" && this.wireDraft) {
       e.preventDefault();
       this.wireDraft.horizontalFirst = !this.wireDraft.horizontalFirst;
+      this.wireDraft.flipped = !this.wireDraft.flipped;
       this.renderOverlay();
       this.emitState();
       return;

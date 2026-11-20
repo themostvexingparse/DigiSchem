@@ -14,6 +14,7 @@ import {
   mirrorSelectionInStore,
   rotateSelectionInStore,
   setComponentRotationInDoc,
+  keepWiresAttached,
 } from "../editor/doc-ops";
 
 type SyncFn = () => void;
@@ -181,7 +182,7 @@ export function mountProperties(host: HTMLElement, store: DocumentStore): void {
       const targetRot = Number(rotSel.value) as Rotation;
       runSelfUpdate(() => {
         store.update("Rotate component", (draft) => {
-          setComponentRotationInDoc(draft, compId, targetRot);
+          keepWiresAttached(draft, new Set([compId]), () => setComponentRotationInDoc(draft, compId, targetRot));
         });
       });
     });
@@ -194,8 +195,10 @@ export function mountProperties(host: HTMLElement, store: DocumentStore): void {
       const checked = mirrorChk.checked;
       runSelfUpdate(() => {
         store.update("Mirror component", (draft) => {
-          const c = draft.components.find((x) => x.id === compId);
-          if (c) c.mirror = checked || undefined;
+          keepWiresAttached(draft, new Set([compId]), () => {
+            const c = draft.components.find((x) => x.id === compId);
+            if (c) c.mirror = checked || undefined;
+          });
         });
       });
     });
@@ -245,8 +248,10 @@ export function mountProperties(host: HTMLElement, store: DocumentStore): void {
     const applyProp = (val: PropValue) => {
       runSelfUpdate(() => {
         store.update(`Set ${pdef.label}`, (draft) => {
-          const c = draft.components.find((x) => x.id === compId);
-          if (c) c.props[pdef.key] = val;
+          keepWiresAttached(draft, new Set([compId]), () => {
+            const c = draft.components.find((x) => x.id === compId);
+            if (c) c.props[pdef.key] = val;
+          });
         });
       });
     };

@@ -18,6 +18,7 @@ import {
   componentBounds,
   geometryOf,
   snap,
+  worldPins,
   unionRect,
   type Rect,
 } from "../model/geometry";
@@ -28,8 +29,52 @@ import {
   nextCopyLabel,
   normalizeDocWires,
   stretchWireForMove,
+  stretchWireStart,
+  normalizeWirePoints,
   textBounds,
 } from "./wire-utils";
+
+/**
+ * Run `mutate` (which may rotate / mirror / re-parameterize components) and then
+ * re-attach every wire endpoint that sat on one of those components' pins to the
+ * pin's new position (matched by pin id). Wires listed in `excludeWireIds`
+ * (e.g. selected wires transformed together with the components) are untouched.
+ */
+export function keepWiresAttached(
+  doc: SchematicDocument,
+  componentIds: ReadonlySet<string>,
+  mutate: () => void,
+  excludeWireIds: ReadonlySet<string> = new Set(),
+): void {
+  const key = (p: Point) => `${p.x},${p.y}`;
+  const before = new Map<string, string>(); // pos -> compId:pinId
+  for (const c of doc.components) {
+    if (!componentIds.has(c.id)) continue;
+    for (const wp of worldPins(c)) before.set(key(wp.pos), `${c.id}:${wp.pin.id}`);
+  }
+  const attached: { wire: Wire; start?: string; end?: string }[] = [];
+  for (const w of doc.wires) {
+    if (excludeWireIds.has(w.id) || w.points.length < 2) continue;
+    const start = before.get(key(w.points[0]));
+    const end = before.get(key(w.points[w.points.length - 1]));
+    if (start || end) attached.push({ wire: w, start, end });
+  }
+  mutate();
+  if (attached.length === 0) return;
+  const after = new Map<string, Point>();
+  for (const c of doc.components) {
+    if (!componentIds.has(c.id)) continue;
+    for (const wp of worldPins(c)) after.set(`${c.id}:${wp.pin.id}`, wp.pos);
+  }
+  for (const a of attached) {
+    let pts = a.wire.points.map((p) => ({ ...p }));
+    const ns = a.start ? after.get(a.start) : undefined;
+    if (ns && key(ns) !== key(pts[0])) pts = stretchWireStart(pts, ns);
+    const ne = a.end ? after.get(a.end) : undefined;
+    if (ne && key(ne) !== key(pts[pts.length - 1])) pts = stretchWireStart([...pts].reverse(), ne).reverse();
+    a.wire.points = normalizeWirePoints(pts);
+  }
+}
 
 export interface ClipboardData {
   components: ComponentInstance[];
@@ -183,13 +228,17 @@ export function mirrorSelectionInDoc(doc: SchematicDocument, selection: Readonly
 export function rotateSelectionInStore(store: DocumentStore): void {
   if (store.selection.size === 0) return;
   const sel = new Set(store.selection);
-  store.update("Rotate", (draft) => rotateSelectionInDoc(draft, sel));
+  store.update("Rotate", (draft) =>
+    keepWiresAttached(draft, sel, () => rotateSelectionInDoc(draft, sel), sel),
+  );
 }
 
 export function mirrorSelectionInStore(store: DocumentStore): void {
   if (store.selection.size === 0) return;
   const sel = new Set(store.selection);
-  store.update("Mirror", (draft) => mirrorSelectionInDoc(draft, sel));
+  store.update("Mirror", (draft) =>
+    keepWiresAttached(draft, sel, () => mirrorSelectionInDoc(draft, sel), sel),
+  );
 }
 
 export function deleteSelectionInStore(store: DocumentStore): void {
