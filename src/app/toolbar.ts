@@ -170,6 +170,7 @@ export function mountToolbar(host: HTMLElement, cmds: AppCommands, editor: Edito
     zoomLabel,
     button({ icon: ICONS.zoomIn, title: "Zoom in", action: () => editor.zoomBy(1.25) }),
     button({ icon: ICONS.fit, title: "Zoom to fit (F)", action: () => editor.zoomToFit() }),
+    button({ icon: ICONS.compact, title: "Compact layout — selection, or whole schematic (Ctrl+Shift+L)", action: () => cmds.compactLayout() }),
     gridBtn,
     themeSel,
     panelBtn,

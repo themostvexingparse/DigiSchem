@@ -95,10 +95,12 @@ const clockDef: ComponentDef = {
   description: "Periodic clock signal generator",
   props: [{ key: "name", label: "Label", kind: "string" }],
   defaultProps: { name: "" },
-  geometry(): Geometry {
+  geometry(props): Geometry {
+    // The optional name is drawn under the symbol: grow the outline to include it (pins unchanged).
+    const named = propStr(props, "name", "").trim() !== "";
     return {
       width: 40,
-      height: 20,
+      height: named ? 40 : 20,
       pins: [{ id: "clk", name: "CLK", x: 40, y: 10, dir: "out", side: "right", clock: true }],
     };
   },
@@ -207,10 +209,12 @@ const probeDef: ComponentDef = {
   description: "Logic level indicator / LED probe",
   props: [{ key: "name", label: "Label", kind: "string" }],
   defaultProps: { name: "" },
-  geometry(): Geometry {
+  geometry(props): Geometry {
+    // The optional name is drawn under the symbol: grow the outline to include it (pins unchanged).
+    const named = propStr(props, "name", "").trim() !== "";
     return {
       width: 40,
-      height: 20,
+      height: named ? 40 : 20,
       pins: [{ id: "in", name: "IN", x: 0, y: 10, dir: "in", side: "left" }],
     };
   },

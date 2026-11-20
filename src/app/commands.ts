@@ -8,6 +8,10 @@ import { PROJECT_EXTENSION, parseProject, serializeProject } from "../io/project
 import { exportPngBlob, exportSvgString } from "../io/export";
 import { openText, saveBinary, saveText } from "../platform/files";
 import { showShortcutsDialog } from "./dialogs";
+import { packSchematic } from "../layout/pack";
+import { validatePacking } from "../layout/validate";
+import { worldPins } from "../model/geometry";
+import type { SchematicDocument } from "../model/types";
 
 const PROJECT_FILTER = [{ name: "DigiSchem Project", extensions: [PROJECT_EXTENSION, "json"] }];
 
@@ -120,6 +124,52 @@ export class AppCommands {
     }
   }
 
+  /**
+   * Compact the layout with the packer: the selection (plus wires attached to it) if any,
+   * otherwise the whole schematic. The packer preserves connectivity, wire shapes and
+   * component order; its result is re-validated before being applied as one undo step.
+   */
+  compactLayout() {
+    const doc = this.store.doc;
+    const sel = this.store.selection;
+    let ids: Set<string> | undefined;
+    if (sel.size > 0) {
+      ids = new Set(sel);
+      const pinKeys = new Set<string>();
+      for (const c of doc.components) if (sel.has(c.id)) for (const wp of worldPins(c)) pinKeys.add(`${wp.pos.x},${wp.pos.y}`);
+      for (const w of doc.wires) {
+        const ends = [w.points[0], w.points[w.points.length - 1]];
+        if (ends.some((e) => e && pinKeys.has(`${e.x},${e.y}`))) ids.add(w.id);
+      }
+    }
+    notify(sel.size > 0 ? "Compacting selection…" : "Compacting layout…");
+    // Let the toast paint before the (synchronous) packer runs.
+    setTimeout(() => {
+      try {
+        const before = this.store.doc as SchematicDocument;
+        const res = packSchematic(before, ids ? { ids } : {});
+        const problems = validatePacking(before, res.doc, ids ? { ids } : {});
+        if (problems.length > 0) {
+          notify(`Compaction skipped: the result broke a layout rule (${problems[0]})`, true);
+          return;
+        }
+        if (res.areaAfter >= res.areaBefore) {
+          notify("Already compact — nothing to tighten without changing wire shapes or order.");
+          return;
+        }
+        this.store.update(sel.size > 0 ? "Compact selection" : "Compact layout", (d) => {
+          d.components = res.doc.components;
+          d.wires = res.doc.wires;
+          d.texts = res.doc.texts;
+        });
+        const pct = Math.round(100 * (1 - res.areaAfter / res.areaBefore));
+        notify(`Compacted: ${pct}% less area (Ctrl+Z to undo)`);
+      } catch (e) {
+        notify(`Compaction failed: ${(e as Error).message ?? e}`, true);
+      }
+    }, 30);
+  }
+
   /** Small modal for export settings. */
   showExportDialog(kind: "svg" | "png") {
     const dlg = document.createElement("dialog");
@@ -180,6 +230,7 @@ export function installGlobalShortcuts(cmds: AppCommands) {
     else if (k === "o") void cmds.open();
     else if (k === "s") void cmds.save(e.shiftKey);
     else if (k === "e") cmds.showExportDialog(e.shiftKey ? "png" : "svg");
+    else if (k === "l" && e.shiftKey) cmds.compactLayout();
     else handled = false;
     if (handled) e.preventDefault();
   });

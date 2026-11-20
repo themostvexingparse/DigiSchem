@@ -46,7 +46,7 @@ import {
   type AttachedWireSnapshot,
   type SnapTarget,
 } from "./wire-utils";
-import { movedEndContacts, RouteObstacles, repairWires, safeRoute, sameNetWires } from "./safe-route";
+import { movedEndContacts, netWiresAt, RouteObstacles, repairWires, safeRoute, sameNetWires } from "./safe-route";
 import { computeGuides, guidePeers, type GuideResult } from "./guides";
 import { getSettings, onSettingsChange, updateSettings } from "../model/settings";
 import {
@@ -876,8 +876,11 @@ export class Editor {
     // free-space drafting stays predictable).
     if (snapTarget && leg.length >= 2) {
       const obs = this.routeObstacles();
-      if (obs.routeIsBad(leg)) {
-        const safe = safeRoute(obs, last, target, { fromExit, toExit, prefer: leg });
+      // The new wire is meant to join whatever nets it starts and ends on: those wires are
+      // fine to touch (e.g. a second wire leaving an already-wired pin).
+      const sameNet = netWiresAt(this.store.doc as Parameters<typeof normalizeDocWires>[0], [pts[0], target]);
+      if (obs.routeIsBad(leg, sameNet)) {
+        const safe = safeRoute(obs, last, target, { fromExit, toExit, prefer: leg, sameNet });
         if (safe) leg = safe;
       }
     }

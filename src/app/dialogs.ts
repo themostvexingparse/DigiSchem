@@ -84,6 +84,7 @@ const SHORTCUTS: [string, string][] = [
   ["F / G / P", "Zoom to fit · Toggle grid · Toggle properties panel"],
   ["Ctrl+N / O / S", "New · Open · Save (Ctrl+Shift+S: Save as)"],
   ["Ctrl+E / Ctrl+Shift+E", "Export SVG / PNG"],
+  ["Ctrl+Shift+L", "Compact layout (selection, or whole schematic)"],
   ["?", "This help"],
 ];
 

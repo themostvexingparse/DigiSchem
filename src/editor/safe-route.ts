@@ -12,7 +12,7 @@
 import type { ComponentInstance, Point, SchematicDocument } from "../model/types";
 import type { Side } from "../model/component-def";
 import { GRID } from "../model/component-def";
-import { componentBounds, worldPins, type Rect } from "../model/geometry";
+import { componentBounds, SegmentIndex, worldPins, type Rect } from "../model/geometry";
 import { normalizeWirePoints, pinExitVector } from "./wire-utils";
 import { buildNetlist } from "../io/netlist";
 
@@ -361,6 +361,39 @@ function distToSeg(p: Point, a: Point, b: Point): number {
   let t = len2 === 0 ? 0 : ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2;
   t = Math.max(0, Math.min(1, t));
   return Math.hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy));
+}
+
+const netCache = new WeakMap<SchematicDocument, { byWire: Map<string, string[]>; byPin: Map<string, string[]> }>();
+
+/**
+ * Wires of every net touching any of `points` (a pin there, or a wire passing through it).
+ * Used while DRAWING a wire: it is meant to join those nets, so touching them is fine.
+ * Cached per document version.
+ */
+export function netWiresAt(doc: SchematicDocument, points: readonly Point[]): Set<string> {
+  let c = netCache.get(doc);
+  if (!c) {
+    const byWire = new Map<string, string[]>();
+    const byPin = new Map<string, string[]>();
+    const nl = buildNetlist(doc);
+    for (const net of nl.nets) {
+      for (const w of net.wires) byWire.set(w, net.wires);
+      for (const p of net.pins) {
+        const comp = doc.components.find((x) => x.id === p.componentId);
+        const wp = comp && worldPins(comp).find((q) => q.pin.id === p.pinId);
+        if (wp) byPin.set(key(wp.pos), net.wires);
+      }
+    }
+    c = { byWire, byPin };
+    netCache.set(doc, c);
+  }
+  const out = new Set<string>();
+  const idx = new SegmentIndex(doc.wires);
+  for (const p of points) {
+    for (const w of c.byPin.get(key(p)) ?? []) out.add(w);
+    for (const wi of idx.wiresAt(p)) for (const w of c.byWire.get(doc.wires[wi].id) ?? []) out.add(w);
+  }
+  return out;
 }
 
 /** For each wire id, the ids of the OTHER wires on the same electrical net. */
