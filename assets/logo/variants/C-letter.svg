@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024" role="img" aria-label="DigiSchem">
+  <rect width="1024" height="1024" rx="224" fill="#2463d1"/>
+  <g fill="none" stroke="#ffffff" stroke-width="88" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M300 240H500A272 272 0 0 1 500 784H300Z"/>
+    <path d="M300 416H404M300 608H404"/>
+  </g>
+  <circle cx="772" cy="512" r="0" fill="#ffffff"/>
+</svg>

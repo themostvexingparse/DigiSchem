@@ -1,0 +1,12 @@
+<!doctype html><meta charset="utf-8"><style>
+body{font:14px "Segoe UI",Arial,sans-serif;margin:24px;background:#f3f4f7;color:#1d2430}
+.row{display:flex;gap:28px;align-items:flex-end;padding:18px 22px;border-radius:12px;margin:10px 0}
+.light{background:#fff}.dark{background:#1e1e1e;color:#ddd}
+h2{margin:26px 0 6px;font-size:16px}.c{display:flex;flex-direction:column;align-items:center;gap:6px;font-size:11px}
+.word{display:flex;align-items:center;gap:0;font-weight:700;font-size:44px;color:#1d2430}
+</style>
+<script>
+const V=[["A","A-outline.svg","A — gate only (current pick)"],["F","F-scope-plain.svg","F — gate D + sine-trace S, plain"],["G","G-scope-grid.svg","G — oscilloscope grid on the blue, glowing trace"],["H","H-scope-bezel.svg","H — dark scope screen in a blue bezel"]];
+const S=[256,64,32,16];
+document.write(V.map(([k,f,t])=>`<h2>${k} — ${t}</h2>`+["light","dark"].map(bg=>`<div class="row ${bg}">`+S.map(s=>`<div class="c"><img src="${f}" width="${s}" height="${s}"><span>${s}px</span></div>`).join("")+`</div>`).join("")).join(""));
+</script>

@@ -1,9 +1,14 @@
-# DigiSchem Logo
-Concept: An IEEE AND gate ("D" for DigiSchem) driving a two-way orthogonal fan-out through a filled schematic junction dot.
-Colors: `#2463d1` (accent blue), `#1d2430` (deep slate ink), `#ffffff` (white).
+# DigiSchem logo
+
+Concept: an oscilloscope screen showing the initials — an AND gate drawn as the **D**, and a
+sine trace drawn vertically as the **S** — over a faint scope graticule.
+
+Colors: `#2463d1` (accent blue background / trace in UI), `#ffffff` (gate and trace on the icon),
+`#cfe6ff` (trace glow), `#1d2430` (gate in the light-theme wordmark).
 
 Files:
-- `logo.svg` — Master 1024×1024 app icon (rasterized for desktop/taskbar icons, 16–1024 px).
-- `logo-mark.svg` — Transparent 24×24 UI mark (`currentColor` + `#2463d1` accent) for toolbars and small chrome.
-- `wordmark.svg` — Horizontal mark + "DigiSchem" lockup for the About/Help dialog.
-- `preview.html` — Static review sheet across sizes and light/dark surfaces.
+- `logo.svg` — master 1024×1024 app icon; all app icons in `src-tauri/icons` are generated from it
+  (`npx tauri icon assets/logo/logo.svg -o src-tauri/icons`).
+- `logo-mark.svg` — small toolbar mark (no graticule); the gate uses `currentColor`, the trace the accent.
+- `wordmark.svg` — mark + "DigiSchem" for the About/Help screen.
+- `variants/` — the design candidates (G was adopted); `variants/sheet.html` compares them.

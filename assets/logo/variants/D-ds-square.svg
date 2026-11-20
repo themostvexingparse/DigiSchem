@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024" role="img" aria-label="DigiSchem">
+  <rect width="1024" height="1024" rx="224" fill="#2463d1"/>
+  <g fill="none" stroke="#ffffff" stroke-width="60" stroke-linecap="round" stroke-linejoin="round">
+    <!-- D: AND gate -->
+    <path d="M250 312H350A200 200 0 0 1 350 712H250Z"/>
+    <path d="M140 432H250M140 592H250"/>
+    <!-- S: a schematic net; the gate output is its middle stroke -->
+    <path d="M884 312H660V512H884V712H660"/>
+    <path d="M550 512H660"/>
+  </g>
+  <g fill="#ffffff">
+    <circle cx="660" cy="512" r="46"/>
+  </g>
+</svg>
