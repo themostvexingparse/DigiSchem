@@ -227,7 +227,7 @@ describe("resize handles & cursors", () => {
     expect(allowedHandles("width")).toEqual(["w", "e"]);
     expect(allowedHandles("height")).toEqual(["n", "s"]);
 
-    const nonResizable: ComponentInstance = { id: "g1", type: "and", x: 0, y: 0, rotation: 0, props: {} };
+    const nonResizable: ComponentInstance = { id: "g1", type: "not", x: 0, y: 0, rotation: 0, props: {} };
     expect(resizeHandles(nonResizable)).toEqual([]);
 
     const wComp: ComponentInstance = { id: "c1", type: TEST_WIDTH, x: 100, y: 100, rotation: 0, props: {} };
