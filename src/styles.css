@@ -39,9 +39,24 @@ html, body { margin: 0; height: 100%; overflow: hidden; }
   grid-template-rows: auto 1fr 24px;
   grid-template-areas: "toolbar toolbar toolbar" "palette canvas properties" "status status status";
 }
+/* One row, always: the toolbar must never change height (selecting a part shows its buttons —
+   wrapping onto a second row would shift the whole canvas under the cursor mid-click/drag). On a
+   narrow window the groups shrink and scroll sideways instead. */
 #toolbar {
-  grid-area: toolbar; display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  grid-area: toolbar; display: flex; align-items: center; gap: 6px; flex-wrap: nowrap;
   padding: 6px 10px; background: var(--panel); border-bottom: 1px solid var(--panel-border);
+  height: 43px; box-sizing: border-box;
+}
+#toolbar > * { flex: none; }
+/* the selection's buttons give way (shrink, scroll sideways) — dropdown menus elsewhere stay unclipped */
+#toolbar > .tb-context { flex: 0 1 auto; min-width: 0; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; }
+#toolbar > .tb-context::-webkit-scrollbar { display: none; }
+#toolbar > .tb-context > * { flex: none; }
+#toolbar > .tb-context .tb-chip { flex: 0 1 auto; min-width: 48px; }
+/* narrower windows: icon buttons drop their text labels (the tooltips still say what they do) */
+@media (max-width: 1500px) {
+  #toolbar .tb-btn:has(.ico) > span { display: none; }
+  #toolbar .tb-btn:has(.ico) { padding: 0; width: 30px; }
 }
 #toolbar .brand { font-weight: 700; margin-right: 6px; color: var(--accent); display: inline-flex; align-items: center; gap: 6px; }
 #toolbar .brand svg { color: var(--text, currentColor); flex: none; }
