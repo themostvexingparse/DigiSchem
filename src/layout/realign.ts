@@ -85,6 +85,106 @@ export function netSignature(doc: SchematicDocument): string {
 
 const bendsOf = (doc: SchematicDocument) => doc.wires.reduce((n, w) => n + Math.max(0, w.points.length - 2), 0);
 
+/** Pairs of parts whose bodies overlap (one drawn on top of the other). */
+export function overlappingPartPairs(doc: SchematicDocument): [string, string][] {
+  const bs = doc.components.map((c) => ({ id: c.id, b: componentBounds(c) }));
+  const out: [string, string][] = [];
+  for (let i = 0; i < bs.length; i++) {
+    for (let j = i + 1; j < bs.length; j++) {
+      const a = bs[i].b, b = bs[j].b;
+      if (a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h) out.push([bs[i].id, bs[j].id]);
+    }
+  }
+  return out;
+}
+
+/**
+ * Separation phase: a part lying on top of another (e.g. a fresh duplicate) is moved to the
+ * nearest place where it overlaps nothing, its wires re-routed. The later part of each pair (in
+ * document order — usually the copy) moves. Adding bends is allowed here: an overlap is worse.
+ */
+function separateOverlaps(
+  input: SchematicDocument,
+  opts: RealignOptions,
+): { doc: SchematicDocument; moved: string[]; rerouted: string[] } {
+  let cur = input;
+  const moved: string[] = [];
+  const rerouted = new Set<string>();
+  const grid = cur.grid || 10;
+  const room = 2 * grid; // default componentGap
+  const sig0 = netSignature(cur);
+  const baseline = prepareValidationBaseline(cur, opts.ids ? { ids: opts.ids } : {});
+  const order = new Map(cur.components.map((c, i) => [c.id, i]));
+  const offsets: [number, number][] = [];
+  for (let k = 1; k <= 24; k++) {
+    for (const [dx, dy] of [[k, 0], [-k, 0], [0, k], [0, -k], [k, k], [-k, k], [k, -k], [-k, -k]]) offsets.push([dx * grid, dy * grid]);
+  }
+  // its own time budget (only spent when parts overlap): the realign deadline is short
+  const deadline = Math.max(opts.deadline, performance.now() + 2500);
+  for (let round = 0; round < 32 && performance.now() < deadline; round++) {
+    const pairs = overlappingPartPairs(cur);
+    if (pairs.length === 0) break;
+    // the part to move: the later one of a pair, if it may move
+    const movable = (id: string) => !opts.ids || opts.ids.has(id);
+    let target: string | null = null;
+    for (const [a, b] of pairs) {
+      const [first, second] = order.get(a)! < order.get(b)! ? [a, b] : [b, a];
+      if (movable(second)) target = second;
+      else if (movable(first)) target = first;
+      if (target) break;
+    }
+    if (!target) break;
+    const n0 = pairs.length;
+    const netsBefore = sameNetWires(cur);
+    let done = false;
+    const b0 = componentBounds(cur.components.find((x) => x.id === target)!);
+    const others = cur.components.filter((o) => o.id !== target).map((o) => componentBounds(o));
+    for (const [dx, dy] of offsets) {
+      if (performance.now() > deadline) break;
+      // cheap test first: is the spot clear of every other part (the packer's 2 cells of room)?
+      const nb0 = { x: b0.x + dx, y: b0.y + dy, w: b0.w, h: b0.h };
+      if (others.some((b) => nb0.x < b.x + b.w + room && b.x < nb0.x + nb0.w + room && nb0.y < b.y + b.h + room && b.y < nb0.y + nb0.h + room)) continue;
+      const cand = structuredClone(cur);
+      keepWiresAttached(cand, new Set([target]), () => {
+        const c = cand.components.find((x) => x.id === target)!;
+        c.x += dx;
+        c.y += dy;
+      });
+      if (cand.wires.length !== cur.wires.length) continue;
+      const nb = componentBounds(cand.components.find((x) => x.id === target)!);
+      // clear of every other part, with room
+      const clear = cand.components.every((o) => {
+        if (o.id === target) return true;
+        const b = componentBounds(o);
+        return !(nb.x < b.x + b.w + room && b.x < nb.x + nb.w + room && nb.y < b.y + b.h + room && b.y < nb.y + nb.h + room);
+      });
+      if (!clear) continue;
+      if (overlappingPartPairs(cand).length >= n0) continue;
+      if (netSignature(cand) !== sig0) continue;
+      const changed = cand.wires.filter((w, i) => JSON.stringify(w.points) !== JSON.stringify(cur.wires[i]?.points)).map((w) => w.id);
+      if (opts.ids && changed.some((id) => !opts.ids!.has(id))) continue;
+      // a re-routed wire may not get worse (a copy's wire still lying on its original is no
+      // cleaner after the move, but no dirtier either)
+      const obs = new RouteObstacles(cand);
+      const obs0 = new RouteObstacles(cur);
+      if (changed.some((id) => {
+        const w = cand.wires.find((x) => x.id === id)!;
+        const w0 = cur.wires.find((x) => x.id === id)!;
+        const ign = new Set([id, ...(netsBefore.get(id) ?? [])]);
+        return obs.routeIsBad(w.points, ign) && !obs0.routeIsBad(w0.points, ign);
+      })) continue;
+      if (ruleProblems(validateAgainstBaseline(baseline, cand), new Set(changed), cand).length > 0) continue;
+      cur = cand;
+      moved.push(target);
+      for (const id of changed) rerouted.add(id);
+      done = true;
+      break;
+    }
+    if (!done) break;
+  }
+  return { doc: cur, moved, rerouted: [...rerouted] };
+}
+
 /** Problems of a realigned layout relative to the original (empty = acceptable). */
 export function realignProblems(
   before: SchematicDocument,
@@ -95,7 +195,10 @@ export function realignProblems(
   if (netSignature(after) !== netSignature(before)) out.push("Realign: connectivity changed");
   if (after.components.length !== before.components.length || after.wires.length !== before.wires.length)
     out.push("Realign: part or wire count changed");
-  if (bendsOf(after) > bendsOf(before)) out.push("Realign: added wire bends");
+  // (bends may only grow where parts lying on top of each other were pulled apart)
+  if (bendsOf(after) > bendsOf(before) && overlappingPartPairs(after).length >= overlappingPartPairs(before).length)
+    out.push("Realign: added wire bends");
+  if (overlappingPartPairs(after).length > overlappingPartPairs(before).length) out.push("Realign: parts overlap");
   const byId = new Map(before.components.map((c) => [c.id, c]));
   for (const c of after.components) {
     const o = byId.get(c.id);
@@ -122,13 +225,15 @@ export function realignWithReroute(
   qWeights: QualityWeights,
   opts: RealignOptions,
 ): RealignResult {
-  let cur = structuredClone(input);
+  // first pull apart parts lying on top of each other
+  const sep = separateOverlaps(structuredClone(input), opts);
+  let cur = sep.doc;
   const grid = cur.grid || 10;
   const maxD = (opts.maxCells ?? 12) * grid;
   const sig0 = netSignature(cur);
   let q: QualityBreakdown = layoutQuality(cur, qWeights);
-  const moved = new Set<string>();
-  const rerouted = new Set<string>();
+  const moved = new Set<string>(sep.moved);
+  const rerouted = new Set<string>(sep.rerouted);
   const tried = new Set<string>(); // "compId@x,y" positions already evaluated (and rejected)
 
   for (let round = 0; round < 64 && performance.now() < opts.deadline; round++) {

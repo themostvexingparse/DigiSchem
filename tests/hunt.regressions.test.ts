@@ -12,6 +12,8 @@ import { pathLoopCuts, pathOverlapsItself } from "../src/editor/wire-utils";
 import { repairSegmentDrop, sameNetWires, untangleWires } from "../src/editor/safe-route";
 import { dragWireSegmentPoints, followSegmentBranches, segmentBranches } from "../src/editor/wire-utils";
 import { connectionConflicts } from "../src/model/links";
+import { packSchematic, validateCompaction } from "../src/layout/pack";
+import { overlappingPartPairs } from "../src/layout/realign";
 
 registerBuiltinComponents();
 const C = (id: string, type: string, x: number, y: number): ComponentInstance => ({ id, type, x, y, rotation: 0, props: {} });
@@ -162,5 +164,16 @@ describe("store fuzz regressions", () => {
     d.links = [["p:a|out", "w:w"], ["p:g|in0", "w:w"]];
     expect(connectionConflicts(d)).toEqual([]);
   });
+
+  it("compaction pulls apart a part dropped on top of another (e.g. a fresh duplicate)", () => {
+    const s = new DocumentStore(sprawled(1, 3, 4));
+    s.setSelection([s.doc.components.filter((c) => c.id.startsWith("g"))[1].id]);
+    duplicateSelectionInStore(s); // lands 20,20 off: overlapping the original
+    expect(overlappingPartPairs(s.doc as SchematicDocument).length).toBe(1);
+    const res = packSchematic(structuredClone(s.doc as SchematicDocument));
+    expect(validateCompaction(s.doc as SchematicDocument, res)).toEqual([]);
+    expect(overlappingPartPairs(res.doc).length).toBe(0);
+    expect(res.qualityAfter.total).toBeLessThan(res.qualityBefore.total);
+  }, 60_000);
 });
 
