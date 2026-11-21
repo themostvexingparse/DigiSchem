@@ -13,19 +13,25 @@ import { miscDefs } from "./misc";
 import { displayDefs } from "./displays";
 import { arithExtraDefs, plexerExtraDefs } from "./arith-extra";
 import { transistorDefs } from "./transistors";
+import { extraArithDefs, extraGateDefs, extraMemoryDefs, extraPlexerDefs, extraSeqDefs } from "./extras";
 
 export const ALL_DEFS: ComponentDef[] = [
   ...ioDefs,
   ...displayDefs,
   ...gateDefs,
+  ...extraGateDefs,
   ...plexerDefs,
   ...plexerExtraDefs,
+  ...extraPlexerDefs,
   ...arithmeticDefs,
   ...arithExtraDefs,
+  ...extraArithDefs,
   ...latchDefs,
   ...flipflopDefs,
   ...registerDefs,
+  ...extraSeqDefs,
   ...memoryDefs,
+  ...extraMemoryDefs,
   ...miscDefs,
   ...transistorDefs,
 ];

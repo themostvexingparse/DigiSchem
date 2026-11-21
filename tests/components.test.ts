@@ -123,6 +123,9 @@ function isCountProp(def: ComponentDef, p: PropDef): boolean {
   if (p.key === "width" && def.type === "alu") return false;
   if (p.key === "width" && def.type === "splitter") return false;
   if (def.type === "bit-extender") return false; // in/out widths are bus widths of single pins
+  // values that change a bus width or a number in the title, not the pins
+  const valueOnly = new Set(["bit-selector:width", "bus-transceiver:width", "fifo:depth", "fifo:width", "clock-divider:divisor", "synchronizer:stages"]);
+  if (valueOnly.has(`${def.type}:${p.key}`)) return false;
   return true;
 }
 
