@@ -147,8 +147,17 @@ function bridgeRemovedPins(prev: readonly [string, string][], now: ReadonlySet<T
   return out;
 }
 
+export interface MaintainOptions {
+  /**
+   * Connect NEW terminals by touch (default true: a drawn wire, a placed part). Paste / duplicate
+   * pass false — a copy keeps exactly the connections it had among the copied items (supplied by
+   * the edit in `draft.links`) and joins nothing it merely lands on.
+   */
+  connectByTouch?: boolean;
+}
+
 /** Update `draft.links` after an edit from `before` (see the module comment). */
-export function maintainLinks(before: SchematicDocument, draft: SchematicDocument): void {
+export function maintainLinks(before: SchematicDocument, draft: SchematicDocument, opts: MaintainOptions = {}): void {
   const prev = before.links ?? inferLinks(before);
   const now = terminalsOf(draft);
   const old = before.links || before.wires.length || before.components.length ? terminalsOf(before) : new Set<Terminal>();
@@ -156,7 +165,11 @@ export function maintainLinks(before: SchematicDocument, draft: SchematicDocumen
   kept.push(...bridgeRemovedPins(prev, now));
   const fresh = new Set<Terminal>();
   for (const t of now) if (!old.has(t)) fresh.add(t);
-  if (fresh.size > 0) {
+  // links the edit itself supplied for its new items (e.g. a pasted copy's internal connections)
+  if (before.links && draft.links && draft.links !== before.links) {
+    for (const [a, b] of draft.links) if ((fresh.has(a) || fresh.has(b)) && now.has(a) && now.has(b)) kept.push([a, b]);
+  }
+  if (fresh.size > 0 && opts.connectByTouch !== false) {
     const touching = geometricContacts(draft).filter((c) => fresh.has(c.a) || fresh.has(c.b));
     draft.links = canonicalLinks(linksFromContacts(draft, touching, kept, false));
     return;

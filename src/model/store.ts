@@ -11,7 +11,7 @@
  */
 import type { SchematicDocument } from "./types";
 import { emptyDocument } from "./types";
-import { inferLinks, maintainLinks } from "./links";
+import { inferLinks, maintainLinks, type MaintainOptions } from "./links";
 import { mergeWireSeams } from "./merge";
 
 export type ChangeKind = "doc" | "selection" | "replace";
@@ -60,12 +60,12 @@ export class DocumentStore {
   }
 
   /** Apply a mutation as one undoable step (or part of the current gesture). */
-  update(label: string, mutator: (draft: SchematicDocument) => void): void {
+  update(label: string, mutator: (draft: SchematicDocument) => void, opts: MaintainOptions = {}): void {
     const before = this._doc;
     const draft = clone(before);
     mutator(draft);
     // Connectivity is kept, never re-derived from an edited drawing (see model/links.ts).
-    maintainLinks(before, draft);
+    maintainLinks(before, draft, opts);
     // Wires drawn end to end become one wire — but never mid-gesture (a drag tracks wires by id).
     if (this.gestureDepth === 0) mergeWireSeams(draft);
     // No-op edits (re-setting the same value, a drag back to its start) must not create

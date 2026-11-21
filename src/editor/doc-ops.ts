@@ -114,6 +114,8 @@ export interface ClipboardData {
   wires: Wire[];
   texts: TextNote[];
   anchor: Point;
+  /** Stored connections among the copied items (terminals named by their original ids). */
+  links?: [string, string][];
 }
 
 /** Rotate a point 90 degrees clockwise around (cx, cy) in SVG screen coordinates (+x right, +y down). */
@@ -435,7 +437,10 @@ export function copySelectionFromDoc(
     x: snap(bounds.x + bounds.w / 2, grid),
     y: snap(bounds.y + bounds.h / 2, grid),
   };
-  return { components, wires, texts, anchor };
+  const inside = (t: string) =>
+    t.startsWith("w:") ? selection.has(t.slice(2)) : t.startsWith("p:") && selection.has(t.slice(2, t.indexOf("|")));
+  const links = doc.links ? doc.links.filter(([a, b]) => inside(a) && inside(b)).map(([a, b]) => [a, b] as [string, string]) : undefined;
+  return { components, wires, texts, anchor, ...(links ? { links } : {}) };
 }
 
 /**
@@ -457,10 +462,12 @@ export function pasteClipboardIntoStore(
   const dy = dest.y - clip.anchor.y;
 
   const newIds: string[] = [];
+  const idMap = new Map<string, string>();
   store.update(label, (draft) => {
     for (const src of clip.components) {
       const c: ComponentInstance = structuredClone(src);
       c.id = newId("c");
+      idMap.set(src.id, c.id);
       c.x = snap(c.x + dx, grid);
       c.y = snap(c.y + dy, grid);
       c.label = nextCopyLabel(draft, c);
@@ -470,6 +477,7 @@ export function pasteClipboardIntoStore(
     for (const src of clip.wires) {
       const w: Wire = structuredClone(src);
       w.id = newId("w");
+      idMap.set(src.id, w.id);
       w.points = w.points.map((p) => ({ x: snap(p.x + dx, grid), y: snap(p.y + dy, grid) }));
       draft.wires.push(w);
       newIds.push(w.id);
@@ -483,7 +491,22 @@ export function pasteClipboardIntoStore(
       newIds.push(t.id);
     }
     normalizeDocWires(draft);
-  });
+    if (clip.links && draft.links) {
+      // the copy is connected exactly like the original was, among the copied items
+      const remap = (t: string) => {
+        if (t.startsWith("w:")) return idMap.has(t.slice(2)) ? `w:${idMap.get(t.slice(2))}` : null;
+        const bar = t.indexOf("|");
+        const id = idMap.get(t.slice(2, bar));
+        return id ? `p:${id}${t.slice(bar)}` : null;
+      };
+      const added: [string, string][] = [];
+      for (const [a, b] of clip.links) {
+        const x = remap(a), y = remap(b);
+        if (x && y) added.push([x, y]);
+      }
+      draft.links = [...draft.links, ...added];
+    }
+  }, clip.links ? { connectByTouch: false } : {});
 
   if (newIds.length > 0) {
     store.setSelection(newIds);

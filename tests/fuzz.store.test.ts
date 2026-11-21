@@ -192,7 +192,7 @@ function runFuzz(start: SchematicDocument, seed: number, steps: number): Report 
         case "dup": {
           const ids = sel();
           desc = `duplicate ${[...ids]}`;
-          allowJoin = true; // pasted parts connect by touch
+          // a copy keeps its own connections and joins nothing it lands on
           s.setSelection(ids);
           duplicateSelectionInStore(s);
           break;

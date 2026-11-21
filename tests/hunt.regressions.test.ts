@@ -5,7 +5,8 @@ import { DocumentStore } from "../src/model/store";
 import { emptyDocument, type ComponentInstance, type SchematicDocument } from "../src/model/types";
 import { buildNetlist } from "../src/io/netlist";
 import { parseProject, serializeProject } from "../src/io/project";
-import { deleteSelectionInStore } from "../src/editor/doc-ops";
+import { deleteSelectionInStore, duplicateSelectionInStore } from "../src/editor/doc-ops";
+import { sprawled } from "./helpers/sprawl";
 import { mergeWireSeams } from "../src/model/merge";
 import { pathLoopCuts, pathOverlapsItself } from "../src/editor/wire-utils";
 import { untangleWires } from "../src/editor/safe-route";
@@ -77,5 +78,24 @@ describe("store fuzz regressions", () => {
     e.links = [["w:w", "w:x"]];
     untangleWires(e, ["w"]);
     expect(e.wires[0].points).toEqual(loop);
+  });
+
+  it("a duplicate keeps its internal connections and never joins the circuit it lands on", () => {
+    const s = new DocumentStore(sprawled(1, 3, 4));
+    const g = "g1_0";
+    const own = s.doc.wires.filter((w) => s.doc.links!.some(([a, b]) => [a, b].includes(`w:${w.id}`) && [a, b].some((t) => t.startsWith(`p:${g}|`))));
+    s.setSelection([g, ...own.map((w) => w.id)]);
+    const fresh = new Set(duplicateSelectionInStore(s));
+    const nl = buildNetlist(s.doc as SchematicDocument);
+    // no net mixes copied and original pins
+    for (const n of nl.nets) {
+      const kinds = new Set(n.pins.map((p) => fresh.has(p.componentId)));
+      expect(kinds.size).toBeLessThanOrEqual(1);
+    }
+    // each copied wire is still connected to the copied gate
+    const copyGate = [...fresh].find((id) => s.doc.components.some((c) => c.id === id))!;
+    for (const w of s.doc.wires.filter((x) => fresh.has(x.id))) {
+      expect(s.doc.links!.some(([a, b]) => [a, b].includes(`w:${w.id}`) && [a, b].some((t) => t.startsWith(`p:${copyGate}|`)))).toBe(true);
+    }
   });
 });
