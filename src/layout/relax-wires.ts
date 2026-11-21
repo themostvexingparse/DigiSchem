@@ -40,6 +40,12 @@ export const RELAX_WEIGHTS = {
   junction2: 3,
   /** per cell spent in front of a pin the wire does not connect to */
   blockPin: ROUTE_WEIGHTS.blockPin,
+  /**
+   * Bundles (wires running between the same two parts, each with one jog): per cell that a jog
+   * is off the straight line through its neighbours' jogs. Like a bond angle: the jogs settle
+   * into an even diagonal staircase, or one aligned column.
+   */
+  kink: 4,
 };
 
 export interface RelaxOptions {
@@ -198,6 +204,34 @@ export function relaxWires(doc: SchematicDocument, opts: RelaxOptions = {}): Rel
   }
   const bodies: Rect[] = [...doc.components.map((c) => componentBounds(c)), ...(opts.keepOut ?? [])];
 
+  // ---- bundles: wires between the same two parts, each one horizontal-vertical-horizontal jog,
+  // all jogging the same way; ordered top to bottom ---------------------------------------------
+  const compAt = new Map<string, string>();
+  for (const c of doc.components) for (const wp of worldPins(c)) compAt.set(key(wp.pos), c.id);
+  const bundles: number[][] = [];
+  {
+    const by = new Map<string, number[]>();
+    wires.forEach((wr, w) => {
+      const P = wr.points;
+      if (P.length !== 4 || P[0].y !== P[1].y || P[1].x !== P[2].x || P[2].y !== P[3].y || P[0].y === P[3].y) return;
+      if (!pinLinked.has(`${w}@${key(P[0])}`) || !pinLinked.has(`${w}@${key(P[3])}`)) return;
+      if (wireLinks.some(([x, y]) => x === w || y === w)) return; // something branches off it
+      const [L, R] = P[0].x < P[3].x ? [P[0], P[3]] : [P[3], P[0]];
+      const k = `${compAt.get(key(L))}|${compAt.get(key(R))}|${Math.sign(R.y - L.y)}`;
+      (by.get(k) ?? by.set(k, []).get(k)!).push(w);
+    });
+    for (const m of by.values()) {
+      if (m.length < 2) continue;
+      const leftY = (w: number) => {
+        const P = wires[w].points;
+        return P[0].x < P[3].x ? P[0].y : P[3].y;
+      };
+      bundles.push(m.sort((a, b) => leftY(a) - leftY(b)));
+    }
+  }
+  const bundleOf = new Map<number, number[]>();
+  for (const b of bundles) for (const w of b) bundleOf.set(w, b);
+
   // ---- current state ----------------------------------------------------------------------------
   let pts: Point[][] = wires.map((w) => w.points.map((p) => ({ x: p.x, y: p.y })));
   let segs: Seg[][] = pts.map((p, w) => segsOf(p, w));
@@ -258,6 +292,18 @@ export function relaxWires(doc: SchematicDocument, opts: RelaxOptions = {}): Rel
     return d === 0 ? 0 : d <= 1 ? W.junction1 : d <= 2 ? W.junction2 : 0;
   }
 
+  /** how far the bundle's jogs are from lying on straight lines (members still one jog each) */
+  function kinkE(bundle: readonly number[], P: ReadonlyMap<number, Point[]>): number {
+    const xs: number[] = [];
+    for (const w of bundle) {
+      const q = P.get(w) ?? pts[w];
+      if (q.length === 4 && q[1].x === q[2].x) xs.push(q[1].x);
+    }
+    let e = 0;
+    for (let i = 1; i + 1 < xs.length; i++) e += (Math.abs(xs[i + 1] - 2 * xs[i] + xs[i - 1]) / g) * W.kink;
+    return e;
+  }
+
   /** energy of the wires in `M` (with points `P`) and their interactions with everything else */
   function localE(M: readonly number[], P: ReadonlyMap<number, Point[]>, near: readonly Seg[]): number {
     const inM = new Set(M);
@@ -283,6 +329,9 @@ export function relaxWires(doc: SchematicDocument, opts: RelaxOptions = {}): Rel
       for (const q of junctionsOf(o, pts[o])) for (const p of mj) e += junctionPairE(p, q);
     }
     for (let i = 0; i < mj.length; i++) for (let j = i + 1; j < mj.length; j++) e += junctionPairE(mj[i], mj[j]);
+    const bs = new Set<number[]>();
+    for (const w of M) if (bundleOf.has(w)) bs.add(bundleOf.get(w)!);
+    for (const b of bs) e += kinkE(b, P);
     return e;
   }
 
@@ -298,6 +347,7 @@ export function relaxWires(doc: SchematicDocument, opts: RelaxOptions = {}): Rel
       }
     const js = pts.flatMap((p, w) => junctionsOf(w, p));
     for (let i = 0; i < js.length; i++) for (let j = i + 1; j < js.length; j++) e += junctionPairE(js[i], js[j]);
+    for (const b of bundles) e += kinkE(b, new Map());
     return e;
   }
 
@@ -448,6 +498,45 @@ export function relaxWires(doc: SchematicDocument, opts: RelaxOptions = {}): Rel
 
   for (; sweeps < maxSweeps && !outOfTime(); sweeps++) {
     let improved = false;
+    // 0. lay each bundle's jogs out as a staircase (or a column) in one move
+    for (const bundle of bundles) {
+      if (outOfTime()) break;
+      if (bundle.some((w) => frozen.has(wires[w].id) || pts[w].length !== 4 || pts[w][1].x !== pts[w][2].x)) continue;
+      const ends = bundle.map((w) => {
+        const P = pts[w];
+        return P[0].x < P[3].x ? { L: P[0], R: P[3], flip: false } : { L: P[3], R: P[0], flip: true };
+      });
+      const lo = Math.max(...ends.map((e) => e.L.x)) + g, hi = Math.min(...ends.map((e) => e.R.x)) - g;
+      if (hi < lo) continue;
+      // going down, the upper wire jogs to the right of the lower one (else they would cross);
+      // going up, the other way round
+      const down = ends[0].R.y > ends[0].L.y;
+      const dir = down ? -1 : 1;
+      const near = nearSegs(bundle.map((w) => pts[w]).concat([[{ x: lo, y: Math.min(...ends.map((e) => Math.min(e.L.y, e.R.y))) }, { x: hi, y: Math.max(...ends.map((e) => Math.max(e.L.y, e.R.y))) }]]), 3 * g);
+      const eBefore = localE(bundle, new Map(bundle.map((w) => [w, pts[w]])), near);
+      let best: { P: Map<number, Point[]>; dE: number } | null = null;
+
+      for (let step = 0; step <= 6; step++) {
+        for (let x0 = lo; x0 <= hi; x0 += g) {
+          const xs = bundle.map((_, i) => x0 + dir * i * step * g);
+          if (xs.some((x) => x < lo || x > hi)) continue;
+          const P = new Map<number, Point[]>();
+          bundle.forEach((w, i) => {
+            const { L, R, flip } = ends[i];
+            const q = [L, { x: xs[i], y: L.y }, { x: xs[i], y: R.y }, R];
+            P.set(w, flip ? q.reverse() : q);
+          });
+          if (!legal(bundle, P, near)) continue;
+          const dE = localE(bundle, P, near) - eBefore;
+          if (dE < -1e-6 && (!best || dE < best.dE)) best = { P, dE };
+        }
+      }
+      if (best) {
+        apply(best.P);
+        moves++;
+        improved = true;
+      }
+    }
     for (let w = 0; w < pts.length && !outOfTime(); w++) {
       if (frozen.has(wires[w].id)) continue;
       // 1. slide each segment sideways, together with the rest of its trunk (segments of the same

@@ -195,7 +195,10 @@ already look tidy, for example a model adding one block at a time with the user 
 7. **Tidy the wires** (parts do not move). Each wire is held taut: every cell of length and every
    bend costs energy. Wires push each other away at short range: two wires side by side one cell
    apart, a crossing right next to a bend or pin, two junction dots side by side, a wire stopping
-   one cell short of another, or a wire passing in front of a pin it does not connect to. The
+   one cell short of another, or a wire passing in front of a pin it does not connect to. Wires
+   running between the same two parts with one jog each form a bundle, and a jog that is off
+   the straight line through its neighbours' jogs costs energy, like a bond angle, so a bundle
+   settles into an even diagonal staircase (or one aligned column). The
    tidier repeatedly slides a segment sideways (with the rest of its straight run and the wires
    branching off it) or re-routes one wire, whichever lowers the energy most, and never makes a
    contact the drawing did not have.

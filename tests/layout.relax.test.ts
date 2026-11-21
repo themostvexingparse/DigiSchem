@@ -77,3 +77,24 @@ describe("wire relaxation", () => {
     }
   }, 60000);
 });
+
+describe("wire relaxation: bundles", () => {
+  it("lays the jogs of parallel wires between two parts out as an even staircase", () => {
+    const nets = Array.from({ length: 5 }, (_, i) => `S.out${i} -> T.in${i}`).join("\n");
+    const d = build(`part S generic-block inputs=1 outputs=5 size=60x300 at=0,0\npart T generic-block inputs=5 outputs=1 size=60x400 at=400,0\n${nets}`);
+    // scatter the jogs
+    const xs0 = [150, 260, 180, 300, 220];
+    d.wires.forEach((w, i) => {
+      const a = w.points[0], b = w.points[w.points.length - 1];
+      w.points = [a, { x: xs0[i], y: a.y }, { x: xs0[i], y: b.y }, b];
+    });
+    const sig = netSignature(d);
+    relaxWires(d);
+    const xs = d.wires.map((w) => w.points[1].x);
+    const steps = xs.slice(1).map((x, i) => x - xs[i]);
+    expect(new Set(steps).size).toBe(1);
+    // wires going down: each one jogs left of the one above it (or in the same column)
+    expect(steps[0]).toBeLessThanOrEqual(0);
+    expect(netSignature(d)).toBe(sig);
+  });
+});
