@@ -5,7 +5,7 @@ import { DocumentStore } from "../src/model/store";
 import { emptyDocument, type ComponentInstance, type SchematicDocument } from "../src/model/types";
 import { buildNetlist } from "../src/io/netlist";
 import { parseProject, serializeProject } from "../src/io/project";
-import { deleteSelectionInStore, duplicateSelectionInStore } from "../src/editor/doc-ops";
+import { deleteSelectionInStore, duplicateSelectionInStore, mirrorSelectionInStore, nudgeSelectionInStore, rotateSelectionInStore } from "../src/editor/doc-ops";
 import { sprawled } from "./helpers/sprawl";
 import { mergeWireSeams } from "../src/model/merge";
 import { pathLoopCuts, pathOverlapsItself } from "../src/editor/wire-utils";
@@ -137,6 +137,22 @@ describe("store fuzz regressions", () => {
     s.endGesture();
     expect(connectionConflicts(s.doc as SchematicDocument).filter((c) => c.kind === "broken")).toEqual([]);
     expect(nets).toBeDefined();
+  });
+
+  it("a selected wire still connected to an unselected part is not carried off by rotate / nudge", () => {
+    const d = emptyDocument();
+    d.components.push(C("a", "input-pin", 0, 90), C("g", "and", 300, 90)); // a.out (50,100) → g.in0 (300,100)
+    d.wires.push({ id: "w", points: [{ x: 50, y: 100 }, { x: 300, y: 100 }] });
+    const s = new DocumentStore(d);
+    const broken = () => connectionConflicts(s.doc as SchematicDocument).filter((c) => c.kind === "broken").length;
+    s.setSelection(["g", "w"]); // the wire's other end is on unselected `a`
+    rotateSelectionInStore(s);
+    expect(broken()).toBe(0);
+    mirrorSelectionInStore(s);
+    expect(broken()).toBe(0);
+    nudgeSelectionInStore(s, 40, 70);
+    expect(broken()).toBe(0);
+    expect(nets(s.doc)).toEqual(["a.out,g.in0"]);
   });
 });
 

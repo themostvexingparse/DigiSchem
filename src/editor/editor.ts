@@ -63,6 +63,7 @@ import {
   mirrorSelectionInStore,
   nudgeSelectionInStore,
   pasteClipboardIntoStore,
+  rigidSelection,
   placeComponentInStore,
   rotateSelectionInStore,
   type ClipboardData,
@@ -1547,8 +1548,11 @@ export class Editor {
         movedCompIds.add(c.id);
       }
     }
+    // selected wires still connected to something that stays put are not carried off: they
+    // stretch like attached wires (moving never detaches a connection)
+    const rigid = rigidSelection(this.store.doc as SchematicDocument, sel);
     for (const w of this.store.doc.wires) {
-      if (sel.has(w.id)) {
+      if (rigid.has(w.id)) {
         origWires.set(w.id, w.points.map((p) => ({ ...p })));
         selWireIds.add(w.id);
       }

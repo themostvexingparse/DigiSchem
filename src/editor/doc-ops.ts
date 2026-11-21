@@ -118,6 +118,35 @@ export interface ClipboardData {
   links?: [string, string][];
 }
 
+/**
+ * The part of a selection that can move RIGIDLY: components and texts, and the selected wires that
+ * are connected only to other rigid items. A selected wire still connected to something that does
+ * not move (an unselected part's pin, an unselected wire) must not be carried off — it stays and
+ * stretches like any attached wire, so moving / rotating / mirroring never detaches a connection.
+ */
+export function rigidSelection(doc: SchematicDocument, selection: ReadonlySet<string>): Set<string> {
+  const rigid = new Set(selection);
+  if (!doc.links) return rigid;
+  const comps = new Set(doc.components.filter((c) => selection.has(c.id)).map((c) => c.id));
+  const linkedTo = new Map<string, string[]>();
+  for (const [a, b] of doc.links) {
+    if (a.startsWith("w:")) (linkedTo.get(a.slice(2)) ?? linkedTo.set(a.slice(2), []).get(a.slice(2))!).push(b);
+    if (b.startsWith("w:")) (linkedTo.get(b.slice(2)) ?? linkedTo.set(b.slice(2), []).get(b.slice(2))!).push(a);
+  }
+  const moves = (t: string) => (t.startsWith("w:") ? rigid.has(t.slice(2)) : comps.has(t.slice(2, t.indexOf("|"))));
+  for (let changed = true; changed; ) {
+    changed = false;
+    for (const w of doc.wires) {
+      if (!rigid.has(w.id)) continue;
+      if ((linkedTo.get(w.id) ?? []).some((t) => !moves(t))) {
+        rigid.delete(w.id);
+        changed = true;
+      }
+    }
+  }
+  return rigid;
+}
+
 /** Rotate a point 90 degrees clockwise around (cx, cy) in SVG screen coordinates (+x right, +y down). */
 export function rotatePointCW(p: Point, cx: number, cy: number): Point {
   return {
@@ -145,9 +174,14 @@ export function selectionBounds(doc: SchematicDocument, selection: ReadonlySet<s
  * Rotate all selected items 90° CW about the selection's grid-snapped center.
  * Keeps all pins and wire vertices on the grid.
  */
-export function rotateSelectionInDoc(doc: SchematicDocument, selection: ReadonlySet<string>): void {
+export function rotateSelectionInDoc(
+  doc: SchematicDocument,
+  selection: ReadonlySet<string>,
+  /** the selection whose bounding box is the rotation frame (default: `selection`) */
+  frame: ReadonlySet<string> = selection,
+): void {
   if (selection.size === 0) return;
-  const bounds = selectionBounds(doc, selection);
+  const bounds = selectionBounds(doc, frame);
   if (!bounds) return;
   const grid = doc.grid || GRID;
   // Rotate about the bbox top-left corner T (exact on grid), then translate so the rotated
@@ -206,16 +240,22 @@ export function setComponentRotationInDoc(
  * - Single component: flips horizontally in place keeping exact bounding box.
  * - Multi-selection: reflects horizontally about the selection's grid-snapped center.
  */
-export function mirrorSelectionInDoc(doc: SchematicDocument, selection: ReadonlySet<string>): void {
+export function mirrorSelectionInDoc(
+  doc: SchematicDocument,
+  selection: ReadonlySet<string>,
+  /** the selection whose bounding box gives the mirror axis (default: `selection`) */
+  frame: ReadonlySet<string> = selection,
+): void {
   if (selection.size === 0) return;
   const grid = doc.grid || GRID;
 
   const selComps = doc.components.filter((c) => selection.has(c.id));
   const selWires = doc.wires.filter((w) => selection.has(w.id));
   const selTexts = doc.texts.filter((t) => selection.has(t.id));
+  const frameItems = doc.components.filter((c) => frame.has(c.id)).length + doc.wires.filter((w) => frame.has(w.id)).length + doc.texts.filter((t) => frame.has(t.id)).length;
 
   // Single component: flip horizontally in place with zero bounding-box drift.
-  if (selComps.length === 1 && selWires.length === 0 && selTexts.length === 0) {
+  if (selComps.length === 1 && selWires.length === 0 && selTexts.length === 0 && frameItems === 1) {
     const c = selComps[0];
     const g = geometryOf(c);
     c.mirror = !c.mirror || undefined;
@@ -231,7 +271,7 @@ export function mirrorSelectionInDoc(doc: SchematicDocument, selection: Readonly
     return;
   }
 
-  const bounds = selectionBounds(doc, selection);
+  const bounds = selectionBounds(doc, frame);
   if (!bounds) return;
   // Mirror axis at the exact bbox center; 2*cx = 2*x + w is always on the grid, so a
   // double mirror is an exact identity (no drift).
@@ -272,17 +312,19 @@ export function mirrorSelectionInDoc(doc: SchematicDocument, selection: Readonly
 export function rotateSelectionInStore(store: DocumentStore): void {
   if (store.selection.size === 0) return;
   const sel = new Set(store.selection);
-  store.update("Rotate", (draft) =>
-    keepWiresAttached(draft, sel, () => rotateSelectionInDoc(draft, sel), sel),
-  );
+  store.update("Rotate", (draft) => {
+    const rigid = rigidSelection(draft, sel);
+    keepWiresAttached(draft, rigid, () => rotateSelectionInDoc(draft, rigid, sel), rigid);
+  });
 }
 
 export function mirrorSelectionInStore(store: DocumentStore): void {
   if (store.selection.size === 0) return;
   const sel = new Set(store.selection);
-  store.update("Mirror", (draft) =>
-    keepWiresAttached(draft, sel, () => mirrorSelectionInDoc(draft, sel), sel),
-  );
+  store.update("Mirror", (draft) => {
+    const rigid = rigidSelection(draft, sel);
+    keepWiresAttached(draft, rigid, () => mirrorSelectionInDoc(draft, rigid, sel), rigid);
+  });
 }
 
 export function deleteSelectionInStore(store: DocumentStore, opts: { sweepOrphans?: boolean } = {}): void {
@@ -371,7 +413,7 @@ export function sweepOrphanWires(doc: SchematicDocument, seeds: readonly Point[]
  */
 export function nudgeSelectionInStore(store: DocumentStore, dx: number, dy: number): void {
   if (store.selection.size === 0 || (dx === 0 && dy === 0)) return;
-  const sel = new Set(store.selection);
+  const sel = rigidSelection(store.doc as SchematicDocument, store.selection);
   const movedCompIds = new Set<string>();
   const selWireIds = new Set<string>();
   for (const c of store.doc.components) if (sel.has(c.id)) movedCompIds.add(c.id);

@@ -11,7 +11,7 @@ import type { SchematicDocument } from "../src/model/types";
 import { worldPins } from "../src/model/geometry";
 import { buildNetlist } from "../src/io/netlist";
 import { parseProject, serializeProject } from "../src/io/project";
-import { terminalsOf } from "../src/model/links";
+import { connectionConflicts, terminalsOf } from "../src/model/links";
 import { getDef } from "../src/model/registry";
 import { setComponentSizeInDoc } from "../src/editor/resize";
 import { packSchematic, validateCompaction } from "../src/layout/pack";
@@ -108,8 +108,8 @@ function checkDoc(doc: SchematicDocument, where: string): string[] {
   return errs;
 }
 
-type Op = "nudge" | "nudgeWithWires" | "rotate" | "mirror" | "delete" | "deleteWire" | "dup" | "undo" | "redo" | "prop" | "resize" | "pack";
-const OPS: Op[] = ["nudge", "nudge", "nudge", "nudgeWithWires", "rotate", "mirror", "delete", "deleteWire", "dup", "undo", "redo", "prop", "prop", "resize"];
+type Op = "nudgeWires" | "nudge" | "nudgeWithWires" | "rotate" | "mirror" | "delete" | "deleteWire" | "dup" | "undo" | "redo" | "prop" | "resize" | "pack";
+const OPS: Op[] = ["nudgeWires", "nudge", "nudge", "nudge", "nudgeWithWires", "rotate", "mirror", "delete", "deleteWire", "dup", "undo", "redo", "prop", "prop", "resize"];
 const PACK_EVERY = Number(process.env.FUZZ_PACK ?? 0); // also compact every N steps (slow)
 
 interface Report {
@@ -154,6 +154,16 @@ function runFuzz(start: SchematicDocument, seed: number, steps: number): Report 
           for (const w of doc.wires) if (r() < 0.15) ids.add(w.id);
           const dx = delta(), dy = delta();
           desc = `nudge+wires ${[...ids]} by ${dx},${dy}`;
+          s.setSelection(ids);
+          nudgeSelectionInStore(s, dx, dy);
+          break;
+        }
+        case "nudgeWires": {
+          if (doc.wires.length === 0) break;
+          const ids = new Set<string>([pick(doc.wires).id]);
+          if (r() < 0.5) ids.add(pick(doc.wires).id);
+          const dx = delta(), dy = delta();
+          desc = `nudge wires ${[...ids]} by ${dx},${dy}`;
           s.setSelection(ids);
           nudgeSelectionInStore(s, dx, dy);
           break;
@@ -269,6 +279,15 @@ function runFuzz(start: SchematicDocument, seed: number, steps: number): Report 
     log.push(desc);
     const after = s.doc as SchematicDocument;
     errors.push(...checkDoc(after, `step ${step} ${desc}`));
+    // drawn connections an edit leaves visually detached ("broken" conflicts)
+    if (!["undo", "redo", "delete", "deleteWire"].includes(op)) {
+      const br = (d: SchematicDocument) => connectionConflicts(d).filter((c) => c.kind === "broken").length;
+      const inc = br(after) - br(before);
+      if (inc > 0) {
+        soft[`broken:${op}`] = (soft[`broken:${op}`] ?? 0) + 1;
+        if (process.env.FUZZ_BROKEN) errors.push(`step ${step} ${desc}: ${inc} connection(s) left detached in the drawing`);
+      }
+    }
     // a wire must never be left running over itself by an edit (pre-existing ones aside)
     if (op !== "undo" && op !== "redo") {
       const was = new Set(before.wires.filter((w) => pathOverlapsItself(w.points)).map((w) => w.id));
