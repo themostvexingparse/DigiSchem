@@ -28,6 +28,8 @@ export interface NetState {
   /** compiler-made tunnel parts */
   tunnels: string[];
   failed: boolean;
+  /** drawn (partly) with direct wires, which may touch other nets */
+  direct: boolean;
 }
 
 export interface RouteContext {
@@ -132,6 +134,7 @@ function connect(ctx: RouteContext, net: NetState, t: string): boolean {
     if (!tg) return false;
     const ex = pinExitVector(p.inst, p.wp.pin.side);
     addWire(ctx, net, routeOrthogonal(from, tg.pt, ex.x !== 0), t, tg.term);
+    net.direct = true;
     return true;
   }
   // The net's own wires are obstacles too: a new wire may cross them and end on them (a

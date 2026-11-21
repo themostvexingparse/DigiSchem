@@ -19,13 +19,15 @@ REFS
 
 DIRECTIVES
   @compact end|each|every=N|group|never   when to run layout compaction (default end).
-        each = after every part (slow, most compact); every=N = after every N parts and at the end;
-        group = when each group closes; end = once at the end; never = keep the automatic placement
+        end = once at the end (usually both the fastest and the tidiest); each = after every part
+        (slowest; each step already looks tidy); every=N = after every N parts and at the end;
+        group = when each group closes; never = keep the automatic placement (drafts)
   @layout flow|grid|manual    flow (default): columns by signal flow, inputs left, outputs right;
                               grid: rows in source order; manual: every part needs at=X,Y
   @route clean|tunnel|direct  clean (default): wires never touch what they do not connect;
                               tunnel: draw the nets that follow with net labels instead of wires;
-                              direct: straight L-shaped wires, may cross (fast drafts)
+                              direct: L-shaped wires for fast drafts; they may touch other wires
+                              (connections stay exact; touches are warnings and red rings)
   @fallback tunnel|direct|error   what to do when a clean route cannot be found (default tunnel)
   @gap part=2 wire=1          compaction clearances in grid cells
   @spacing col=6 row=3        automatic placement spacing in grid cells

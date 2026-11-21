@@ -48,8 +48,14 @@ instance-then-connect from structural netlists, `PART.PIN` references, and `->` 
    connections. If either differs, the build fails rather than producing a wrong schematic.
    Routing quality can never change the circuit: a net that cannot be drawn cleanly is drawn
    with net labels instead.
-3. **Deterministic.** The same text gives the same document, byte for byte. Part ids are the part
-   names, and wire ids come from net names.
+3. **Repeatable.** Part ids are the part names, wire ids come from the net names, and every
+   step runs in a fixed order. The connections are always exactly the spec's. The layout is
+   identical on every build of the same text when compaction is off (`@compact never`), and in
+   practice whenever compaction finishes inside its time budget. Compaction stops on a
+   wall-clock deadline, though, so on a heavily loaded machine a long compaction can stop at a
+   different point and give a slightly different, still valid, layout. In a test of 6 builds of
+   the 34-part adder running at the same time, 5 were identical and 1 differed. `--previous`
+   keeps unchanged parts in place across builds regardless.
 4. **Helpful errors.** Every problem has a line and column, names what is wrong, and suggests a fix
    ("Did you mean "xor"?", the list of a part's pins, a property's valid range).
 5. **Layout is the compiler's job, but you can steer it.** Placement is automatic by default.
@@ -123,7 +129,7 @@ group closes.
 |---|---|---|
 | `@compact` | `end`, `each`, `every=N`, `group`, `never` | When layout compaction runs (see below). |
 | `@layout` | `flow`, `grid`, `manual` | Automatic placement style. `manual`: every part needs `at=`. |
-| `@route` | `clean`, `tunnel`, `direct` | How the nets that follow are drawn. |
+| `@route` | `clean`, `tunnel`, `direct` | How the nets that follow are drawn. `direct` draws plain L-shaped wires for quick drafts: the connections are still exactly the spec's, but a wire may touch something it does not connect, which is reported as a warning (and shown as red rings in the editor). |
 | `@fallback` | `tunnel`, `direct`, `error` | What happens when `clean` cannot route a pin. |
 | `@gap` | `part=2 wire=1` | Compaction clearances, in grid cells. |
 | `@spacing` | `col=6 row=3` | Automatic placement spacing, in grid cells (column gaps also widen for the nets that cross them). |
@@ -184,8 +190,11 @@ already look tidy, for example a model adding one block at a time with the user 
    anything it does not connect. A net that cannot be drawn cleanly is drawn with tunnels (net
    labels) on each of its pins instead.
 6. **Compact** as the `@compact` mode says.
-7. **Verify**: the drawing and the stored connections must both equal the spec netlist, and
-   there must be no drawing conflicts. Otherwise the build fails with an error.
+7. **Verify**: the stored connections must equal the spec netlist, and so must the drawing,
+   with no place where something touches what it is not connected to. Otherwise the build fails
+   with an error. The one exception is nets drawn with direct wires, whose drawing problems are
+   warnings. Pins of different nets placed on the same point (two `at=` too close) are reported
+   as an error on the part's line.
 
 The document stores its source (`meta.dspec`), so the Code dialog can show the text a schematic
 was built from, as long as the drawing has not been edited since.

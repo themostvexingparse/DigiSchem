@@ -9,7 +9,7 @@ import { decompileDoc } from "../src/spec/decompile";
 import { referenceText, catalog } from "../src/spec/reference";
 import { buildNetlist } from "../src/io/netlist";
 import { connectionConflicts } from "../src/model/links";
-import { parseProject } from "../src/io/project";
+import { parseProject, serializeProject } from "../src/io/project";
 import type { SchematicDocument } from "../src/model/types";
 
 /** pin groups (sorted "Part.pin" lists) of a document, by mode */
@@ -118,9 +118,10 @@ net CLKNET = CK.clk, F1.clk, F2.q, F2.qn
     expect(checkInvariants(r.doc!)).toEqual([]);
   });
 
-  it("is deterministic: the same source builds the same document", () => {
-    const a = JSON.stringify(compileSpec(COUNTER).doc);
-    const b = JSON.stringify(compileSpec(COUNTER).doc);
+  it("is repeatable: the same source builds the same document (exact without compaction)", () => {
+    // compaction stops on a wall-clock deadline, so only the uncompacted build is exact everywhere
+    const a = JSON.stringify(compileSpec("@compact never\n" + COUNTER).doc);
+    const b = JSON.stringify(compileSpec("@compact never\n" + COUNTER).doc);
     expect(a).toBe(b);
   }, 60_000);
 
@@ -179,6 +180,35 @@ net CLKNET = CK.clk, F1.clk, F2.q, F2.qn
   });
 });
 
+describe("DSpec edge cases", () => {
+  it("@route direct: connections stay exact; drawing contacts are warnings, not a failed build", () => {
+    for (let seed = 1; seed <= 6; seed++) {
+      const lines = ["@route direct", "@compact never"];
+      for (let i = 0; i < 4; i++) lines.push(`part I${i} input-pin`);
+      for (let i = 0; i < 6; i++) lines.push(`part G${i} ${["and", "or", "xor"][(i + seed) % 3]}`);
+      for (let i = 0; i < 6; i++) lines.push(`I${(i + seed) % 4} -> G${i}.in0`, `G${(i + seed + 1) % 6}.out -> G${i}.in1`);
+      const r = compileSpec(lines.join("\n"));
+      expect(errors(r), `seed ${seed}`).toEqual([]);
+      const g = groups(r.doc!, "logical");
+      expect(g.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("two pinned parts whose pins coincide on different nets: an error on the part line", () => {
+    const r = compileSpec("part A input-pin at=0,0\npart B input-pin at=0,0\npart G and\nA -> G.in0\nB -> G.in1\n");
+    const e = errors(r);
+    expect(e.length).toBe(1);
+    expect(e[0]).toMatch(/^2:6 A\.out and B\.out sit on the same point/);
+  });
+
+  it("the source survives save and reopen, so the Code dialog can show it", () => {
+    const doc = compileSpec(HALF).doc!;
+    const back = parseProject(serializeProject(doc));
+    expect(back.meta?.dspec).toBe(HALF);
+    expect(back.meta?.dspecNets).toBe(doc.meta?.dspecNets);
+  });
+});
+
 describe("DSpec decompiler", () => {
   it("round trip keeps connections and positions", () => {
     const doc = compileSpec(COUNTER).doc!;
@@ -225,7 +255,10 @@ describe("DSpec fuzz: random circuits compile to exactly their netlist", () => {
     it(`seed ${seed}`, () => {
       const r = rng(seed);
       const pick = <T,>(xs: T[]) => xs[Math.floor(r() * xs.length)];
-      const lines: string[] = [`@compact ${pick(["never", "end", "end", "every=4"])}`];
+      const all = !!process.env.SPEC_FUZZ_ALL; // also the incremental modes and net labels (slow)
+      const mode = pick(all ? ["end", "each", "every=3", "group"] : ["never", "end", "end", "every=4"]);
+      const lines: string[] = [`@compact ${mode}`];
+      if (all && r() < 0.3) lines.push("@route tunnel");
       if (r() < 0.2) lines.push("@layout grid");
       const outs: string[] = [];
       const inputs: string[] = [];
@@ -251,6 +284,13 @@ describe("DSpec fuzz: random circuits compile to exactly their netlist", () => {
         (nets.get(src) ?? nets.set(src, []).get(src)!).push(inp);
       }
       for (const [src, sinks] of nets) lines.push(`${src} -> ${sinks.join(", ")}`);
+      if (mode === "group") {
+        // put the gates into two groups
+        const gates = lines.filter((l) => l.startsWith("part G"));
+        const rest = lines.filter((l) => !l.startsWith("part G"));
+        const half = Math.ceil(gates.length / 2);
+        lines.splice(0, lines.length, ...rest, "group a {", ...gates.slice(0, half), "}", "group b {", ...gates.slice(half), "}");
+      }
       const res = compileSpec(lines.join("\n"));
       expect(errors(res), lines.join("\n")).toEqual([]);
       const expected = want(...[...nets].map(([s, k]) => [s, ...k]));

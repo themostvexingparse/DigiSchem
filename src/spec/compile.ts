@@ -370,7 +370,7 @@ export function compileSpec(source: string, opts: CompileOptions = {}): CompileR
     usedNames.add(name);
     const s = netSettings.get(terms[0]) ?? final;
     const loc = groupLoc.get(root) ?? termLoc.get(terms[0])!;
-    const state: NetState = { name, pins, attached: new Set(), wires: [], mode: s.route, fallback: s.fallback, tunneled: false, tunnelName: name, counter: 0, tunnels: [], failed: false };
+    const state: NetState = { name, pins, attached: new Set(), wires: [], mode: s.route, fallback: s.fallback, tunneled: false, tunnelName: name, counter: 0, tunnels: [], failed: false, direct: false };
     nets.push(state);
     for (const t of pins) netOfTerm.set(t, state);
     // electrical checks
@@ -414,6 +414,24 @@ export function compileSpec(source: string, opts: CompileOptions = {}): CompileR
   }
   placeParts(items, nets.map((n) => n.pins), { colGap: final.colGap, rowGap: final.rowGap });
   const pinned = new Set(items.filter((it) => it.fixed).map((it) => it.inst.id));
+  // Pins that sit on the same point touch. Unless they are on one net, that is a mistake in the
+  // placement (two at=... too close), reported on the part's line.
+  {
+    const byPoint = new Map<string, string[]>();
+    for (const it of items) for (const wp of worldPins(it.inst)) {
+      const k = `${wp.pos.x},${wp.pos.y}`;
+      (byPoint.get(k) ?? byPoint.set(k, []).get(k)!).push(`p:${it.inst.id}|${wp.pin.id}`);
+    }
+    for (const [k, terms] of byPoint) {
+      if (terms.length < 2) continue;
+      const netsHere = new Set(terms.map((t) => netOfTerm.get(t)?.name ?? t));
+      if (netsHere.size < 2) continue;
+      const [a, b] = terms.map((t) => t.slice(2).replace("|", "."));
+      const part = terms[1].slice(2, terms[1].indexOf("|"));
+      error(`${a} and ${b} sit on the same point (${k}) but are not connected to each other; move one of the parts (at=X,Y)`, insts.get(part)?.decl.loc ?? { line: 1, col: 1 });
+    }
+  }
+  if (diags.some((d) => d.severity === "error")) return done(null);
   stats.ms.place = Math.round(now() - tp);
 
   // ---- 5. build: add parts in order, route + compact as directed ----------------------------
@@ -460,7 +478,9 @@ export function compileSpec(source: string, opts: CompileOptions = {}): CompileR
     try {
       const res = packSchematic(before, popts);
       const problems = validateCompaction(before, res, popts);
-      if (!problems.length && res.qualityAfter.total < res.qualityBefore.total && verify(res.doc).length === 0) {
+      const vBefore = verifyParts(before), vAfter = verifyParts(res.doc);
+      const ok = vAfter.logical.length === 0 && vAfter.drawing.length <= vBefore.drawing.length;
+      if (!problems.length && res.qualityAfter.total < res.qualityBefore.total && ok) {
         doc.components = res.doc.components;
         doc.wires = res.doc.wires;
         links = canonicalLinks(res.doc.links ?? links);
@@ -589,16 +609,28 @@ export function compileSpec(source: string, opts: CompileOptions = {}): CompileR
 
   // ---- 6. verify --------------------------------------------------------------------------
   const tv = now();
-  for (const m of verify(doc)) error(m, { line: 1, col: 1 });
+  const vr = verifyParts(doc);
+  for (const m of vr.logical) error(m, { line: 1, col: 1 });
+  const direct = nets.filter((n) => n.direct);
+  if (direct.length && vr.drawing.length) {
+    warn(
+      `${vr.drawing.length} place${vr.drawing.length === 1 ? "" : "s"} where direct wires (${direct.map((n) => n.name).slice(0, 4).join(", ")}${direct.length > 4 ? ", ..." : ""}) touch something they do not connect. ` +
+        "The connections are still exactly the spec's (the editor shows red rings there); use @route clean for a clean drawing",
+      netLoc.get(direct[0]) ?? { line: 1, col: 1 },
+    );
+  } else for (const m of vr.drawing) error(m, { line: 1, col: 1 });
   stats.ms.verify = Math.round(now() - tv);
   stats.wires = doc.wires.length;
   stats.tunnels = nets.reduce((s, n) => s + n.tunnels.length, 0);
   doc.meta = { generator: "dspec", dspec: source, dspecNets: netSignature(doc) };
   return done(doc);
 
-  /** The drawing and the links must both connect exactly what the spec connects. */
-  function verify(d: SchematicDocument): string[] {
-    const out: string[] = [];
+  /**
+   * The links (always) and the drawing (unless nets were drawn with direct wires) must connect
+   * exactly what the spec connects. `drawing`: problems of the drawing only.
+   */
+  function verifyParts(d: SchematicDocument): { logical: string[]; drawing: string[] } {
+    const logical: string[] = [], drawing: string[] = [];
     const spec = new Map<string, string>(); // pin term -> net
     for (const n of nets) for (const t of n.pins) spec.set(t, n.name);
     for (const n of nets) for (const id of n.tunnels) spec.set(`p:${id}|net`, n.name);
@@ -617,6 +649,7 @@ export function compileSpec(source: string, opts: CompileOptions = {}): CompileR
       for (const dn of nl.nets) {
         const members = dn.pins.map((p) => `p:${p.componentId}|${p.pinId}`);
         const specs = new Set(members.map(specNet));
+        const out = mode === "logical" ? logical : drawing;
         if (specs.size > 1 || (specs.has(null) && members.length > 1)) {
           out.push(`${mode === "logical" ? "stored connections" : "drawing"} joins ${members.slice(0, 6).map((t) => t.slice(2).replace("|", ".")).join(", ")}, which the spec keeps apart (please report this)`);
           continue;
@@ -629,8 +662,8 @@ export function compileSpec(source: string, opts: CompileOptions = {}): CompileR
     }
     for (const c of connectionConflicts({ ...d, links: d.links ?? canonicalLinks(links) })) {
       if (c.kind === "drivers") continue; // reported as an electrical warning already
-      out.push(`${c.kind === "unintended" ? "drawing touches but does not connect" : "connected but not drawn touching"}: ${c.a} and ${c.b} at ${c.at.x},${c.at.y} (please report this)`);
+      drawing.push(`${c.kind === "unintended" ? "drawing touches but does not connect" : "connected but not drawn touching"}: ${c.a} and ${c.b} at ${c.at.x},${c.at.y} (please report this)`);
     }
-    return out;
+    return { logical, drawing };
   }
 }
