@@ -25,7 +25,8 @@ import {
 } from "../src/editor/doc-ops";
 import { sprawled } from "./helpers/sprawl";
 import { updateSettings } from "../src/model/settings";
-import { pathOverlapsItself } from "../src/editor/wire-utils";
+import { dragWireSegmentPoints, followSegmentBranches, isPointAnchored, normalizeDocWires, pathOverlapsItself, segmentBranches } from "../src/editor/wire-utils";
+import { repairSegmentDrop, sameNetWires } from "../src/editor/safe-route";
 
 registerBuiltinComponents();
 if (process.env.FUZZ_ADVANCED) updateSettings({ advancedRerouteSearch: true });
@@ -110,8 +111,8 @@ function checkDoc(doc: SchematicDocument, where: string): string[] {
   return errs;
 }
 
-type Op = "nudgeWires" | "nudge" | "nudgeWithWires" | "rotate" | "mirror" | "delete" | "deleteWire" | "dup" | "undo" | "redo" | "prop" | "resize" | "pack";
-const OPS: Op[] = ["nudgeWires", "nudge", "nudge", "nudge", "nudgeWithWires", "rotate", "mirror", "delete", "deleteWire", "dup", "undo", "redo", "prop", "prop", "resize"];
+type Op = "segDrag" | "nudgeWires" | "nudge" | "nudgeWithWires" | "rotate" | "mirror" | "delete" | "deleteWire" | "dup" | "undo" | "redo" | "prop" | "resize" | "pack";
+const OPS: Op[] = ["segDrag", "segDrag", "nudgeWires", "nudge", "nudge", "nudge", "nudgeWithWires", "rotate", "mirror", "delete", "deleteWire", "dup", "undo", "redo", "prop", "prop", "resize"];
 const PACK_EVERY = Number(process.env.FUZZ_PACK ?? 0); // also compact every N steps (slow)
 
 interface Report {
@@ -158,6 +159,39 @@ function runFuzz(start: SchematicDocument, seed: number, steps: number): Report 
           desc = `nudge+wires ${[...ids]} by ${dx},${dy}`;
           s.setSelection(ids);
           nudgeSelectionInStore(s, dx, dy);
+          break;
+        }
+        case "segDrag": {
+          // what the editor does when a selected wire's segment is dragged and dropped
+          const cands = doc.wires.filter((w) => w.points.length >= 2);
+          if (!cands.length) break;
+          const w = pick(cands);
+          const i = Math.floor(r() * (w.points.length - 1));
+          const a = w.points[i], b = w.points[i + 1];
+          if (a.x !== b.x && a.y !== b.y) break;
+          if (a.x === b.x && a.y === b.y) break;
+          const shift = (Math.floor(r() * 13) - 6) * 10 || 10;
+          const delta = a.y === b.y ? { x: 0, y: shift } : { x: shift, y: 0 };
+          desc = `segDrag ${w.id}[${i}] by ${shift}`;
+          const orig = w.points.map((p) => ({ ...p }));
+          const sa = isPointAnchored(doc, orig[0], w.id), ea = isPointAnchored(doc, orig[orig.length - 1], w.id);
+          const p0 = orig[0], pn = orig[orig.length - 1];
+          const branches = segmentBranches(doc, w.id, a, b).filter((br) => {
+            const e = br.atStart ? br.origPoints[0] : br.origPoints[br.origPoints.length - 1];
+            return !((sa && e.x === p0.x && e.y === p0.y) || (ea && e.x === pn.x && e.y === pn.y));
+          });
+          const nets = sameNetWires(doc);
+          s.beginGesture();
+          s.update("seg", (d) => {
+            const x = d.wires.find((q) => q.id === w.id)!;
+            x.points = dragWireSegmentPoints(orig, i, delta, sa, ea, true);
+            followSegmentBranches(d, branches, delta);
+          });
+          s.update("drop", (d) => {
+            repairSegmentDrop(d, w.id, branches, nets);
+            normalizeDocWires(d);
+          });
+          s.endGesture();
           break;
         }
         case "nudgeWires": {
