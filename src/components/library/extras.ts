@@ -6,7 +6,7 @@
 import type { ComponentDef, PropDef } from "../../model/component-def";
 import { propBool, propStr } from "../../model/component-def";
 import type { PropValue } from "../../model/types";
-import { clampInt, layoutBox, PIN_MODE_PROP, renderBox, type BoxLayout, type PinSpec } from "./helpers";
+import { clampInt, formatWords, layoutBox, PIN_MODE_PROP, renderBox, type BoxLayout, type PinSpec } from "./helpers";
 
 const bitsFor = (n: number) => Math.max(1, Math.ceil(Math.log2(n)));
 
@@ -376,3 +376,140 @@ export const extraGateDefs: ComponentDef[] = [aoiDef];
 export const extraArithDefs: ComponentDef[] = [bitCounterDef, claDef];
 export const extraMemoryDefs: ComponentDef[] = [fifoDef];
 export const extraSeqDefs: ComponentDef[] = [lfsrDef, clockDividerDef, synchronizerDef, edgeDetectorDef];
+
+// ---- Third batch: decade counter, debouncer, dual-port RAM, stack, keypad ---------------------
+
+const decadeCounterDef = boxDef({
+  type: "decade-counter",
+  name: "Decade Counter (BCD)",
+  category: "Registers",
+  prefix: "CNT",
+  description: "Counts 0 to 9 in BCD and wraps; TC is 1 at 9 so digits can be chained (like the 74160)",
+  props: [PIN_MODE_PROP, { key: "enable", label: "Enable Pin (EN)", kind: "bool" }, { key: "load", label: "Parallel Load", kind: "bool" }, EDGE_PROP],
+  defaults: { pinMode: "bits", enable: true, load: false, edge: "rising" },
+  layout(props) {
+    const mode = propStr(props, "pinMode", "bits");
+    const left: PinSpec[] = [];
+    if (propBool(props, "load", false)) left.push(...busOrBits("d", "D", 4, "in", mode), { id: "ld", name: "LOAD", dir: "in" });
+    if (propBool(props, "enable", true)) left.push({ id: "en", name: "EN", dir: "in" });
+    left.push(clk(props));
+    const right: PinSpec[] = [...busOrBits("q", "Q", 4, "out", mode), { id: "tc", name: "TC", dir: "out" }];
+    return layoutBox({ left, right, bottom: [{ id: "rst", name: "RST", dir: "in" }], title: "BCD", subtitle: "0-9", minBodyW: 70, minBodyH: 60 }, props);
+  },
+});
+
+const debouncerDef = boxDef({
+  type: "debouncer",
+  name: "Debouncer",
+  category: "Registers",
+  prefix: "DB",
+  description: "Cleans up a bouncing push-button or switch signal: OUT changes only after IN has been steady for a while",
+  props: [EDGE_PROP],
+  defaults: { edge: "rising" },
+  layout(props) {
+    return layoutBox(
+      { left: [{ id: "in", name: "IN", dir: "in" }, clk(props)], right: [{ id: "out", name: "OUT", dir: "out" }], title: "DEBOUNCE", subtitle: "switch filter", minBodyW: 100, minBodyH: 60 },
+      props,
+    );
+  },
+});
+
+const dualPortRamDef = boxDef({
+  type: "dual-port-ram",
+  name: "Dual-Port RAM",
+  category: "Memory",
+  prefix: "RAM",
+  description: "Memory with two independent ports: port A reads and writes, port B reads at the same time",
+  props: [
+    { key: "addressBits", label: "Address Bits", kind: "int", min: 1, max: 24 },
+    { key: "dataWidth", label: "Data Width", kind: "int", min: 1, max: 32 },
+    EDGE_PROP,
+  ],
+  defaults: { addressBits: 8, dataWidth: 8, edge: "rising" },
+  layout(props) {
+    const a = clampInt(props, "addressBits", 8, 1, 24);
+    const w = clampInt(props, "dataWidth", 8, 1, 32);
+    return layoutBox(
+      {
+        left: [
+          { id: "addra", name: "ADDR A", dir: "in", width: a },
+          { id: "dina", name: "DIN A", dir: "in", width: w },
+          { id: "wea", name: "WE A", dir: "in" },
+          { id: "addrb", name: "ADDR B", dir: "in", width: a },
+          clk(props),
+        ],
+        right: [
+          { id: "douta", name: "DOUT A", dir: "out", width: w },
+          { id: "doutb", name: "DOUT B", dir: "out", width: w },
+        ],
+        title: "DUAL-PORT RAM",
+        subtitle: `${formatWords(2 ** a)}×${w}`,
+        minBodyW: 120,
+        minBodyH: 60,
+      },
+      props,
+    );
+  },
+});
+
+const stackDef = boxDef({
+  type: "stack",
+  name: "Stack (LIFO)",
+  category: "Memory",
+  prefix: "STK",
+  description: "Last-in first-out memory: PUSH stores DIN on top, POP removes the top word; TOP shows it",
+  props: [
+    { key: "depth", label: "Depth (words)", kind: "int", min: 2, max: 4096 },
+    { key: "width", label: "Data Width", kind: "int", min: 1, max: 32 },
+    EDGE_PROP,
+  ],
+  defaults: { depth: 16, width: 8, edge: "rising" },
+  layout(props) {
+    const depth = clampInt(props, "depth", 16, 2, 4096);
+    const w = clampInt(props, "width", 8, 1, 32);
+    return layoutBox(
+      {
+        left: [{ id: "din", name: "DIN", dir: "in", width: w }, { id: "push", name: "PUSH", dir: "in" }, { id: "pop", name: "POP", dir: "in" }, clk(props)],
+        right: [{ id: "top", name: "TOP", dir: "out", width: w }, { id: "full", name: "FULL", dir: "out" }, { id: "empty", name: "EMPTY", dir: "out" }],
+        bottom: [{ id: "rst", name: "RST", dir: "in" }],
+        title: "STACK",
+        subtitle: `${depth}×${w}`,
+        minBodyW: 90,
+        minBodyH: 60,
+      },
+      props,
+    );
+  },
+});
+
+function keypadLayout(props: Record<string, PropValue>): BoxLayout {
+  const mode = propStr(props, "pinMode", "bus");
+  return layoutBox({ right: [...busOrBits("k", "K", 4, "out", mode), { id: "valid", name: "VALID", dir: "out" }], minBodyW: 120, minBodyH: 100 }, props);
+}
+
+const KEYS = ["1", "2", "3", "A", "4", "5", "6", "B", "7", "8", "9", "C", "*", "0", "#", "D"];
+
+const keypadDef: ComponentDef = {
+  type: "keypad",
+  name: "Hex Keypad (4×4)",
+  category: "I/O",
+  labelPrefix: "KP",
+  description: "16-key keypad: K is the code of the pressed key and VALID is 1 while a key is held",
+  props: [PIN_MODE_PROP],
+  defaultProps: { pinMode: "bus" },
+  resizable: "both",
+  geometry: (props) => keypadLayout(props).geometry,
+  symbol(props) {
+    const L = keypadLayout(props);
+    const size = Math.min(14, (L.bodyH - 20) / 4 - 3);
+    let keys = "";
+    KEYS.forEach((k, i) => {
+      const x = L.bodyX + 8 + (i % 4) * (size + 3), y = L.bodyY + 10 + Math.floor(i / 4) * (size + 3);
+      keys += `<rect class="ds-thin" x="${x}" y="${y}" width="${size}" height="${size}" rx="1.5"/>`;
+      keys += `<text class="ds-text" x="${x + size / 2}" y="${y + size / 2 + 3.5}" text-anchor="middle">${k}</text>`;
+    });
+    return renderBox(L, keys);
+  },
+};
+
+export const thirdBatchDefs = { seq: [decadeCounterDef, debouncerDef], memory: [dualPortRamDef, stackDef], io: [keypadDef] };

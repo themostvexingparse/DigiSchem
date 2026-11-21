@@ -17,6 +17,7 @@ const ADDED = [
   "ring-counter", "nmos", "pmos", "transmission-gate",
   "bit-selector", "gray-converter", "bus-transceiver", "aoi", "bit-counter", "carry-lookahead",
   "fifo", "lfsr", "clock-divider", "synchronizer", "edge-detector",
+  "decade-counter", "debouncer", "dual-port-ram", "stack", "keypad",
 ];
 
 describe("added components", () => {
@@ -39,7 +40,7 @@ describe("added components", () => {
   it("have sensible pin roles: displays only listen, sources only drive, transistor channels are bidirectional", () => {
     const dirs = (t: string) => getDef(t)!.geometry(getDef(t)!.defaultProps).pins.map((p) => p.dir);
     for (const t of ["seven-segment", "hex-display", "led-bar"]) expect(new Set(dirs(t)), t).toEqual(new Set(["in"]));
-    for (const t of ["push-button", "dip-switch"]) expect(new Set(dirs(t)), t).toEqual(new Set(["out"]));
+    for (const t of ["push-button", "dip-switch", "keypad"]) expect(new Set(dirs(t)), t).toEqual(new Set(["out"]));
     // a transceiver's buses are bidirectional: two of them on one bus are not two outputs
     expect(new Set(getDef("bus-transceiver")!.geometry({}).pins.filter((p) => p.id === "a" || p.id === "b").map((p) => p.dir))).toEqual(new Set(["inout"]));
     for (const t of ["nmos", "pmos"]) {
