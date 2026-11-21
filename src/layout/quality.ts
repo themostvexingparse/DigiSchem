@@ -41,6 +41,12 @@ export interface QualityBreakdown {
   tightEvents: number;
   /** Superlinear local density penalty over (crossings ∪ junctions) (>= 0). */
   clutter: number;
+  /**
+   * Repulsion between parallel wires (>= 0): per grid cell that two wires run side by side one
+   * or two cells apart. Pulls against the area term, so compaction stops squeezing wires together
+   * once the space it saves is worth less than the crowding it causes.
+   */
+  wireCrowding: number;
   /** Alignment reward (<= 0) for same-type, same-size components sharing a row or column. */
   alignment: number;
   /** Spacing term for same-type rows/columns: negative for equal consecutive gaps, positive for uneven gaps. */
@@ -81,6 +87,10 @@ export interface QualityWeights {
   bend?: number;
   /** Weight multiplying the superlinear pairwise clutter density (default: `8`). */
   clutter?: number;
+  /** Per grid cell of two parallel wires running 1 cell apart (default `0.6`). */
+  crowd1?: number;
+  /** Per grid cell of two parallel wires running 2 cells apart (default `0.15`). */
+  crowd2?: number;
   /** Neighborhood radius in grid cells within which event pairs contribute to clutter (default: `5`). */
   clutterRadius?: number;
   /**
@@ -126,7 +136,10 @@ export function wireNetIndex(doc: SchematicDocument): Map<string, number> {
  *   clutter is strictly superlinear in local event density (pairwise quadratic decay within R = 5 cells)
  *   area weight (0.05 / grid²) keeps layouts compact while letting visual quality win over the last few percent of area.
  */
-export const DEFAULT_QUALITY_WEIGHTS: Readonly<Required<Omit<QualityWeights, "baselineNets" | "baselineCollisions" | "baselineTightEvents" | "baselineOverlaps">>> = Object.freeze({
+/** Repulsion between parallel wires, per grid cell of side-by-side run at 1 / 2 cells apart. */
+export const WIRE_CROWDING = { one: 0.6, two: 0.15 };
+
+export const DEFAULT_QUALITY_WEIGHTS: Readonly<Required<Omit<QualityWeights, "baselineNets" | "baselineCollisions" | "baselineTightEvents" | "baselineOverlaps" | "crowd1" | "crowd2">>> = Object.freeze({
   overlap: Infinity,
   sameNetOverlap: 40,
   componentCollision: Infinity,
@@ -491,6 +504,8 @@ export function layoutQuality(doc: SchematicDocument, opts?: QualityWeights): Qu
     bend: opts?.bend ?? DEFAULT_QUALITY_WEIGHTS.bend,
     tightEvent: opts?.tightEvent ?? DEFAULT_QUALITY_WEIGHTS.tightEvent,
     clutter: opts?.clutter ?? DEFAULT_QUALITY_WEIGHTS.clutter,
+    crowd1: opts?.crowd1 ?? WIRE_CROWDING.one,
+    crowd2: opts?.crowd2 ?? WIRE_CROWDING.two,
     clutterRadius: opts?.clutterRadius ?? DEFAULT_QUALITY_WEIGHTS.clutterRadius,
     pinClutter: opts?.pinClutter ?? DEFAULT_QUALITY_WEIGHTS.pinClutter,
     pinClutterRadius: opts?.pinClutterRadius ?? DEFAULT_QUALITY_WEIGHTS.pinClutterRadius,
@@ -550,6 +565,10 @@ export function layoutQuality(doc: SchematicDocument, opts?: QualityWeights): Qu
   const rawClutter = computeEventClutter(events, grid, w.clutterRadius, pinProximityWeights(doc, events, grid, w.pinClutter, w.pinClutterRadius));
   const clutter = normZero(rawClutter === 0 ? 0 : rawClutter * w.clutter);
 
+  // 3b. Parallel wires running close together push each other apart
+  const rawCrowd = parallelCrowding(hSegs, vSegs, grid, w.crowd1, w.crowd2);
+  const wireCrowding = normZero(rawCrowd);
+
   // 4. Alignment & regular spacing of same-type, same-size components
   const { alignedPairs, equalGapPairs, unevenGapStdDev } = computeAlignmentAndSpacing(doc, bounds, grid);
   const alignment = normZero(alignedPairs === 0 ? 0 : -alignedPairs * w.alignment);
@@ -563,7 +582,7 @@ export function layoutQuality(doc: SchematicDocument, opts?: QualityWeights): Qu
   const total =
     overlaps === Infinity || componentCollisions === Infinity || tightEvents === Infinity
       ? Infinity
-      : normZero(overlaps + componentCollisions + crossings + junctions + bends + tightEvents + clutter + alignment + spacing + area);
+      : normZero(overlaps + componentCollisions + crossings + junctions + bends + tightEvents + clutter + wireCrowding + alignment + spacing + area);
 
   return {
     area,
@@ -574,10 +593,35 @@ export function layoutQuality(doc: SchematicDocument, opts?: QualityWeights): Qu
     bends,
     tightEvents,
     clutter,
+    wireCrowding,
     alignment,
     spacing,
     total,
   };
+}
+
+/** Side-by-side run (in grid cells) of parallel segments of different wires 1 and 2 cells apart, weighted. */
+function parallelCrowding(hSegs: readonly HSeg[], vSegs: readonly VSeg[], grid: number, w1: number, w2: number): number {
+  let e = 0;
+  const run = (segs: { wireIdx: number; c: number; lo: number; hi: number }[]) => {
+    const by = new Map<number, typeof segs>();
+    for (const s of segs) (by.get(s.c) ?? by.set(s.c, []).get(s.c)!).push(s);
+    for (const [c, row] of by) {
+      for (const [k, wt] of [[1, w1], [2, w2]] as const) {
+        const other = by.get(c + k * grid);
+        if (!other) continue;
+        for (const a of row)
+          for (const b of other) {
+            if (a.wireIdx === b.wireIdx) continue;
+            const ov = Math.min(a.hi, b.hi) - Math.max(a.lo, b.lo);
+            if (ov > 0) e += (wt * ov) / grid;
+          }
+      }
+    }
+  };
+  run(hSegs.map((s) => ({ wireIdx: s.wireIdx, c: s.y, lo: s.lo, hi: s.hi })));
+  run(vSegs.map((s) => ({ wireIdx: s.wireIdx, c: s.x, lo: s.lo, hi: s.hi })));
+  return e;
 }
 
 /** Component pairs that collide (or violate `componentGap`) in `doc`, for `baselineCollisions`. */

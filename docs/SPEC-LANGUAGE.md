@@ -189,8 +189,17 @@ already look tidy, for example a model adding one block at a time with the user 
    T-junction on a wire). Joins use the editor's clean router, so no wire touches or runs along
    anything it does not connect. A net that cannot be drawn cleanly is drawn with tunnels (net
    labels) on each of its pins instead.
-6. **Compact** as the `@compact` mode says.
-7. **Verify**: the stored connections must equal the spec netlist, and so must the drawing,
+6. **Compact** as the `@compact` mode says. Compaction pulls parts together (a weak pull on the
+   drawing's area) and is pushed back by what that would crowd: parallel wires one or two cells
+   apart, crossings and junction dots bunched together. It stops where the two balance.
+7. **Tidy the wires** (parts do not move). Each wire is held taut: every cell of length and every
+   bend costs energy. Wires push each other away at short range: two wires side by side one cell
+   apart, a crossing right next to a bend or pin, two junction dots side by side, a wire stopping
+   one cell short of another, or a wire passing in front of a pin it does not connect to. The
+   tidier repeatedly slides a segment sideways (with the rest of its straight run and the wires
+   branching off it) or re-routes one wire, whichever lowers the energy most, and never makes a
+   contact the drawing did not have.
+8. **Verify**: the stored connections must equal the spec netlist, and so must the drawing,
    with no place where something touches what it is not connected to. Otherwise the build fails
    with an error. The one exception is nets drawn with direct wires, whose drawing problems are
    warnings. Pins of different nets placed on the same point (two `at=` too close) are reported

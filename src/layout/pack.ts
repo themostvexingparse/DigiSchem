@@ -19,6 +19,8 @@
  *         exact dynamic feasible `[lo, hi]` interval (by ±k grid, alignment targets, midpoints,
  *         and clutter-spreading offsets) using zero-allocation in-place updates.
  *  4. Every accepted state is validated via `validateAgainstBaseline` against all rules 1–9.
+ *  5. Last, on documents with stored connections: the wires are relaxed (`relax-wires.ts`), parts
+ *     fixed, never adding a bend; checked by `relaxProblems`.
  *     If `qualityAfter.total` does not strictly improve over `qualityBefore.total` (and no
  *     partial-pack subset area improvement occurred), returns an unmodified deep copy.
  */
@@ -44,7 +46,9 @@ import {
   overlappingPairs,
 } from "./quality";
 import { repairDrawingConflicts } from "../editor/safe-route";
-import { realignProblems, realignWithReroute } from "./realign";
+import { netSignature, realignProblems, realignWithReroute } from "./realign";
+import { relaxWires } from "./relax-wires";
+import { connectionConflicts } from "../model/links";
 import {
   documentArea,
   prepareValidationBaseline,
@@ -74,6 +78,8 @@ export interface PackOptions {
   beamWidth?: number;
   /** Keep the layout's centre of mass where it was (default true). */
   preserveCenter?: boolean;
+  /** Relax the wires at the end (default true): see relax-wires.ts. */
+  relaxWires?: boolean;
   /**
    * Realign stage (default true): move parts back onto the row/column of their same-type peers,
    * re-routing their wires. The only stage allowed to change wire shapes (never adding bends).
@@ -104,6 +110,8 @@ export interface PackResult {
   realignedParts: string[];
   /** The layout after the drawing clean-up stage, when it fixed anything (see `conflictsFixed`). */
   cleaned?: SchematicDocument;
+  /** the packed layout before its wires were relaxed (wire shapes only; checked by its own rules) */
+  unrelaxed?: SchematicDocument;
   /** Places where the drawing touched something it is not connected to, fixed before packing. */
   conflictsFixed?: number;
   rerouted: string[];
@@ -1294,12 +1302,42 @@ function packCore(doc: SchematicDocument, opts?: PackOptions): PackResult {
  * their wires; the remaining stages preserve every wire's shape (rules 1–9). Pure function.
  */
 export function packSchematic(doc: SchematicDocument, opts?: PackOptions): PackResult {
+  // (only documents that store their connections: the relaxation must know what each wire joins)
+  if (opts?.relaxWires === false || !doc.links) return packStages(doc, opts);
+  // the wire relaxation gets a fifth of the time budget
+  const budget = opts?.timeBudgetMs ?? Math.min(4000, DEFAULT_TIME_BUDGET_MS + 25 * doc.components.length);
+  const res = packStages(doc, { ...opts, timeBudgetMs: budget * 0.8 });
+  // Last stage: relax the wires (tension against short-range repulsion; parts stay put).
+  const relaxed = JSON.parse(JSON.stringify(res.doc)) as SchematicDocument;
+  const frozen = opts?.ids ? new Set(relaxed.wires.filter((w) => !opts.ids!.has(w.id)).map((w) => w.id)) : undefined;
+  try {
+    const r = relaxWires(relaxed, { frozen, timeBudgetMs: budget * 0.2, noNewBends: true });
+    if (r.moves === 0 || r.energyAfter >= r.energyBefore || relaxProblems(res.doc, relaxed).length) return res;
+  } catch {
+    return res;
+  }
+  return { ...res, doc: relaxed, unrelaxed: res.doc, passes: res.passes + 1 };
+}
+
+/** Rules for the wire relaxation stage: same parts, same connections, no new drawing conflicts. */
+export function relaxProblems(before: SchematicDocument, after: SchematicDocument): string[] {
+  const out: string[] = [];
+  if (JSON.stringify(after.links) !== JSON.stringify(before.links)) out.push("Wire tidying: connections changed");
+  if (after.components.some((c, i) => c.x !== before.components[i]?.x || c.y !== before.components[i]?.y)) out.push("Wire tidying: a component moved");
+  if (netSignature(after) !== netSignature(before)) out.push("Wire tidying: the drawing connects differently");
+  if (connectionConflicts(after).length > connectionConflicts(before).length) out.push("Wire tidying: new drawing conflicts");
+  const bends = (d: SchematicDocument) => d.wires.reduce((n, w) => n + Math.max(0, w.points.length - 2), 0);
+  if (bends(after) > bends(before)) out.push("Wire tidying: added bends");
+  return out;
+}
+
+function packStages(doc: SchematicDocument, opts?: PackOptions): PackResult {
   // Stage -1: make the drawing agree with the stored connections first — every place where a
   // wire touches something it is not connected to is re-routed locally (junctions kept).
   if (opts?.cleanConflicts !== false && doc.links) {
     const cleaned = repairDrawingConflicts(doc, opts?.ids);
     if (cleaned.fixed > 0) {
-      const res = packSchematic(cleaned.doc, { ...opts, cleanConflicts: false });
+      const res = packStages(cleaned.doc, { ...opts, cleanConflicts: false });
       const gap = Math.max(0, Math.round(opts?.componentGap ?? 2));
       const nets0 = wireNetIndex(doc);
       return {
@@ -1357,6 +1395,7 @@ export function packSchematic(doc: SchematicDocument, opts?: PackOptions): PackR
  * the shape-preserving stages with rules 1–9 relative to the realigned layout.
  */
 export function validateCompaction(before: SchematicDocument, res: PackResult, opts?: PackOptions): string[] {
+  if (res.unrelaxed) return [...validateCompaction(before, { ...res, doc: res.unrelaxed, unrelaxed: undefined }, opts), ...relaxProblems(res.unrelaxed, res.doc)];
   if (res.cleaned) {
     // clean-up: same stored connections, no part moved; then the rest against the cleaned layout
     const out: string[] = [];

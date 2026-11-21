@@ -40,6 +40,7 @@ describe("layout/quality — default weights & invariants", () => {
       bends: 0,
       tightEvents: 0,
       clutter: 0,
+      wireCrowding: 0,
       alignment: 0,
       spacing: 0,
       total: 0,

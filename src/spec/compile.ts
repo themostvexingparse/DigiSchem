@@ -13,6 +13,7 @@ import { effectiveProps } from "../model/geometry";
 import type { ComponentInstance, SchematicDocument, TextNote } from "../model/types";
 import { buildNetlist } from "../io/netlist";
 import { packSchematic, validateCompaction } from "../layout/pack";
+import { relaxWires } from "../layout/relax-wires";
 import { netSignature } from "../layout/realign";
 import { parseSpec, type Attr, type Diagnostic, type Loc, type RefNode, type Statement } from "./parser";
 import { resolvePart, resolvePin, resolveType, suggest } from "./resolve";
@@ -614,6 +615,24 @@ export function compileSpec(source: string, opts: CompileOptions = {}): CompileR
   if ((sinceCompact > 0 && (needEnd || lastMode?.compact === "every")) || (incremental && final.compact !== "never")) compactNow(final.compact === "never" ? lastMode! : final);
   routeAll();
   doc.links = canonicalLinks(links);
+
+  // tidy the wires: tension pulls them short and straight, nearby wires, crossings and junction
+  // dots push each other apart (parts do not move). Kept only if the drawing checks out as well.
+  {
+    const tx = now();
+    const saved = doc.wires.map((w) => w.points);
+    const vBefore = verifyParts(doc);
+    const frozen = new Set(nets.filter((n) => n.direct).flatMap((n) => n.wires));
+    try {
+      relaxWires(doc, { keepOut: ctx.keepOut, frozen, timeBudgetMs: final.budgetMs });
+      const vAfter = verifyParts(doc);
+      if (vAfter.logical.length > vBefore.logical.length || vAfter.drawing.length > vBefore.drawing.length) doc.wires.forEach((w, i) => (w.points = saved[i]));
+    } catch (e) {
+      doc.wires.forEach((w, i) => (w.points = saved[i]));
+      warn(`wire tidying failed and was skipped: ${(e as Error).message}`, { line: 1, col: 1 });
+    }
+    stats.ms.compact += Math.round(now() - tx);
+  }
 
   // texts
   for (const t of texts) {

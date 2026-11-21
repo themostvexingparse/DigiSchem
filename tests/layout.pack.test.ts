@@ -15,7 +15,7 @@ import {
 import { buildNetlist } from "../src/io/netlist";
 import { RouteObstacles } from "../src/editor/safe-route";
 import { normalizeWirePoints, pinExitVector, segmentIntersectsRect } from "../src/editor/wire-utils";
-import { packSchematic, type PackOptions } from "../src/layout/pack";
+import { packSchematic, validateCompaction, type PackOptions } from "../src/layout/pack";
 import { validatePacking } from "../src/layout/validate";
 
 registerBuiltinComponents();
@@ -812,7 +812,7 @@ describe("layout/packSchematic", () => {
 
     expect(elapsedMs).toBeLessThan(2000);
     expect(res.areaAfter).toBeLessThan(res.areaBefore * 0.45);
-    expect(validatePacking(doc, res.doc)).toEqual([]);
+    expect(validateCompaction(doc, res, { timeBudgetMs: 1500, beamWidth: 0, realign: false })).toEqual([]);
     // Verify netlist preserved on all 200 components / 400 wires
     expect(canonicalNets(res.doc)).toEqual(canonicalNets(doc));
   });
