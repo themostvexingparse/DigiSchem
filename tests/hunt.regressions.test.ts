@@ -154,5 +154,13 @@ describe("store fuzz regressions", () => {
     expect(broken()).toBe(0);
     expect(nets(s.doc)).toEqual(["a.out,g.in0"]);
   });
+
+  it("a collapsed (zero-length) wire touches the pins at its point (no false 'broken' warning)", () => {
+    const d = emptyDocument();
+    d.components.push(C("a", "input-pin", 0, 90), C("g", "and", 50, 90)); // a.out (50,100) == g.in0 (50,100)
+    d.wires.push({ id: "w", points: [{ x: 50, y: 100 }, { x: 50, y: 100 }] });
+    d.links = [["p:a|out", "w:w"], ["p:g|in0", "w:w"]];
+    expect(connectionConflicts(d)).toEqual([]);
+  });
 });
 

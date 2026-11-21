@@ -139,6 +139,22 @@ export function geometricContacts(doc: SchematicDocument): Contact[] {
       for (const wi of segIndex.wiresAt(wp.pos)) add(t, wireTerm(wires[wi].id), wp.pos);
     }
   }
+  // A collapsed (zero-length) wire — kept for its connections when a pin moved onto its other
+  // end — has no segment in the index: it touches whatever is at its point.
+  const pointWires = new Map<string, Terminal[]>();
+  for (const w of wires) {
+    const p = w.points[0];
+    if (!w.points.every((q) => q.x === p.x && q.y === p.y)) continue;
+    const t = wireTerm(w.id);
+    const k = ptKey(p);
+    for (const other of pointWires.get(k) ?? []) add(t, other, p);
+    pointWires.set(k, [...(pointWires.get(k) ?? []), t]);
+    const pin = pinAt.get(k);
+    if (pin) {
+      // every pin at that point (pins stacked on one point are joined above)
+      for (const comp of doc.components) for (const wp of worldPins(comp)) if (ptKey(wp.pos) === k) add(t, pinTerm(comp.id, wp.pin.id), p);
+    }
+  }
   return out;
 }
 

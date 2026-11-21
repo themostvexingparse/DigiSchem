@@ -828,6 +828,7 @@ export function localRepairWire(
   const total = arcPos(v.points, v.points[v.points.length - 1]);
   const ts = new Set<number>([0, total]);
   for (const b of branchPointsOf(doc, v.id, v.points, new Set())) if (sameNet.has(b.other)) ts.add(b.t);
+  for (const b of linkedPinsOn(doc, v.id, v.points)) ts.add(b.t);
   const cuts = [...ts].sort((a, b) => a - b);
   const out: Point[] = [];
   for (let i = 0; i + 1 < cuts.length; i++) {
@@ -1101,6 +1102,33 @@ function cutAfter(path: readonly Point[], t: number): Point[] {
 }
 
 /** Every point where another wire (not in `exclude`) connects to `orig` (W's pre-edit path). */
+/**
+ * Pins CONNECTED to wire `wid` that sit in the interior of `path` (a part placed, or a pin added,
+ * on a passing wire): such a contact is load-bearing like a junction — re-routing must keep the
+ * wire running through it.
+ */
+function linkedPinsOn(doc: SchematicDocument, wid: string, path: readonly Point[]): BranchPoint[] {
+  if (!doc.links || path.length < 2) return [];
+  const me = `w:${wid}`;
+  const linked = new Set<string>();
+  for (const [a, b] of doc.links) {
+    if (a === me && b.startsWith("p:")) linked.add(b);
+    else if (b === me && a.startsWith("p:")) linked.add(a);
+  }
+  if (linked.size === 0) return [];
+  const total = arcPos(path, path[path.length - 1]);
+  const out: BranchPoint[] = [];
+  for (const c of doc.components) {
+    for (const wp of worldPins(c)) {
+      const t = `p:${c.id}|${wp.pin.id}`;
+      if (!linked.has(t)) continue;
+      const pos = arcPos(path, wp.pos);
+      if (pos > 0 && pos < total) out.push({ p: { ...wp.pos }, t: pos, other: t, otherEnd: null });
+    }
+  }
+  return out;
+}
+
 function branchPointsOf(
   doc: SchematicDocument,
   wid: string,
@@ -1361,7 +1389,8 @@ function repairWiresGuarded(
     const allBranches = branchPointsOf(doc, wid, orig, new Set(), before).filter(
       (b) => b.t > 0 && b.t < total && sameNet.has(b.other),
     );
-    const branches = allBranches.filter((b) => !postEdit.onPartAt(b.p));
+    // pins connected mid-wire that stay where they are: kept like junctions
+    const branches = [...allBranches.filter((b) => !postEdit.onPartAt(b.p)), ...linkedPinsOn(doc, wid, orig)];
     const stranded = allBranches.filter((b) => postEdit.onPartAt(b.p) && b.otherEnd);
     if (!startMoved && !endMoved) {
       // Neither end moved (e.g. a drag that landed back on its start): the wire keeps its exact
