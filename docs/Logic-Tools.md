@@ -95,6 +95,27 @@ or always 1 becomes a constant.
 `sopToDspec(terms, names, out)` in `minimize.ts` produces DSpec source for the same circuit
 instead, for the compiler to place and route.
 
+### Several outputs at once
+
+```ts
+import { sopsToSchematic } from "./src/logic/sop-schematic";
+
+const doc = sopsToSchematic(
+  [
+    { name: "sum", terms: minimize(3, [1, 2, 4, 7]).terms },
+    { name: "cout", terms: minimize(3, [3, 5, 6, 7]).terms, label: "carry" },
+  ],
+  ["cin", "b", "a"],
+);
+```
+
+Several functions of the same inputs become one schematic: the input rails across the top, one
+column of AND gates, an OR gate per output on the right, and the output pins in a column in the
+order given. A product that several outputs need is built **once**, and its AND output drops
+down a vertical lane of its own and branches off to every OR gate that uses it. This is the
+usual way to draw a decoder, such as a hexadecimal to seven-segment decoder, where neighbouring
+segments share products.
+
 ## Checking a drawing
 
 ```ts

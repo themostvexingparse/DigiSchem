@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { covers, evaluateSop, kmapText, literalCount, minimize, sopToDspec, sopToString, type Term } from "../src/logic/minimize";
 import { compileSpec } from "../src/spec/compile";
-import { sopToSchematic } from "../src/logic/sop-schematic";
+import { sopToSchematic, sopsToSchematic } from "../src/logic/sop-schematic";
 import { evaluateCombinational } from "../src/logic/evaluate";
 import { connectionConflicts } from "../src/model/links";
 import { registerBuiltinComponents } from "../src/components/library";
@@ -109,6 +109,30 @@ describe("boolean minimization", () => {
       for (let m = 0; m < 16; m++) {
         const ins = Object.fromEntries(names.map((nm, i) => [nm, !!(m & (1 << i))]));
         expect(evaluateCombinational(doc, ins).f, `function ${k}, input ${m}`).toBe(on.includes(m));
+      }
+    }
+  });
+
+  it("draws several functions sharing their products, and every output computes its own function", () => {
+    const r = rng(23);
+    const names = ["w0", "w1", "w2", "w3"];
+    for (let k = 0; k < 30; k++) {
+      const count = 2 + Math.floor(r() * 4);
+      const fns = Array.from({ length: count }, (_, j) => {
+        if (k === 0 && j === 0) return [] as number[]; // constant 0
+        if (k === 0 && j === 1) return Array.from({ length: 16 }, (_, m) => m); // constant 1
+        return Array.from({ length: 16 }, (_, m) => m).filter(() => r() < 0.4);
+      });
+      const outs = fns.map((on, j) => ({ name: `f${j}`, terms: minimize(4, on).terms }));
+      const doc = parseProject(serializeProject(sopsToSchematic(outs, names)));
+      expect(connectionConflicts(doc)).toEqual([]);
+      // a product used by several outputs is built once
+      const keys = new Set(outs.flatMap((o) => o.terms.filter((t) => literalCount(t, 4) > 1).map((t) => `${t.value & ~t.mask}/${t.mask}`)));
+      expect(doc.components.filter((c) => c.type === "and").length).toBe(keys.size);
+      for (let m = 0; m < 16; m++) {
+        const ins = Object.fromEntries(names.map((nm, i) => [nm, !!(m & (1 << i))]));
+        const got = evaluateCombinational(doc, ins);
+        fns.forEach((on, j) => expect(got[`f${j}`], `set ${k}, output ${j}, input ${m}`).toBe(on.includes(m)));
       }
     }
   });
