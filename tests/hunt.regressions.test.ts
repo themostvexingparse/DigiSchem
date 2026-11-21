@@ -4,6 +4,7 @@ import { registerBuiltinComponents } from "../src/components/library";
 import { DocumentStore } from "../src/model/store";
 import { emptyDocument, type ComponentInstance, type SchematicDocument } from "../src/model/types";
 import { buildNetlist } from "../src/io/netlist";
+import { worldPins } from "../src/model/geometry";
 import { parseProject, serializeProject } from "../src/io/project";
 import { placeComponentInStore, deleteSelectionInStore, duplicateSelectionInStore, mirrorSelectionInStore, nudgeSelectionInStore, rotateSelectionInStore } from "../src/editor/doc-ops";
 import { sprawled } from "./helpers/sprawl";
@@ -212,6 +213,19 @@ describe("store fuzz regressions", () => {
     );
     normalizeDocWires(d);
     expect(d.wires.find((w) => w.id === "b")!.points).toHaveLength(3);
+  });
+
+  it("a part placed so its pin touches another part's pin from outside still connects to it", () => {
+    for (const [type, mirror] of [["input-pin", false], ["tunnel", true]] as const) {
+      const s = new DocumentStore();
+      placeComponentInStore(s, "and", 300, 100);
+      const gate = s.doc.components[0];
+      const in0 = worldPins(gate).find((p) => p.pin.id === "in0")!.pos;
+      const proto: ComponentInstance = { id: "p1", type, x: 0, y: 0, rotation: 0, props: {}, ...(mirror ? { mirror: true } : {}) };
+      const pin0 = worldPins(proto)[0];
+      s.update("place", (d) => d.components.push({ ...proto, x: in0.x - pin0.pos.x, y: in0.y - pin0.pos.y }));
+      expect(s.doc.links).toEqual([[`p:${gate.id}|in0`, `p:p1|${pin0.pin.id}`].sort() as [string, string]]);
+    }
   });
 });
 
