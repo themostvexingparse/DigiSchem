@@ -98,4 +98,18 @@ describe("store fuzz regressions", () => {
       expect(s.doc.links!.some(([a, b]) => [a, b].includes(`w:${w.id}`) && [a, b].some((t) => t.startsWith(`p:${copyGate}|`)))).toBe(true);
     }
   });
+
+  it("a new wire running over an old wire's end does not short two outputs (its own end would)", () => {
+    const d = emptyDocument();
+    d.components.push(C("a", "input-pin", 0, 90), C("b", "input-pin", 0, 190)); // outs at (50,100), (50,200)
+    d.wires.push({ id: "wa", points: [{ x: 50, y: 100 }, { x: 150, y: 100 }] });
+    const s = new DocumentStore(d);
+    // drawn from b.out, running up through the end of wa (150,100) — an accident of the route
+    s.update("draw", (x) => x.wires.push({ id: "wb", points: [{ x: 50, y: 200 }, { x: 150, y: 200 }, { x: 150, y: 50 }] }));
+    expect(nets(s.doc)).toEqual([]);
+    // drawn ONTO wa (its own end lands there): that is what the user drew
+    s.update("draw2", (x) => x.wires.push({ id: "wc", points: [{ x: 50, y: 200 }, { x: 100, y: 200 }, { x: 100, y: 100 }] }));
+    expect(nets(s.doc)).toEqual(["a.out,b.out"]);
+  });
 });
+

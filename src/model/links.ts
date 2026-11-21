@@ -43,8 +43,13 @@ function driverTerms(doc: SchematicDocument): Set<Terminal> {
   return out;
 }
 
-/** How deliberate a geometric contact looks: 0 wire end on a pin, 1 wire end on a wire, 2 other. */
-function contactIntent(doc: SchematicDocument, c: Contact): number {
+/**
+ * How deliberate a geometric contact looks: 0 wire end on a pin, 1 wire end on a wire, 2 other.
+ * With `fresh` (the terminals an edit just created), a wire-on-wire contact is only deliberate
+ * when it is the NEW wire's end that lands there — an old wire's end that a new wire merely runs
+ * over is an accident of the drawing.
+ */
+function contactIntent(doc: SchematicDocument, c: Contact, fresh?: ReadonlySet<Terminal>): number {
   const ends = (t: Terminal) => {
     if (!t.startsWith("w:")) return [] as Point[];
     const w = doc.wires.find((x) => x.id === t.slice(2));
@@ -55,6 +60,9 @@ function contactIntent(doc: SchematicDocument, c: Contact): number {
   if (pinSide) {
     const wire = c.a.startsWith("w:") ? c.a : c.b.startsWith("w:") ? c.b : null;
     return wire && atEnd(wire) ? 0 : wire ? 2 : 0; // pin-on-pin abutment counts as deliberate
+  }
+  if (fresh && (fresh.has(c.a) || fresh.has(c.b))) {
+    return (fresh.has(c.a) && atEnd(c.a)) || (fresh.has(c.b) && atEnd(c.b)) ? 1 : 2;
   }
   return atEnd(c.a) || atEnd(c.b) ? 1 : 2;
 }
@@ -71,6 +79,7 @@ function linksFromContacts(
   contacts: Contact[],
   base: [string, string][],
   guardAll: boolean,
+  fresh?: ReadonlySet<Terminal>,
 ): [string, string][] {
   const drivers = driverTerms(doc);
   const parent = new Map<string, string>();
@@ -96,7 +105,7 @@ function linksFromContacts(
   };
   for (const [a, b] of base) union(a, b);
   const out = [...base];
-  const ranked = contacts.map((c) => ({ c, k: contactIntent(doc, c) })).sort((x, y) => x.k - y.k);
+  const ranked = contacts.map((c) => ({ c, k: contactIntent(doc, c, fresh) })).sort((x, y) => x.k - y.k);
   for (const { c, k } of ranked) {
     const ra = find(c.a), rb = find(c.b);
     if (ra !== rb && (guardAll || k === 2) && drv(ra) > 0 && drv(rb) > 0) continue; // would short two outputs
@@ -171,7 +180,7 @@ export function maintainLinks(before: SchematicDocument, draft: SchematicDocumen
   }
   if (fresh.size > 0 && opts.connectByTouch !== false) {
     const touching = geometricContacts(draft).filter((c) => fresh.has(c.a) || fresh.has(c.b));
-    draft.links = canonicalLinks(linksFromContacts(draft, touching, kept, false));
+    draft.links = canonicalLinks(linksFromContacts(draft, touching, kept, false, fresh));
     return;
   }
   draft.links = canonicalLinks(kept);
