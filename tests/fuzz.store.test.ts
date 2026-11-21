@@ -24,9 +24,11 @@ import {
   rotateSelectionInStore,
 } from "../src/editor/doc-ops";
 import { sprawled } from "./helpers/sprawl";
+import { updateSettings } from "../src/model/settings";
 import { pathOverlapsItself } from "../src/editor/wire-utils";
 
 registerBuiltinComponents();
+if (process.env.FUZZ_ADVANCED) updateSettings({ advancedRerouteSearch: true });
 
 function rng(seed: number) {
   let s = seed >>> 0 || 1;
