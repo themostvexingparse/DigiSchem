@@ -9,7 +9,9 @@ import { deleteSelectionInStore, duplicateSelectionInStore } from "../src/editor
 import { sprawled } from "./helpers/sprawl";
 import { mergeWireSeams } from "../src/model/merge";
 import { pathLoopCuts, pathOverlapsItself } from "../src/editor/wire-utils";
-import { untangleWires } from "../src/editor/safe-route";
+import { repairSegmentDrop, sameNetWires, untangleWires } from "../src/editor/safe-route";
+import { dragWireSegmentPoints, followSegmentBranches, segmentBranches } from "../src/editor/wire-utils";
+import { connectionConflicts } from "../src/model/links";
 
 registerBuiltinComponents();
 const C = (id: string, type: string, x: number, y: number): ComponentInstance => ({ id, type, x, y, rotation: 0, props: {} });
@@ -110,6 +112,31 @@ describe("store fuzz regressions", () => {
     // drawn ONTO wa (its own end lands there): that is what the user drew
     s.update("draw2", (x) => x.wires.push({ id: "wc", points: [{ x: 50, y: 200 }, { x: 100, y: 200 }, { x: 100, y: 100 }] }));
     expect(nets(s.doc)).toEqual(["a.out,b.out"]);
+  });
+
+  it("dragging a wire segment takes the wires joined to it along (no junction left behind)", () => {
+    const d = emptyDocument();
+    d.components.push(C("a", "input-pin", 0, 90), C("g", "and", 400, 190), C("h", "and", 400, 290)); // a.out (50,100)
+    // w: a.out → right → down to g.in0 (400,200); x branches off w's horizontal at (200,100) down to h.in0 (400,300)
+    d.wires.push(
+      { id: "w", points: [{ x: 50, y: 100 }, { x: 300, y: 100 }, { x: 300, y: 200 }, { x: 400, y: 200 }] },
+      { id: "x", points: [{ x: 200, y: 100 }, { x: 200, y: 300 }, { x: 400, y: 300 }] },
+    );
+    const s = new DocumentStore(d);
+    const nets = sameNetWires(s.doc as SchematicDocument);
+    const w = s.doc.wires.find((q) => q.id === "w")!;
+    const orig = w.points.map((p) => ({ ...p }));
+    const branches = segmentBranches(s.doc as SchematicDocument, "w", orig[0], orig[1]);
+    expect(branches.map((b) => b.wireId)).toEqual(["x"]);
+    s.beginGesture();
+    s.update("seg", (dd) => {
+      dd.wires.find((q) => q.id === "w")!.points = dragWireSegmentPoints(orig, 0, { x: 0, y: -40 }, true, true, true);
+      followSegmentBranches(dd, branches, { x: 0, y: -40 });
+    });
+    s.update("drop", (dd) => repairSegmentDrop(dd, "w", branches, nets));
+    s.endGesture();
+    expect(connectionConflicts(s.doc as SchematicDocument).filter((c) => c.kind === "broken")).toEqual([]);
+    expect(nets).toBeDefined();
   });
 });
 

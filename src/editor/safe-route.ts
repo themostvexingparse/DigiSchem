@@ -1753,3 +1753,37 @@ function onPathInterior(path: readonly Point[], p: Point): boolean {
   if ((path[0].x === p.x && path[0].y === p.y) || (path[n - 1].x === p.x && path[n - 1].y === p.y)) return false;
   return onPath(path, p);
 }
+
+/**
+ * Clean up after a wire segment was dragged (and the wires joined to it followed — `branches`):
+ * two ways are tried — (a) re-route the dragged wire and the followers' new legs, (b) let the
+ * followers go back to their original shapes and re-attach them to wherever the re-routed wire now
+ * runs — and the drawing with fewer conflicts (touching / detached / shorted) is kept.
+ */
+export function repairSegmentDrop(
+  doc: SchematicDocument,
+  wireId: string,
+  branches: readonly { wireId: string; origPoints: Point[] }[],
+  nets: Map<string, Set<string>>,
+): void {
+  const ids = [wireId, ...branches.map((b) => b.wireId)];
+  if (branches.length === 0) {
+    repairWires(doc, ids, undefined, { nets });
+    return;
+  }
+  const snapshot = doc.wires.map((w) => ({ ...w, points: w.points.map((p) => ({ ...p })) }));
+  const score = () => connectionConflicts(doc).length;
+  // (a) followers keep following
+  repairWires(doc, ids, undefined, { nets, before: new Map(branches.map((b) => [b.wireId, b.origPoints])) });
+  const a = { wires: doc.wires, s: score() };
+  if (a.s === 0) return;
+  // (b) followers back as they were; the broken junctions are re-joined by the repair
+  doc.wires = snapshot.map((w) => ({ ...w, points: w.points.map((p) => ({ ...p })) }));
+  for (const b of branches) {
+    const w = doc.wires.find((x) => x.id === b.wireId);
+    if (w) w.points = b.origPoints.map((p) => ({ ...p }));
+  }
+  repairWires(doc, [wireId], undefined, { nets });
+  if (score() >= a.s) doc.wires = a.wires;
+}
+

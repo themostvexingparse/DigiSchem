@@ -833,3 +833,58 @@ export function pathOverlapsItself(pts: readonly Point[]): boolean {
   }
   return false;
 }
+
+/** A wire whose end sits on (and is connected to) a segment that is being dragged. */
+export interface SegmentBranch {
+  wireId: string;
+  atStart: boolean;
+  origPoints: Point[];
+}
+
+/**
+ * Wires connected to `wireId` whose end lies on its segment a–b (ends included): when the segment
+ * is dragged they must follow it, or the junction is left behind. Ends that also sit on a pin
+ * they are connected to stay put (the pin does not move).
+ */
+export function segmentBranches(doc: SchematicDocument, wireId: string, a: Point, b: Point): SegmentBranch[] {
+  const me = `w:${wireId}`;
+  const linked = new Set<string>();
+  for (const [x, y] of doc.links ?? []) {
+    if (x === me) linked.add(y);
+    else if (y === me) linked.add(x);
+  }
+  const onSeg = (p: Point) =>
+    a.x === b.x
+      ? p.x === a.x && p.y >= Math.min(a.y, b.y) && p.y <= Math.max(a.y, b.y)
+      : p.y === a.y && p.x >= Math.min(a.x, b.x) && p.x <= Math.max(a.x, b.x);
+  const pinLinkedAt = (wid: string, p: Point) =>
+    doc.components.some((c) =>
+      worldPins(c).some((wp) => wp.pos.x === p.x && wp.pos.y === p.y && (doc.links ?? []).some(([x, y]) =>
+        (x === `w:${wid}` && y === `p:${c.id}|${wp.pin.id}`) || (y === `w:${wid}` && x === `p:${c.id}|${wp.pin.id}`))),
+    );
+  const out: SegmentBranch[] = [];
+  for (const w of doc.wires) {
+    if (w.id === wireId || w.points.length < 2) continue;
+    if (doc.links && !linked.has(`w:${w.id}`)) continue;
+    const s = w.points[0], e = w.points[w.points.length - 1];
+    for (const [atStart, p] of [[true, s], [false, e]] as const) {
+      if (onSeg(p) && !pinLinkedAt(w.id, p)) {
+        out.push({ wireId: w.id, atStart, origPoints: w.points.map((q) => ({ ...q })) });
+        break; // one end per wire
+      }
+    }
+  }
+  return out;
+}
+
+/** Stretch each branch's attached end by `delta` (the dragged segment's shift). */
+export function followSegmentBranches(doc: SchematicDocument, branches: readonly SegmentBranch[], delta: Point): void {
+  for (const br of branches) {
+    const w = doc.wires.find((x) => x.id === br.wireId);
+    if (!w) continue;
+    const pts = br.atStart ? br.origPoints : [...br.origPoints].reverse();
+    const to = { x: pts[0].x + delta.x, y: pts[0].y + delta.y };
+    const moved = normalizeWirePoints(stretchWireStart(pts, to));
+    w.points = br.atStart ? moved : moved.reverse();
+  }
+}

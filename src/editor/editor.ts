@@ -29,6 +29,9 @@ import {
   captureAttachedWires,
   dragWireSegmentPoints,
   findPinAt,
+  followSegmentBranches,
+  segmentBranches,
+  type SegmentBranch,
   findSnapTarget,
   hitTestDocument,
   hitTestWire,
@@ -48,7 +51,7 @@ import {
 } from "./wire-utils";
 import { connectionConflicts, type ConnectionConflict } from "../model/links";
 import { badWireIds, restoreWires } from "./safe-route";
-import { movedEndContacts, netWiresAt, RouteObstacles, repairWires, safeRoute, sameNetWires, trimToBranchPoints } from "./safe-route";
+import { movedEndContacts, netWiresAt, RouteObstacles, repairSegmentDrop, repairWires, safeRoute, sameNetWires, trimToBranchPoints } from "./safe-route";
 import { computeGuides, guidePeers, type GuideResult } from "./guides";
 import { getSettings, onSettingsChange, updateSettings } from "../model/settings";
 import {
@@ -158,6 +161,8 @@ type Interaction =
   | {
       kind: "drag-wire-segment";
       netsBefore: Map<string, Set<string>>;
+      /** Wires attached to the dragged segment (they follow it). */
+      branches: SegmentBranch[];
       wireId: string;
       segIndex: number;
       origPoints: Point[];
@@ -1500,10 +1505,17 @@ export class Editor {
       if (a && b && (a.y === b.y || a.x === b.x)) {
         const startAnchored = isPointAnchored(this.store.doc, w.points[0], w.id);
         const endAnchored = isPointAnchored(this.store.doc, w.points[w.points.length - 1], w.id);
+        // wires joined to this segment follow it — except at an anchored end, which stays put
+        const p0 = w.points[0], pn = w.points[w.points.length - 1];
+        const branches = segmentBranches(this.store.doc as SchematicDocument, w.id, a, b).filter((br) => {
+          const e = br.atStart ? br.origPoints[0] : br.origPoints[br.origPoints.length - 1];
+          return !((startAnchored && pointsEqual(e, p0)) || (endAnchored && pointsEqual(e, pn)));
+        });
         this.store.beginGesture();
         this.interaction = {
           kind: "drag-wire-segment",
-            netsBefore: sameNetWires(this.store.doc),
+          netsBefore: sameNetWires(this.store.doc),
+          branches,
           wireId: w.id,
           segIndex: hit.segmentIndex,
           origPoints: w.points.map((p) => ({ ...p })),
@@ -1666,6 +1678,7 @@ export class Editor {
                 inter.endAnchored,
                 true,
               );
+              followSegmentBranches(draft, inter.branches, effDelta);
             });
           }
           if (snappedChanged) this.emitState();
@@ -1806,7 +1819,7 @@ export class Editor {
       case "drag-wire-segment":
         if (inter.moved) {
           this.store.update("Move wire segment", (draft) => {
-            repairWires(draft, [inter.wireId], undefined, { nets: inter.netsBefore });
+            repairSegmentDrop(draft, inter.wireId, inter.branches, inter.netsBefore);
             normalizeDocWires(draft);
           });
         }
