@@ -10,7 +10,7 @@ import { sprawled } from "./helpers/sprawl";
 import { mergeWireSeams } from "../src/model/merge";
 import { pathLoopCuts, pathOverlapsItself } from "../src/editor/wire-utils";
 import { repairSegmentDrop, sameNetWires, untangleWires } from "../src/editor/safe-route";
-import { dragWireSegmentPoints, followSegmentBranches, segmentBranches } from "../src/editor/wire-utils";
+import { dragWireSegmentPoints, followSegmentBranches, normalizeDocWires, segmentBranches } from "../src/editor/wire-utils";
 import { connectionConflicts } from "../src/model/links";
 import { packSchematic, validateCompaction } from "../src/layout/pack";
 import { overlappingPartPairs } from "../src/layout/realign";
@@ -202,5 +202,16 @@ describe("store fuzz regressions", () => {
     expect(validateCompaction(s.doc as SchematicDocument, res)).toEqual([]);
     expect(overlappingPartPairs(res.doc).length).toBe(0);
   }, 60_000);
+
+  it("normalizing wires keeps a vertex another wire runs through (it is a junction, not a bend to merge)", () => {
+    const d = emptyDocument();
+    // b's straight-through vertex (100,50) sits on a's vertical segment: that is their contact
+    d.wires.push(
+      { id: "a", points: [{ x: 100, y: 0 }, { x: 100, y: 100 }] },
+      { id: "b", points: [{ x: 50, y: 50 }, { x: 100, y: 50 }, { x: 150, y: 50 }] },
+    );
+    normalizeDocWires(d);
+    expect(d.wires.find((w) => w.id === "b")!.points).toHaveLength(3);
+  });
 });
 

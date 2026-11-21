@@ -18,6 +18,7 @@ import {
   pointInRect,
   pointOnSegment,
   rectsIntersect,
+  SegmentIndex,
   snap,
   wireSegments,
   worldPins,
@@ -94,6 +95,19 @@ export function normalizeDocWires(doc: SchematicDocument): void {
   const keep = new Set<string>();
   for (const [k, n] of vertexOwners) if (n >= 2) keep.add(k);
   for (const c of doc.components) for (const wp of worldPins(c)) keep.add(pointKey(wp.pos));
+  // …and vertices another wire runs THROUGH: a vertex on another wire's segment is a contact
+  // (a junction); merged away it would turn into a plain crossing and disconnect.
+  const index = new SegmentIndex(doc.wires);
+  doc.wires.forEach((w, wi) => {
+    for (const p of w.points) {
+      for (const other of index.wiresAt(p)) {
+        if (other !== wi) {
+          keep.add(pointKey(p));
+          break;
+        }
+      }
+    }
+  });
   const linked = linkedWireIds(doc);
   const kept: Wire[] = [];
   for (const w of doc.wires) {
