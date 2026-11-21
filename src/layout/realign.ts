@@ -120,6 +120,12 @@ function sameConnectivity(before: SchematicDocument, after: SchematicDocument, s
   return !!after.links && JSON.stringify(after.links) === JSON.stringify(before.links) && !drawingRegressed(before, after);
 }
 
+/** Packing-order violations involving one of `ids` (a part pulled off another must change order). */
+function orderRuleOf(msg: string, ids: ReadonlySet<string>): boolean {
+  const m = /^Rule 8: relative [XY] order violated \((\S+) no longer (?:left of|above) (\S+)\)/.exec(msg);
+  return !!m && (ids.has(m[1]) || ids.has(m[2]));
+}
+
 /** Pairs of parts whose bodies overlap (one drawn on top of the other). */
 export function overlappingPartPairs(doc: SchematicDocument): [string, string][] {
   const bs = doc.components.map((c) => ({ id: c.id, b: componentBounds(c) }));
@@ -150,7 +156,7 @@ function separateOverlaps(
   const baseline = prepareValidationBaseline(cur, opts.ids ? { ids: opts.ids } : {});
   const order = new Map(cur.components.map((c, i) => [c.id, i]));
   const offsets: [number, number][] = [];
-  for (let k = 1; k <= 24; k++) {
+  for (let k = 1; k <= 40; k++) {
     for (const [dx, dy] of [[k, 0], [-k, 0], [0, k], [0, -k], [k, k], [-k, k], [k, -k], [-k, -k]]) offsets.push([dx * grid, dy * grid]);
   }
   // its own time budget (only spent when parts overlap): the realign deadline is short
@@ -173,7 +179,20 @@ function separateOverlaps(
     let done = false;
     const b0 = componentBounds(cur.components.find((x) => x.id === target)!);
     const others = cur.components.filter((o) => o.id !== target).map((o) => componentBounds(o));
-    for (const [dx, dy] of offsets) {
+    // in a crowded drawing there may be no room nearby: also just outside the drawing, in line
+    // with where the part is (right of it, below it, left, above)
+    const all = others.reduce((m, b) => ({ x0: Math.min(m.x0, b.x), y0: Math.min(m.y0, b.y), x1: Math.max(m.x1, b.x + b.w), y1: Math.max(m.y1, b.y + b.h) }),
+      { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity });
+    const snapG = (v: number) => Math.round(v / grid) * grid;
+    const outside: [number, number][] = Number.isFinite(all.x0)
+      ? [
+          [snapG(all.x1 + 3 * grid - b0.x), 0],
+          [0, snapG(all.y1 + 3 * grid - b0.y)],
+          [snapG(all.x0 - 3 * grid - b0.w - b0.x), 0],
+          [0, snapG(all.y0 - 3 * grid - b0.h - b0.y)],
+        ]
+      : [];
+    for (const [dx, dy] of [...offsets, ...outside]) {
       if (performance.now() > deadline) break;
       // cheap test first: is the spot clear of every other part (the packer's 2 cells of room)?
       const nb0 = { x: b0.x + dx, y: b0.y + dy, w: b0.w, h: b0.h };
@@ -207,7 +226,8 @@ function separateOverlaps(
         const ign = new Set([id, ...(netsBefore.get(id) ?? [])]);
         return obs.routeIsBad(w.points, ign) && !obs0.routeIsBad(w0.points, ign);
       })) continue;
-      if (ruleProblems(validateAgainstBaseline(baseline, cand), new Set(changed), cand).length > 0) continue;
+      const tset = new Set([target]);
+      if (ruleProblems(validateAgainstBaseline(baseline, cand), new Set(changed), cand).some((v) => !orderRuleOf(v, tset))) continue;
       cur = cand;
       moved.push(target);
       for (const id of changed) rerouted.add(id);
@@ -245,7 +265,11 @@ export function realignProblems(
     if (ids && !ids.has(c.id) && (o.x !== c.x || o.y !== c.y)) out.push(`Realign: fixed component ${c.id} moved`);
   }
   const changedWires = new Set(after.wires.filter((w, i) => JSON.stringify(w.points) !== JSON.stringify(before.wires[i]?.points)).map((w) => w.id));
-  out.push(...ruleProblems(validatePacking(before, after, ids ? { ids } : {}), changedWires, after));
+  // parts pulled off one another necessarily change their order relative to others
+  const overl = (d: SchematicDocument) => new Set(overlappingPartPairs(d).flat());
+  const after0 = overl(after);
+  const separated = new Set([...overl(before)].filter((id) => !after0.has(id)));
+  out.push(...ruleProblems(validatePacking(before, after, ids ? { ids } : {}), changedWires, after).filter((v) => !orderRuleOf(v, separated)));
   if (ids) {
     const wb = new Map(before.wires.map((w) => [w.id, JSON.stringify(w.points)]));
     for (const w of after.wires) if (!ids.has(w.id) && wb.get(w.id) !== JSON.stringify(w.points)) out.push(`Realign: fixed wire ${w.id} changed`);
