@@ -484,12 +484,14 @@ export function dragWireSegmentPoints(
 
   // Ensure neighbors (if any) stay orthogonal:
   // If segIndex > 0 and origPoints[segIndex - 1] was somehow collinear (non-normalized), handle gracefully
+  // (A neighbour can be COLLINEAR with the dragged segment — a straight-through vertex kept as
+  // a junction — and then the bridge is the vertex's original position: the corner at the
+  // neighbour's coordinate, along the dragged segment's direction.)
   if (idxA > 0) {
     const prev = pts[idxA - 1];
     const curr = pts[idxA];
     if (prev.x !== curr.x && prev.y !== curr.y) {
-      const origA = origPoints[segIndex];
-      const bridge = isHoriz ? { x: origA.x, y: curr.y } : { x: curr.x, y: origA.y };
+      const bridge = isHoriz ? { x: curr.x, y: prev.y } : { x: prev.x, y: curr.y };
       pts.splice(idxA, 0, bridge);
       idxB += 1;
     }
@@ -498,8 +500,7 @@ export function dragWireSegmentPoints(
     const curr = pts[idxB];
     const next = pts[idxB + 1];
     if (curr.x !== next.x && curr.y !== next.y) {
-      const origB = origPoints[segIndex + 1];
-      const bridge = isHoriz ? { x: origB.x, y: curr.y } : { x: curr.x, y: origB.y };
+      const bridge = isHoriz ? { x: curr.x, y: next.y } : { x: next.x, y: curr.y };
       pts.splice(idxB + 1, 0, bridge);
     }
   }

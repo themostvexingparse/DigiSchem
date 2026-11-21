@@ -175,5 +175,21 @@ describe("store fuzz regressions", () => {
     expect(overlappingPartPairs(res.doc).length).toBe(0);
     expect(res.qualityAfter.total).toBeLessThan(res.qualityBefore.total);
   }, 60_000);
+
+  it("dragging a segment next to a straight-through junction vertex never leaves a diagonal", () => {
+    const diag = (pts: { x: number; y: number }[]) => pts.some((p, i) => i > 0 && p.x !== pts[i - 1].x && p.y !== pts[i - 1].y);
+    for (const raw of [
+      [[1100, 930], [1100, 940], [1130, 940], [1130, 890], [1350, 890], [1350, 1180], [1470, 1180], [1600, 1180], [1600, 950], [1630, 950]],
+      [[1280, 210], [950, 210], [950, 160], [760, 160], [760, 260], [760, 310], [670, 310], [670, 380], [680, 380]],
+    ]) {
+      const w = raw.map(([x, y]) => ({ x, y }));
+      for (let i = 0; i + 1 < w.length; i++) {
+        for (const d of [-60, 50, 140]) {
+          const r = dragWireSegmentPoints(w, i, w[i].y === w[i + 1].y ? { x: 0, y: d } : { x: d, y: 0 }, true, true, false);
+          expect(diag(r)).toBe(false);
+        }
+      }
+    }
+  });
 });
 
