@@ -1,0 +1,1 @@
+[DigiSchem](https://github.com/themostvexingparse/DigiSchem) · these pages are kept in the repository's [`docs/`](https://github.com/themostvexingparse/DigiSchem/tree/main/docs) folder and published here with `scripts/publish-wiki.sh`.

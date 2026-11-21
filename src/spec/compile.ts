@@ -1,5 +1,5 @@
 /**
- * DSpec compiler: spec text -> SchematicDocument (see docs/SPEC-LANGUAGE.md).
+ * DSpec compiler: spec text -> SchematicDocument (see docs/DSpec-Language.md).
  *
  * Pipeline: parse -> directives -> resolve parts -> build nets -> electrical checks -> place ->
  * add parts one at a time (routing and compacting as the @compact mode says) -> verify.

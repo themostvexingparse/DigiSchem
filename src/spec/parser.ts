@@ -1,5 +1,5 @@
 /**
- * DSpec parser: source text -> statements. Line based; see docs/SPEC-LANGUAGE.md.
+ * DSpec parser: source text -> statements. Line based; see docs/DSpec-Language.md.
  *
  *   # comment                         // comment
  *   @directive arg key=value ...      (state: applies to the statements after it)

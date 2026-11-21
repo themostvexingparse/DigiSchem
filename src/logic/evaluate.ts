@@ -15,7 +15,7 @@ const GATES: Record<string, (xs: boolean[]) => boolean> = {
   xor: (xs) => xs.filter(Boolean).length % 2 === 1,
   xnor: (xs) => xs.filter(Boolean).length % 2 === 0,
   not: (xs) => !xs[0],
-  buffer: (xs) => xs[0],
+  buf: (xs) => xs[0],
 };
 
 /**
@@ -40,7 +40,7 @@ export function evaluateCombinational(doc: SchematicDocument, inputs: Readonly<R
   for (let pass = 0; pass <= gates.length; pass++) {
     let changed = false;
     for (const c of gates) {
-      const n = c.type === "not" || c.type === "buffer" ? 1 : Number(c.props?.inputs ?? 2);
+      const n = c.type === "not" || c.type === "buf" ? 1 : Number(c.props?.inputs ?? 2);
       const xs: boolean[] = [];
       for (let i = 0; i < n; i++) {
         const v = val.get(netOf.get(`${c.id}|in${i}`) ?? "");

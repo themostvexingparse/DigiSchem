@@ -14,7 +14,9 @@ $rel = Join-Path $root "src-tauri\target\release"
 $out = Join-Path $root "builds\$stamp-$commit"
 New-Item -ItemType Directory -Force $out | Out-Null
 Copy-Item "$rel\digischem.exe" "$out\DigiSchem.exe"
-Copy-Item "$rel\WebView2Loader.dll" $out   # required next to the exe (GNU toolchain build)
+# A GNU-toolchain build imports WebView2Loader.dll, which must sit next to the exe. An MSVC build
+# links the loader statically and needs nothing else.
+if (Test-Path "$rel\WebView2Loader.dll") { Copy-Item "$rel\WebView2Loader.dll" $out }
 if ($Installers) {
   Get-ChildItem "$rel\bundle" -Recurse -Include *.msi, *-setup.exe | Copy-Item -Destination $out
 }

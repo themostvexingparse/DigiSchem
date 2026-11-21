@@ -1,0 +1,73 @@
+# Builds the Windows app with the MSVC toolchain, which links the WebView2 loader statically, so
+# DigiSchem.exe runs on its own (it needs only the WebView2 runtime, part of Windows 10 and 11).
+#
+# - Run by hand (Actions > Release > Run workflow): builds and uploads the files as an artifact.
+# - Push a tag like v0.2.0: also creates a DRAFT release with the files; publish it on GitHub.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - run: npm ci
+
+      - name: Type check
+        run: npx tsc --noEmit
+
+      - name: Build
+        run: npx tauri build --target x86_64-pc-windows-msvc
+
+      - uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Check that the exe needs no WebView2Loader.dll
+        shell: pwsh
+        run: |
+          $exe = "src-tauri/target/x86_64-pc-windows-msvc/release/digischem.exe"
+          $deps = dumpbin /dependents $exe | Out-String
+          Write-Output $deps
+          if ($deps -match "WebView2Loader") { throw "digischem.exe still imports WebView2Loader.dll" }
+
+      - name: Collect files
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force out | Out-Null
+          $rel = "src-tauri/target/x86_64-pc-windows-msvc/release"
+          Copy-Item "$rel/digischem.exe" out/DigiSchem.exe
+          Get-ChildItem "$rel/bundle" -Recurse -Include *.msi, *-setup.exe | Copy-Item -Destination out
+          Get-ChildItem out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DigiSchem-windows
+          path: out/*
+
+      - name: Draft release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          files: out/*
+          generate_release_notes: true

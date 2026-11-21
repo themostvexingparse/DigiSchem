@@ -28,3 +28,6 @@ src-tauri/gen/schemas
 builds/
 tests/_scratch*
 dist-cli
+
+# local material that stays out of the repository
+test_samples/
