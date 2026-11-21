@@ -50,6 +50,14 @@ interface PinRef {
 }
 
 /** Spatial index of everything a new/changed wire must not accidentally touch. */
+/**
+ * Router costs, in grid cells of wire length: a route may be up to this many cells longer to
+ * avoid one crossing / one bend; every cell of wire costs 1. Balanced on a set of circuits
+ * (examples, a lab design, random netlists): against the old 60 / 40, 25 / 15 gives shorter
+ * wires with no more crossings; going lower starts trading clean routes for net labels.
+ */
+export const ROUTE_WEIGHTS = { crossing: 25, bend: 15, length: 1, along: 4, blockPin: 30 };
+
 export class RouteObstacles {
   readonly grid: number;
   /** horizontal wire segments by y / vertical by x */
@@ -65,9 +73,36 @@ export class RouteObstacles {
   private pinRows = new Map<number, PinRef[]>();
   private pinCols = new Map<number, PinRef[]>();
   private bodies: { id: string; r: Rect }[] = [];
+  /** the cell right in front of each pin (its way out) -> that pin's position */
+  private escapes = new Map<string, Point>();
 
-  /** `ignoreWires`: wires left out entirely (e.g. other wires that are about to be re-routed). */
-  constructor(doc: SchematicDocument, ignoreWires: ReadonlySet<string> = new Set()) {
+  /** Is p the way out of a pin other than the ones at `ends`? */
+  blocksPin(p: Point, ends: readonly Point[]): boolean {
+    const pin = this.escapes.get(key(p));
+    return !!pin && !ends.some((e) => e.x === pin.x && e.y === pin.y);
+  }
+
+  /** Number of grid cells of the path that sit in front of another pin (see blocksPin). */
+  pinBlockCount(pts: readonly Point[]): number {
+    if (pts.length < 2) return 0;
+    const ends = [pts[0], pts[pts.length - 1]];
+    const g = this.grid;
+    let n = 0;
+    for (let i = 0; i + 1 < pts.length; i++) {
+      const a = pts[i], b = pts[i + 1];
+      const dx = Math.sign(b.x - a.x) * g, dy = Math.sign(b.y - a.y) * g;
+      const steps = Math.round((Math.abs(b.x - a.x) + Math.abs(b.y - a.y)) / g);
+      for (let k = i === 0 ? 0 : 1; k <= steps; k++) if (this.blocksPin({ x: a.x + dx * k, y: a.y + dy * k }, ends)) n++;
+    }
+    return n;
+  }
+
+  /**
+   * `ignoreWires`: wires left out entirely (e.g. other wires that are about to be re-routed).
+   * `keepOut`: extra areas no wire may enter (treated like part bodies).
+   */
+  constructor(doc: SchematicDocument, ignoreWires: ReadonlySet<string> = new Set(), keepOut: readonly Rect[] = []) {
+    for (const r of keepOut) this.bodies.push({ id: "#keep-out", r });
     this.grid = doc.grid || GRID;
     for (const w of doc.wires) {
       // Ignored (about-to-be-rerouted) wires still pin down their ENDPOINTS: a repair keeps
@@ -96,6 +131,8 @@ export class RouteObstacles {
       for (const wp of worldPins(c)) {
         const ref: PinRef = { pos: wp.pos, inst: c, side: wp.pin.side };
         push(this.pinsByKey, key(wp.pos), ref);
+        const ex = pinExitVector(c, wp.pin.side);
+        this.escapes.set(key({ x: wp.pos.x + ex.x * this.grid, y: wp.pos.y + ex.y * this.grid }), wp.pos);
         push(this.pinRows, wp.pos.y, ref);
         push(this.pinCols, wp.pos.x, ref);
       }
@@ -166,12 +203,13 @@ export class RouteObstacles {
   routeCost(pts: readonly Point[], self: ReadonlySet<string> = new Set()): number {
     const g = this.grid;
     return (
-      this.crossings(pts, self) * 60 * g +
-      (pts.length - 2) * 40 * g +
-      pathLength(pts) +
+      this.crossings(pts, self) * ROUTE_WEIGHTS.crossing * g +
+      (pts.length - 2) * ROUTE_WEIGHTS.bend * g +
+      pathLength(pts) * ROUTE_WEIGHTS.length +
       this.edgeHugLength(pts) * 3 +
       // Running ON another wire (even one of the same net) hides it: strongly discouraged.
-      this.overlapLength(pts, self) * 4 * g
+      this.overlapLength(pts, self) * ROUTE_WEIGHTS.along * g +
+      this.pinBlockCount(pts) * ROUTE_WEIGHTS.blockPin * g
     );
   }
 
@@ -445,8 +483,8 @@ export function safeRouteCandidates(
 
 /**
  * Grid maze router (Dijkstra over (cell, heading)): finds a valid route whenever one exists in a
- * window around the endpoints. Cost: length + 40 cells per bend + 60 cells per crossing + 4 per
- * cell running along another wire — the same priorities as routeCost.
+ * window around the endpoints. Cost: the same ROUTE_WEIGHTS as routeCost (length, bends,
+ * crossings, running along another wire).
  */
 function mazeRoute(
   obs: RouteObstacles,
@@ -538,11 +576,12 @@ function mazeRoute(
       if (obs.stepBlocked(here, there)) continue;
       const isGoal = nx === tx && ny === ty;
       if (!isGoal && obs.pointBlocked(there, ignore, allowed, false)) continue;
-      let c = base + g + (isBend ? 40 * g : 0);
+      let c = base + ROUTE_WEIGHTS.length * g + (isBend ? ROUTE_WEIGHTS.bend * g : 0);
+      if (obs.blocksPin(there, [from, to])) c += ROUTE_WEIGHTS.blockPin * g;
       if (!isGoal) {
         const w = obs.wireAt(there, nd % 2 === 0, self);
-        if (w === "cross") c += 60 * g;
-        else if (w === "along") c += 4 * g;
+        if (w === "cross") c += ROUTE_WEIGHTS.crossing * g;
+        else if (w === "along") c += ROUTE_WEIGHTS.along * g;
       }
       const ni = idx(nx, ny, nd);
       if (c < dist[ni]) {
@@ -749,7 +788,7 @@ function repairWiresCore(
         // reject, so that when one wire has no valid route at all the others still get fixed
         // (the search then picks the arrangement with the fewest shorts).
         if (!sameNetPair(i, j) && pathsTouch(P, Q)) cost += SHORT_PENALTY;
-        else cost += pathCrossings(P, Q) * 60 * g;
+        else cost += pathCrossings(P, Q) * ROUTE_WEIGHTS.crossing * g;
       }
       if (cost >= bestCost) continue;
       pick[i] = c;
@@ -1665,7 +1704,7 @@ function advancedJointRepair(
       let v = tt.get(key);
       if (v === undefined) {
         const P = cands[i][c].pts, Q = cands[j][d].pts;
-        v = !sameNetPair(i, j) && pathsTouch(P, Q) ? SHORT_PENALTY : pathCrossings(P, Q) * 60 * g;
+        v = !sameNetPair(i, j) && pathsTouch(P, Q) ? SHORT_PENALTY : pathCrossings(P, Q) * ROUTE_WEIGHTS.crossing * g;
         tt.set(key, v);
       }
       return v;
@@ -1756,7 +1795,7 @@ function advancedJointRepair(
         let c = 0;
         const pts = ids.map((id) => doc.wires.find((x) => x.id === id)!.points);
         ids.forEach((id, i) => (c += obs.routeCost(pts[i], new Set([id]))));
-        for (let i = 0; i < pts.length; i++) for (let j = 0; j < i; j++) c += pathCrossings(pts[i], pts[j]) * 60 * g;
+        for (let i = 0; i < pts.length; i++) for (let j = 0; j < i; j++) c += pathCrossings(pts[i], pts[j]) * ROUTE_WEIGHTS.crossing * g;
         return c;
       };
       const all = [...work, ...extra];

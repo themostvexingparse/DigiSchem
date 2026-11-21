@@ -8,7 +8,7 @@
  * When a pin cannot be reached cleanly the whole net falls back to tunnels (net labels) on each
  * pin, which is always correct; "@route tunnel" asks for that up front.
  */
-import { componentBounds, geometryOf, localToWorld, pointOnSegment, rectsIntersect, worldPins, type WorldPin } from "../model/geometry";
+import { componentBounds, geometryOf, localToWorld, pointOnSegment, rectsIntersect, worldPins, type Rect, type WorldPin } from "../model/geometry";
 import type { ComponentInstance, Point, Rotation, SchematicDocument } from "../model/types";
 import { RouteObstacles, safeRoute } from "../editor/safe-route";
 import { normalizeWirePoints, pinExitVector, routeOrthogonal, segmentIntersectsRect } from "../editor/wire-utils";
@@ -37,6 +37,8 @@ export interface RouteContext {
   links: [string, string][];
   /** probing: on a failed route just mark the net failed (no fallback, no message) */
   probe?: boolean;
+  /** areas no wire may enter (outside the input and output columns) */
+  keepOut?: Rect[];
   onWarn: (net: NetState, message: string) => void;
   onError: (net: NetState, message: string) => void;
 }
@@ -51,12 +53,6 @@ function pinOf(doc: SchematicDocument, t: string): { inst: ComponentInstance; wp
   if (!inst) return null;
   const wp = worldPins(inst).find((p) => p.pin.id === termPin(t));
   return wp ? { inst, wp } : null;
-}
-
-function pathCost(pts: readonly Point[]): number {
-  let len = 0;
-  for (let i = 0; i + 1 < pts.length; i++) len += dist(pts[i], pts[i + 1]);
-  return len + 15 * Math.max(0, pts.length - 2);
 }
 
 interface Target {
@@ -139,7 +135,7 @@ function connect(ctx: RouteContext, net: NetState, t: string): boolean {
   }
   // The net's own wires are obstacles too: a new wire may cross them and end on them (a
   // T-junction), but never run along them (that would hide one wire under another).
-  const obs = new RouteObstacles(ctx.doc);
+  const obs = new RouteObstacles(ctx.doc, undefined, ctx.keepOut);
   let best: { pts: Point[]; tg: Target } | null = null;
   let tried = 0;
   for (const tg of targets) {
@@ -147,7 +143,8 @@ function connect(ctx: RouteContext, net: NetState, t: string): boolean {
     tried++;
     const allowed = new Set(net.wires.map((w) => `${w}@${key(tg.pt)}`));
     const pts = safeRoute(obs, from, tg.pt, { allowed });
-    if (pts && pts.length >= 2 && (!best || pathCost(pts) < pathCost(best.pts))) best = { pts, tg };
+    // the router's own cost (crossings, bends and length, see ROUTE_WEIGHTS) decides between joins
+    if (pts && pts.length >= 2 && (!best || obs.routeCost(pts) < obs.routeCost(best.pts))) best = { pts, tg };
   }
   if (!best) return false;
   addWire(ctx, net, best.pts, t, best.tg.term);
@@ -207,7 +204,7 @@ function attachTunnel(ctx: RouteContext, net: NetState, t: string): void {
     const clear =
       !ctx.doc.components.some((c) => c.id !== p.inst.id && rectsIntersect(r, componentBounds(c))) &&
       !ctx.doc.wires.some((w) => w.points.some((q, i) => i + 1 < w.points.length && segmentIntersectsRect(q, w.points[i + 1], r))) &&
-      (k <= 0 || (!ctx.doc.components.some((c) => rectsIntersect(stubRect(p.wp.pos, at), componentBounds(c)) && c.id !== p.inst.id) && !new RouteObstacles(ctx.doc).routeIsBad([p.wp.pos, at])));
+      (k <= 0 || (!ctx.doc.components.some((c) => rectsIntersect(stubRect(p.wp.pos, at), componentBounds(c)) && c.id !== p.inst.id) && !new RouteObstacles(ctx.doc, undefined, ctx.keepOut).routeIsBad([p.wp.pos, at])));
     if (!clear && !last) continue;
     ctx.doc.components.push(tun);
     net.tunnels.push(id);
@@ -258,17 +255,22 @@ export function routeNet(ctx: RouteContext, net: NetState): void {
       return;
     }
     if (net.fallback === "error") {
+      // reported, and left out of the tree (nothing may join through a pin that is not connected)
       ctx.onError(net, `no clean route for ${termPart(t)}.${termPin(t)} in net ${net.name} (allow @fallback tunnel or direct)`);
       net.failed = true;
-      net.attached.add(t);
       continue;
     }
     if (net.fallback === "direct") {
       const saved: NetState["mode"] = net.mode;
       net.mode = "direct";
-      connect(ctx, net, t);
+      const ok = connect(ctx, net, t);
       net.mode = saved;
-      net.attached.add(t);
+      if (ok) net.attached.add(t);
+      if (!ok) {
+        ctx.onError(net, `could not draw ${termPart(t)}.${termPin(t)} in net ${net.name}, not even with a direct wire`);
+        net.failed = true;
+        continue;
+      }
       ctx.onWarn(net, `net ${net.name}: ${termPart(t)}.${termPin(t)} was drawn with a direct wire that may cross other wires`);
       continue;
     }

@@ -7,7 +7,7 @@
  * stored links both have to equal the spec netlist, or the compile reports an error.
  */
 import { registerBuiltinComponents } from "../components/library";
-import { worldPins } from "../model/geometry";
+import { componentBounds, worldPins } from "../model/geometry";
 import { canonicalLinks, connectionConflicts, driverTerms } from "../model/links";
 import { effectiveProps } from "../model/geometry";
 import type { ComponentInstance, SchematicDocument, TextNote } from "../model/types";
@@ -60,6 +60,8 @@ export interface CompileOptions {
   previous?: SchematicDocument | null;
   /** Called between phases, e.g. to report progress. */
   onPhase?: (phase: string) => void;
+  /** Return the document even when there are errors (for inspecting what went wrong). */
+  keepOnError?: boolean;
 }
 
 export interface CompileStats {
@@ -98,6 +100,7 @@ interface NetDecl {
 
 type Event = { kind: "part"; index: number } | { kind: "groupEnd"; settings: Settings };
 
+const INPUT_TYPES = new Set(["input-pin", "clock", "push-button", "dip-switch", "keypad"]);
 const DIRECTIVES = ["compact", "layout", "route", "fallback", "gap", "spacing", "budget", "name", "strict", "warn", "reuse"];
 
 function word(a: Attr | undefined): string | null {
@@ -237,7 +240,7 @@ export function compileSpec(source: string, opts: CompileOptions = {}): CompileR
     stats.ms.total = Math.round(now() - t0);
     const sev = { error: 0, warning: 1, note: 2 };
     diags.sort((a, b) => a.line - b.line || a.col - b.col || sev[a.severity] - sev[b.severity]);
-    return { doc: diags.some((d) => d.severity === "error") ? null : doc, diagnostics: diags, stats };
+    return { doc: diags.some((d) => d.severity === "error") && !opts.keepOnError ? null : doc, diagnostics: diags, stats };
   };
 
   // ---- 1. parse + directives -------------------------------------------------------------
@@ -451,7 +454,30 @@ export function compileSpec(source: string, opts: CompileOptions = {}): CompileR
     const tr = now();
     ctx.doc = doc;
     ctx.links = links;
-    for (const n of nets) routeNet(ctx, n);
+    // Inputs and outputs stay on the outside: no wire runs left of the leftmost input or right of
+    // the rightmost output.
+    const BIG = 1e6;
+    const ins = doc.components.filter((c) => INPUT_TYPES.has(c.type)).map((c) => componentBounds(c));
+    const outs = doc.components.filter((c) => c.type === "output-pin").map((c) => componentBounds(c));
+    ctx.keepOut = [];
+    if (ins.length) {
+      const x = Math.min(...ins.map((r) => r.x));
+      ctx.keepOut.push({ x: -BIG, y: -BIG, w: x + BIG, h: 2 * BIG });
+    }
+    if (outs.length) {
+      const x = Math.max(...outs.map((r) => r.x + r.w));
+      ctx.keepOut.push({ x, y: -BIG, w: BIG, h: 2 * BIG });
+    }
+    // Short nets first (by the half perimeter of their pins' bounding box): local connections
+    // get the straight paths, long ones go around them.
+    const span = (n: NetState) => {
+      const ps = n.pins.map((t) => doc.components.find((c) => c.id === t.slice(2, t.indexOf("|")))).filter((c) => c).flatMap((c) => worldPins(c!).filter((wp) => n.pins.includes(`p:${c!.id}|${wp.pin.id}`)).map((wp) => wp.pos));
+      if (ps.length < 2) return 0;
+      const xs = ps.map((p) => p.x), ys = ps.map((p) => p.y);
+      return Math.max(...xs) - Math.min(...xs) + Math.max(...ys) - Math.min(...ys);
+    };
+    const order = nets.map((n, i) => ({ n, i, s: span(n) })).sort((a, b) => a.s - b.s || a.i - b.i);
+    for (const { n } of order) routeNet(ctx, n);
     stats.ms.route += Math.round(now() - tr);
   };
   /** `roomy`: an intermediate pass in an incremental mode, leaving lanes for wires still to come */
@@ -633,7 +659,8 @@ export function compileSpec(source: string, opts: CompileOptions = {}): CompileR
   function verifyParts(d: SchematicDocument): { logical: string[]; drawing: string[] } {
     const logical: string[] = [], drawing: string[] = [];
     const spec = new Map<string, string>(); // pin term -> net
-    for (const n of nets) for (const t of n.pins) spec.set(t, n.name);
+    // a net that could not be routed (already reported) is not checked again
+    for (const n of nets) if (!n.failed) for (const t of n.pins) spec.set(t, n.name);
     for (const n of nets) for (const id of n.tunnels) spec.set(`p:${id}|net`, n.name);
     // user tunnels with the same name join nets
     const tunnelUf = new UF();
@@ -643,12 +670,14 @@ export function compileSpec(source: string, opts: CompileOptions = {}): CompileR
       const t = `p:${c.id}|net`;
       if (nm && spec.has(t)) tunnelUf.union(`tn:${nm}`, `net:${spec.get(t)}`);
     }
+    const failedPins = new Set(nets.filter((n) => n.failed).flatMap((n) => n.pins));
     const specNet = (t: string) => (spec.has(t) ? tunnelUf.find(`net:${spec.get(t)}`) : null);
     for (const mode of ["logical", "geometric"] as const) {
       const nl = buildNetlist(d, mode);
       const seen = new Map<string, string>(); // spec net -> doc net id
       for (const dn of nl.nets) {
         const members = dn.pins.map((p) => `p:${p.componentId}|${p.pinId}`);
+        if (members.some((t) => failedPins.has(t))) continue;
         const specs = new Set(members.map(specNet));
         const out = mode === "logical" ? logical : drawing;
         if (specs.size > 1 || (specs.has(null) && members.length > 1)) {
