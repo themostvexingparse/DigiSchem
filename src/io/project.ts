@@ -256,6 +256,11 @@ function generateUniqueId(prefix: string, usedIds: Set<string>): string {
   return candidate;
 }
 
+/** Largest coordinate magnitude accepted from a file. */
+export const MAX_COORD = 1_000_000;
+/** Largest body size (resized parts) accepted from a file. */
+export const MAX_PART_SIZE = 10_000;
+
 function snapCoord(
   rawVal: number,
   grid: number,
@@ -263,6 +268,13 @@ function snapCoord(
   context: string,
   warnings: string[],
 ): number {
+  // The canvas is large but finite: absurd coordinates (a corrupted / hand-edited file) would
+  // make every geometric search over the drawing explode.
+  if (Math.abs(rawVal) > MAX_COORD) {
+    const clamped = Math.sign(rawVal) * MAX_COORD;
+    warnings.push(`${context}: clamped ${axis} from ${rawVal} to ${clamped}`);
+    rawVal = clamped;
+  }
   const snapped = normalizeZero(snap(rawVal, grid));
   if (snapped !== rawVal) {
     warnings.push(`${context}: snapped ${axis} from ${rawVal} to ${snapped} (grid ${grid})`);
@@ -379,7 +391,11 @@ function sanitizeComponents(
       const w = coerceFiniteNumber(sz?.w);
       const h = coerceFiniteNumber(sz?.h);
       if (w && h && w.value > 0 && h.value > 0) {
-        size = { w: Math.max(grid, Math.round(w.value / grid) * grid), h: Math.max(grid, Math.round(h.value / grid) * grid) };
+        const fit = (v: number) => Math.min(MAX_PART_SIZE, Math.max(grid, Math.round(v / grid) * grid));
+        size = { w: fit(w.value), h: fit(h.value) };
+        if (size.w !== Math.round(w.value / grid) * grid || size.h !== Math.round(h.value / grid) * grid) {
+          if (w.value > MAX_PART_SIZE || h.value > MAX_PART_SIZE) warnings.push(`${ctx} (${type}): clamped size to ${MAX_PART_SIZE}`);
+        }
       } else {
         warnings.push(`${ctx} (${type}): ignored invalid size`);
       }
@@ -407,6 +423,7 @@ function sanitizeWires(
   grid: number,
   usedIds: Set<string>,
   warnings: string[],
+  linkedIds: ReadonlySet<string> = new Set(),
 ): Wire[] {
   if (rawList === undefined) {
     warnings.push("Missing wires array, defaulting to []");
@@ -469,15 +486,21 @@ function sanitizeWires(
       }
     }
 
-    // Drop zero-length segments / duplicate points; a wire that collapses is meaningless.
+    // Drop zero-length segments / duplicate points; a wire that collapses is meaningless —
+    // unless it carries stored connections (a pin moved onto its other end): those are kept as a
+    // zero-length wire, exactly as the editor keeps them, so it can stretch back out.
     const cleaned: Point[] = [];
     for (const p of points) {
       const last = cleaned[cleaned.length - 1];
       if (!last || last.x !== p.x || last.y !== p.y) cleaned.push(p);
     }
     if (cleaned.length < 2) {
-      warnings.push(`${ctx}: dropped zero-length wire`);
-      continue;
+      if (typeof item.id === "string" && linkedIds.has(item.id)) {
+        cleaned.push({ ...cleaned[0] });
+      } else {
+        warnings.push(`${ctx}: dropped zero-length wire`);
+        continue;
+      }
     }
     if (cleaned.some((p, j) => j > 0 && p.x !== cleaned[j - 1].x && p.y !== cleaned[j - 1].y)) {
       warnings.push(`${ctx}: wire has a diagonal segment (kept as drawn)`);
@@ -665,7 +688,14 @@ export function parseProjectWithWarnings(text: string): ParseProjectResult {
 
   const usedIds = new Set<string>();
   const components = sanitizeComponents(migrated.components, grid, usedIds, warnings);
-  const wires = sanitizeWires(migrated.wires, grid, usedIds, warnings);
+  const linkedWires = new Set<string>();
+  if (Array.isArray(migrated.links)) {
+    for (const e of migrated.links) {
+      if (!Array.isArray(e)) continue;
+      for (const t of e) if (typeof t === "string" && t.startsWith("w:")) linkedWires.add(t.slice(2));
+    }
+  }
+  const wires = sanitizeWires(migrated.wires, grid, usedIds, warnings, linkedWires);
   const texts = sanitizeTexts(migrated.texts, grid, usedIds, warnings);
   const meta = sanitizeMeta(migrated.meta, warnings);
 

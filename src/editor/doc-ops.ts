@@ -37,6 +37,7 @@ import {
   textBounds,
 } from "./wire-utils";
 import { movedEndContacts, repairWires, sameNetWires } from "./safe-route";
+import { terminalsOf } from "../model/links";
 
 /**
  * Run `mutate` (which may rotate / mirror / re-parameterize components) and then
@@ -310,7 +311,20 @@ export function sweepOrphanWires(doc: SchematicDocument, seeds: readonly Point[]
   const removedSegs: [Point, Point][] = [];
   const removed: string[] = [];
   const touchesRemoved = (p: Point) => removedSegs.some(([a, b]) => pointOnSegment(p, a, b));
+  // With stored connectivity: a wire still linked to two or more surviving terminals carries a
+  // connection between them (even if the drawing no longer shows it) — it is never an orphan.
+  const linkCount = (wid: string, alive: Set<string>): number => {
+    if (!doc.links) return 0;
+    const me = `w:${wid}`;
+    let n = 0;
+    for (const [a, b] of doc.links) {
+      const other = a === me ? b : b === me ? a : null;
+      if (other && alive.has(other)) n++;
+    }
+    return n;
+  };
   for (let guard = 0; guard < 10000; guard++) {
+    const alive = terminalsOf(doc);
     const pinKeys = new Set<string>();
     for (const c of doc.components) for (const wp of worldPins(c)) pinKeys.add(key(wp.pos));
     const idx = new SegmentIndex(doc.wires);
@@ -323,7 +337,7 @@ export function sweepOrphanWires(doc: SchematicDocument, seeds: readonly Point[]
       if (w.points.length < 2) return true;
       return [w.points[0], w.points[w.points.length - 1]].some(
         (e) => (frontier.has(key(e)) || touchesRemoved(e)) && dangling(wi, e),
-      );
+      ) && linkCount(w.id, alive) < 2;
     });
     if (victim < 0) break;
     const w = doc.wires[victim];

@@ -13,7 +13,7 @@ import type { ComponentInstance, Point, SchematicDocument } from "../model/types
 import type { Side } from "../model/component-def";
 import { GRID } from "../model/component-def";
 import { componentBounds, SegmentIndex, worldPins, type Rect } from "../model/geometry";
-import { normalizeWirePoints, pinExitVector, pruneCollapsedWires, stretchWireStart } from "./wire-utils";
+import { normalizeWirePoints, pathLoopCuts, pinExitVector, pruneCollapsedWires, stretchWireStart } from "./wire-utils";
 import { buildNetlist } from "../io/netlist";
 import { getSettings } from "../model/settings";
 import { connectionConflicts } from "../model/links";
@@ -384,8 +384,12 @@ export function safeRouteCandidates(
   const xs = [from.x, to.x], ys = [from.y, to.y];
   const channelsX: number[] = [];
   const channelsY: number[] = [];
-  for (let x = Math.floor(lo(xs) / g) * g; x <= hi(xs); x += g) channelsX.push(x);
-  for (let y = Math.floor(lo(ys) / g) * g; y <= hi(ys); y += g) channelsY.push(y);
+  // every grid line between (and a little around) the ends — sampled when they are far apart
+  const MAX_CHANNELS = 400;
+  const stepX = g * Math.max(1, Math.ceil((hi(xs) - lo(xs)) / g / MAX_CHANNELS));
+  const stepY = g * Math.max(1, Math.ceil((hi(ys) - lo(ys)) / g / MAX_CHANNELS));
+  for (let x = Math.floor(lo(xs) / g) * g; x <= hi(xs); x += stepX) channelsX.push(x);
+  for (let y = Math.floor(lo(ys) / g) * g; y <= hi(ys); y += stepY) channelsY.push(y);
 
   const prefer = opts.prefer;
   const preferCost = (pts: readonly Point[]) => {
@@ -1163,7 +1167,80 @@ export function repairWires(
   allowed?: ReadonlySet<string>,
   opts: RepairOptions = {},
 ): void {
-  if ((opts.depth ?? 0) > 0 || !doc.links || opts.light) {
+  if ((opts.depth ?? 0) > 0) {
+    repairWiresGuarded(doc, wireIds, allowed, opts);
+    return;
+  }
+  const ids = [...wireIds];
+  const entry = new Map(doc.wires.map((w) => [w.id, JSON.stringify(w.points)]));
+  repairWiresTop(doc, ids, allowed, opts);
+  // Stretching and re-routing join pieces of paths: a wire may now run in a loop over itself
+  // (e.g. a pin mirrored back across its own wire). Cut such loops.
+  const given = new Set(ids);
+  untangleWires(doc, doc.wires.filter((w) => given.has(w.id) || entry.get(w.id) !== JSON.stringify(w.points)).map((w) => w.id));
+}
+
+/** Terminals a wire touches in the drawing (the contact rule of `geometricContacts`). */
+function wireContacts(doc: SchematicDocument, w: { id: string; points: readonly Point[] }, pins: readonly { t: string; p: Point }[]): Set<string> {
+  const out = new Set<string>();
+  const P = w.points;
+  const onW = (q: Point) => P.some((a, i) => i + 1 < P.length && onSeg(q, a, P[i + 1]));
+  for (const o of doc.wires) {
+    if (o.id === w.id || o.points.length < 2) continue;
+    const Q = o.points;
+    const onO = (q: Point) => Q.some((a, i) => i + 1 < Q.length && onSeg(q, a, Q[i + 1]));
+    if (Q.some(onW) || P.some(onO)) out.add(`w:${o.id}`);
+  }
+  for (const { t, p } of pins) if (onW(p)) out.add(t);
+  return out;
+}
+
+/**
+ * Cut loops out of wires that run over themselves (a detour that comes back onto its own path) —
+ * only where no other wire or pin is attached to the loop, so the wire touches exactly what it
+ * touched before.
+ */
+export function untangleWires(doc: SchematicDocument, ids: Iterable<string>): void {
+  let pins: { t: string; p: Point }[] | null = null;
+  for (const id of ids) {
+    const w = doc.wires.find((x) => x.id === id);
+    if (!w || w.points.length < 4) continue;
+    for (let guard = 0; guard < 8; guard++) {
+      const cuts = pathLoopCuts(w.points);
+      if (cuts.length === 0) break;
+      pins ??= doc.components.flatMap((c) => worldPins(c).map((wp) => ({ t: `p:${c.id}|${wp.pin.id}`, p: wp.pos })));
+      const was = wireContacts(doc, w, pins);
+      // what the wire is CONNECTED to (stored links); without links, everything it touches
+      const me = `w:${w.id}`;
+      const linked = doc.links
+        ? new Set(doc.links.filter(([a, b]) => a === me || b === me).map(([a, b]) => (a === me ? b : a)))
+        : was;
+      const orig = w.points;
+      let done = false;
+      for (const pts of cuts) {
+        w.points = pts;
+        // never a new contact; only accidental ones (not connections) may go with the loop
+        const now = wireContacts(doc, w, pins);
+        if ([...now].every((t) => was.has(t)) && [...was].every((t) => now.has(t) || !linked.has(t))) {
+          done = true;
+          break;
+        }
+      }
+      if (!done) {
+        w.points = orig;
+        break;
+      }
+    }
+  }
+}
+
+function repairWiresTop(
+  doc: SchematicDocument,
+  wireIds: Iterable<string>,
+  allowed: ReadonlySet<string> | undefined,
+  opts: RepairOptions,
+): void {
+  if (!doc.links || opts.light) {
     repairWiresGuarded(doc, wireIds, allowed, opts);
     return;
   }
@@ -1257,7 +1334,7 @@ function repairWiresGuarded(
   const postEdit = new RouteObstacles(doc);
   const strandedPass: { other: string; end: "start" | "end"; wid: string }[] = [];
 
-  type Split = { wid: string; legS?: string; legE?: string; mid: Point[] | null; branches: BranchPoint[]; keep: Set<string>; stranded: BranchPoint[] };
+  type Split = { wid: string; legS?: string; legE?: string; mid: Point[] | null; branches: BranchPoint[]; keep: Set<string>; stranded: BranchPoint[]; stretched: Point[] };
   const splits: Split[] = [];
   const legIds: string[] = [];
   const passthrough: string[] = [];
@@ -1302,7 +1379,7 @@ function repairWiresGuarded(
     const tS = startMoved ? Math.min(...ts) : 0;
     const tE = endMoved ? Math.max(...ts) : total;
     const keep = new Set(branches.map((b) => `${b.p.x},${b.p.y}`));
-    const split: Split = { wid, mid: null, branches, keep, stranded };
+    const split: Split = { wid, mid: null, branches, keep, stranded, stretched: S.map((p) => ({ ...p })) };
     // the untouched middle: from the first to the last branch point
     const mid = cutAfter(cutBefore(orig, tE), tS);
     split.mid = mid.length >= 2 && tE > tS ? mid : null;
@@ -1368,7 +1445,12 @@ function repairWiresGuarded(
     const legS = sp.legS ? doc.wires.find((x) => x.id === sp.legS)?.points ?? [] : [];
     const legE = sp.legE ? doc.wires.find((x) => x.id === sp.legE)?.points ?? [] : [];
     const merged = [...legS, ...(sp.mid ?? []), ...legE];
-    w.points = normalizeWirePoints(merged, sp.keep);
+    // The pieces must join end to end (a wire whose path runs over itself can confuse the arc
+    // positions of its branch points): if they do not, keep the plainly stretched wire.
+    const joins = (a: Point[], b: Point[]) => a.length === 0 || b.length === 0 || key(a[a.length - 1]) === key(b[0]);
+    const mid = sp.mid ?? [];
+    const contiguous = joins(legS, mid) && joins(mid, legE) && (mid.length > 0 || joins(legS, legE));
+    w.points = contiguous ? normalizeWirePoints(merged, sp.keep) : sp.stretched.map((p) => ({ ...p }));
     for (const b of sp.branches) {
       if (b.otherEnd && !onPath(w.points, b.p)) detached.push({ other: b.other, end: b.otherEnd, wid: sp.wid });
     }

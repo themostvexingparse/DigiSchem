@@ -8,7 +8,7 @@
 import type { Point, SchematicDocument, Wire } from "./types";
 import { SegmentIndex, worldPins } from "./geometry";
 import { canonicalLinks } from "./links";
-import { normalizeWirePoints } from "../editor/wire-utils";
+import { normalizeWirePoints, pathOverlapsItself } from "../editor/wire-utils";
 
 const key = (p: Point) => `${p.x},${p.y}`;
 
@@ -59,6 +59,8 @@ function findSeam(doc: SchematicDocument): { a: Wire; b: Wire; at: Point } | nul
     if (touching.length > 0) continue;
     // the merged path must not double back over itself along one line through the seam
     if (foldsBack(a, b, at)) continue;
+    // …nor anywhere else (two wires that already overlap stay two wires)
+    if (pathOverlapsItself(mergedPath(a, b, at))) continue;
     return { a, b, at };
   }
   return null;
@@ -80,10 +82,14 @@ function foldsBack(a: Wire, b: Wire, at: Point): boolean {
   return d1 !== d2;
 }
 
-function applyMerge(doc: SchematicDocument, a: Wire, b: Wire, at: Point): void {
+function mergedPath(a: Wire, b: Wire, at: Point): Point[] {
   const pa = oriented(a, at);
   const pb = oriented(b, at).reverse();
-  a.points = normalizeWirePoints([...pa, ...pb.slice(1)]);
+  return normalizeWirePoints([...pa, ...pb.slice(1)]);
+}
+
+function applyMerge(doc: SchematicDocument, a: Wire, b: Wire, at: Point): void {
+  a.points = mergedPath(a, b, at);
   doc.wires = doc.wires.filter((w) => w !== b);
   if (doc.links) {
     const A = `w:${a.id}`, B = `w:${b.id}`;

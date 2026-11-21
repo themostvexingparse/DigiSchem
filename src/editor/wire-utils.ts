@@ -773,3 +773,63 @@ export function itemsInRect(
   }
   return ids;
 }
+
+/** Point where two orthogonal segments meet, nearest along the first one to its start (or null). */
+function segMeet(a: Point, b: Point, c: Point, d: Point): Point | null {
+  const lo = (u: number, v: number) => Math.min(u, v), hi = (u: number, v: number) => Math.max(u, v);
+  const hA = a.y === b.y, hC = c.y === d.y;
+  if (hA && hC) {
+    if (a.y !== c.y) return null;
+    const l = Math.max(lo(a.x, b.x), lo(c.x, d.x)), r = Math.min(hi(a.x, b.x), hi(c.x, d.x));
+    if (l > r) return null;
+    return { x: b.x >= a.x ? l : r, y: a.y };
+  }
+  if (!hA && !hC) {
+    if (a.x !== c.x) return null;
+    const l = Math.max(lo(a.y, b.y), lo(c.y, d.y)), r = Math.min(hi(a.y, b.y), hi(c.y, d.y));
+    if (l > r) return null;
+    return { x: a.x, y: b.y >= a.y ? l : r };
+  }
+  const [h0, h1, v0, v1] = hA ? [a, b, c, d] : [c, d, a, b];
+  const x = v0.x, y = h0.y;
+  if (x < lo(h0.x, h1.x) || x > hi(h0.x, h1.x) || y < lo(v0.y, v1.y) || y > hi(v0.y, v1.y)) return null;
+  return { x, y };
+}
+
+/**
+ * Candidate shortcuts of a path that meets itself: the stretch between two meeting segments is
+ * a loop (it goes somewhere and comes back) and can be cut out. Ordered by the length removed,
+ * largest first. Each candidate only uses pieces of the original path.
+ */
+export function pathLoopCuts(points: readonly Point[]): Point[][] {
+  const out: { pts: Point[]; gain: number }[] = [];
+  const n = points.length;
+  const len = (pts: readonly Point[]) => pts.reduce((s, p, i) => (i ? s + Math.abs(p.x - pts[i - 1].x) + Math.abs(p.y - pts[i - 1].y) : 0), 0);
+  const total = len(points);
+  for (let i = 0; i + 1 < n; i++) {
+    for (let j = n - 2; j >= i + 2; j--) {
+      const x = segMeet(points[i], points[i + 1], points[j], points[j + 1]);
+      if (!x) continue;
+      const pts = normalizeWirePoints([...points.slice(0, i + 1), x, ...points.slice(j + 1)]);
+      const gain = total - len(pts);
+      if (gain > 0) out.push({ pts, gain });
+    }
+  }
+  return out.sort((p, q) => q.gain - p.gain).map((c) => c.pts);
+}
+
+/** True if two segments of one orthogonal path share a stretch of positive length. */
+export function pathOverlapsItself(pts: readonly Point[]): boolean {
+  for (let i = 0; i + 1 < pts.length; i++) {
+    for (let j = i + 1; j + 1 < pts.length; j++) {
+      const [a, b, c, d] = [pts[i], pts[i + 1], pts[j], pts[j + 1]];
+      if (a.y === b.y && c.y === d.y && a.y === c.y && a.x !== b.x && c.x !== d.x) {
+        if (Math.min(Math.max(a.x, b.x), Math.max(c.x, d.x)) > Math.max(Math.min(a.x, b.x), Math.min(c.x, d.x))) return true;
+      }
+      if (a.x === b.x && c.x === d.x && a.x === c.x && a.y !== b.y && c.y !== d.y) {
+        if (Math.min(Math.max(a.y, b.y), Math.max(c.y, d.y)) > Math.max(Math.min(a.y, b.y), Math.min(c.y, d.y))) return true;
+      }
+    }
+  }
+  return false;
+}

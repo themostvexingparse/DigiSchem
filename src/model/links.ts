@@ -5,7 +5,8 @@
  * DocumentStore keeps it up to date with one rule, applied after every edit:
  *   - links between items that still exist are KEPT — so moving, rotating, resizing or compacting
  *     can never connect or disconnect anything, however the drawing ends up overlapping;
- *   - links of deleted wires / components / pins are dropped;
+ *   - links of deleted wires / components / pins are dropped — but what was connected THROUGH a
+ *     removed pin stays connected (only deleting a wire cuts a connection);
  *   - only terminals that are NEW in this edit (a drawn wire, a placed or pasted part, a pin added
  *     by a property change) are connected by touch, from the drawing.
  * Where the drawing and the links disagree, `connectionConflicts` reports it so the editor can
@@ -110,12 +111,49 @@ export function inferLinks(doc: SchematicDocument): [string, string][] {
   return canonicalLinks(linksFromContacts(doc, geometricContacts(doc), [], true));
 }
 
+/**
+ * A removed PIN (its part deleted, or the pin dropped by a property change) is not a conductor
+ * anyone meant to cut: whatever was connected THROUGH it stays connected to each other. (A removed
+ * wire is different — deleting a wire is how connections are cut.)
+ */
+function bridgeRemovedPins(prev: readonly [string, string][], now: ReadonlySet<Terminal>): [string, string][] {
+  const adj = new Map<string, string[]>();
+  for (const [a, b] of prev) {
+    (adj.get(a) ?? adj.set(a, []).get(a)!).push(b);
+    (adj.get(b) ?? adj.set(b, []).get(b)!).push(a);
+  }
+  const gone = (t: string) => t.startsWith("p:") && !now.has(t);
+  const seen = new Set<string>();
+  const out: [string, string][] = [];
+  for (const t of adj.keys()) {
+    if (!gone(t) || seen.has(t)) continue;
+    // all surviving terminals reachable from t through removed pins
+    const survivors = new Set<string>();
+    const stack = [t];
+    seen.add(t);
+    while (stack.length) {
+      const x = stack.pop()!;
+      for (const y of adj.get(x) ?? []) {
+        if (now.has(y)) survivors.add(y);
+        else if (gone(y) && !seen.has(y)) {
+          seen.add(y);
+          stack.push(y);
+        }
+      }
+    }
+    const list = [...survivors].sort();
+    for (let i = 1; i < list.length; i++) out.push([list[0], list[i]]);
+  }
+  return out;
+}
+
 /** Update `draft.links` after an edit from `before` (see the module comment). */
 export function maintainLinks(before: SchematicDocument, draft: SchematicDocument): void {
   const prev = before.links ?? inferLinks(before);
   const now = terminalsOf(draft);
   const old = before.links || before.wires.length || before.components.length ? terminalsOf(before) : new Set<Terminal>();
   const kept: [string, string][] = prev.filter(([a, b]) => now.has(a) && now.has(b));
+  kept.push(...bridgeRemovedPins(prev, now));
   const fresh = new Set<Terminal>();
   for (const t of now) if (!old.has(t)) fresh.add(t);
   if (fresh.size > 0) {
