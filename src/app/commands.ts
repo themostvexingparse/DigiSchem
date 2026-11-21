@@ -162,7 +162,10 @@ export class AppCommands {
     const t0 = performance.now();
     notify(sel.size > 0 ? "Compacting selection… (searching layouts)" : "Compacting layout… (searching layouts)");
     packInBackground(before, ids)
-      .then(({ res, problems }) => {
+      .then(async ({ res, problems }) => {
+        // a mouse gesture in progress (e.g. the mouse held on a part) must end first: the result
+        // would otherwise land inside the drag and be partly undone by it
+        for (let i = 0; i < 600 && (this.editor.isBusy() || this.store.inGesture()); i++) await new Promise((r) => setTimeout(r, 50));
         if (this.store.doc !== before) {
           notify("The schematic changed while compacting — run Compact layout again.", true);
           return;
