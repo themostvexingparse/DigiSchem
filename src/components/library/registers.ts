@@ -338,7 +338,7 @@ const ringCounterDef: ComponentDef = {
       kind: "enum",
       options: [
         { value: "ring", label: "Ring (one-hot)" },
-        { value: "johnson", label: "Johnson (twisted ring)" },
+        { value: "johnson", label: "Johnson" },
       ],
     },
     { key: "enable", label: "Enable Pin (EN)", kind: "bool" },

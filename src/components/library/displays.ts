@@ -50,16 +50,16 @@ const sevenSegDef: ComponentDef = {
   name: "7-Segment Display",
   category: "Displays",
   labelPrefix: "DISP",
-  description: "Seven-segment display with one input per segment (a to g) and an optional decimal point",
+  description: "Seven-segment display with one input per segment (a to g) and an optional decimal point. Common cathode lights a segment at 1, common anode at 0",
   props: [
-    { key: "decimalPoint", label: "Decimal Point (dp)", kind: "bool" },
+    { key: "decimalPoint", label: "Decimal Point", kind: "bool" },
     {
       key: "common",
       label: "Type",
       kind: "enum",
       options: [
-        { value: "cathode", label: "Common cathode (segment on at 1)" },
-        { value: "anode", label: "Common anode (segment on at 0)" },
+        { value: "cathode", label: "Common cathode" },
+        { value: "anode", label: "Common anode" },
       ],
     },
   ],
@@ -90,7 +90,7 @@ const hexDisplayDef: ComponentDef = {
   category: "Displays",
   labelPrefix: "HEX",
   description: "Shows a 4-bit value as one hexadecimal digit (0 to F), with an optional decimal point",
-  props: [PIN_MODE_PROP, { key: "decimalPoint", label: "Decimal Point (dp)", kind: "bool" }],
+  props: [PIN_MODE_PROP, { key: "decimalPoint", label: "Decimal Point", kind: "bool" }],
   defaultProps: { pinMode: "bus", decimalPoint: false },
   geometry: (props) => hexDisplayLayout(props).geometry,
   symbol(props) {

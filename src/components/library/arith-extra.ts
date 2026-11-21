@@ -98,7 +98,7 @@ const bitExtenderDef: ComponentDef = {
   name: "Bit Extender",
   category: "Arithmetic",
   labelPrefix: "EXT",
-  description: "Widens (or truncates) a bus: sign extension, zero extension, or fill with ones",
+  description: "Widens (or truncates) a bus: sign extension copies the top bit, zero extension adds 0s, or fill with ones",
   props: [
     { key: "inWidth", label: "Input Width", kind: "int", min: 1, max: 32 },
     { key: "outWidth", label: "Output Width", kind: "int", min: 1, max: 32 },
@@ -107,7 +107,7 @@ const bitExtenderDef: ComponentDef = {
       label: "Extension",
       kind: "enum",
       options: [
-        { value: "sign", label: "Sign extend (copy the top bit)" },
+        { value: "sign", label: "Sign extend" },
         { value: "zero", label: "Zero extend" },
         { value: "one", label: "Fill with ones" },
       ],
@@ -165,11 +165,11 @@ const bcd7Def: ComponentDef = {
   name: "BCD to 7-Segment Decoder",
   category: "Plexers",
   labelPrefix: "DEC",
-  description: "Turns a BCD digit (0 to 9) into segment signals a to g for a 7-segment display (like the 7447 / 7448)",
+  description: "Turns a BCD digit (0 to 9) into segment signals a to g for a 7-segment display (like the 7447 / 7448). Active-low outputs drive a common-anode display; LT' lights every segment, BI' blanks them",
   props: [
     PIN_MODE_PROP,
-    { key: "activeLow", label: "Active-Low Outputs (common anode)", kind: "bool" },
-    { key: "controls", label: "Lamp Test / Blanking Inputs", kind: "bool" },
+    { key: "activeLow", label: "Active-Low Outputs", kind: "bool" },
+    { key: "controls", label: "LT / BI Inputs", kind: "bool" },
   ],
   defaultProps: { pinMode: "bits", activeLow: false, controls: false },
   resizable: "both",
