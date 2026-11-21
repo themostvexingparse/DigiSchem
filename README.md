@@ -1,57 +1,32 @@
 <p align="center">
-  <img src="assets/logo/logo.svg" alt="DigiSchem" width="360">
+  <img src="docs/images/banner.svg" alt="DigiSchem: digital logic schematics, drawn or written as code" width="100%">
 </p>
 
 <p align="center">
-  A desktop editor for digital logic schematics, with a text language for writing them as code.
+  <a href="https://github.com/themostvexingparse/DigiSchem/wiki"><b>Wiki</b></a> ·
+  <a href="https://github.com/themostvexingparse/DigiSchem/releases"><b>Download</b></a> ·
+  <a href="docs/Getting-Started.md"><b>Getting started</b></a> ·
+  <a href="docs/DSpec-Language.md"><b>DSpec language</b></a> ·
+  <a href="docs/Components.md"><b>Components</b></a>
 </p>
-
----
-
-DigiSchem draws digital circuits: gates, flip-flops, registers, multiplexers, adders, memories
-and more, wired together on a grid. It is built for lab reports and course work, where a
-schematic has to be clear, correct and printable. It is also built for circuits written as text:
-you (or a language model) can describe a circuit in **DSpec**, and the compiler places the parts,
-routes the wires, tidies the layout and checks that the drawing connects exactly what the text
-says.
 
 <p align="center">
-  <img src="docs/images/adder4.svg" alt="A 4-bit ripple-carry adder, built from DSpec text" width="720">
-  <br><em>A 4-bit ripple-carry adder, compiled from <a href="examples/adder4.dspec">examples/adder4.dspec</a>.</em>
+  <a href="https://github.com/themostvexingparse/DigiSchem/actions/workflows/release.yml"><img src="https://github.com/themostvexingparse/DigiSchem/actions/workflows/release.yml/badge.svg" alt="Release build"></a>
+  <img src="https://img.shields.io/badge/Tauri-v2-24c8db?logo=tauri&logoColor=white" alt="Tauri v2">
+  <img src="https://img.shields.io/badge/TypeScript-strict-3178c6?logo=typescript&logoColor=white" alt="TypeScript">
+  <img src="https://img.shields.io/badge/platform-Windows%20%7C%20browser-2463d1" alt="Platforms">
 </p>
 
-## Features
+**DigiSchem** is a desktop editor for digital logic schematics: gates, flip-flops, registers,
+multiplexers, adders, memories and more, wired together on a grid. It is made for lab reports and
+course work, where a schematic has to be clear, correct and printable, and for circuits written as
+text, by you or by a language model.
 
-- **80 components** in 11 categories, all parametric: changing a gate's input count, a MUX's
-  select bits or a register's width adds or removes real, individually connectable pins.
-- **An editor that keeps connections honest.** Wires snap to pins, moving parts drags their
-  wires along, and the stored connections never change by accident. Anywhere the drawing and
-  the connections disagree is marked in red and explained.
-- **Clean automatic routing.** Wires avoid touching anything they do not connect, and balance
-  length, bends and crossings.
-- **Compact layout** (Ctrl+Shift+L) tightens a sprawling schematic while keeping it readable:
-  parts are pulled together, crowded wires and crossings push back, and the wires are then
-  relaxed so they run straight, evenly spaced, and in tidy staircases.
-- **DSpec**, a small language for schematics: write the parts and connections, press
-  Ctrl+Enter, get a drawing. A command-line compiler is included, and a "Copy guide for AI"
-  button prepares everything a language model needs to write DSpec.
-- **Logic tools**: an exact boolean minimizer (Karnaugh maps / Quine-McCluskey), a generator that
-  draws a minimized function as a two-level AND-OR schematic, and an evaluator that checks a
-  drawing against a truth table.
-- **Export** to SVG and PNG (color, monochrome for printing, or dark), and to a text netlist.
+## Draw it, or write it
 
-## Quick start
-
-```sh
-git clone https://github.com/themostvexingparse/DigiSchem.git
-cd DigiSchem
-npm install
-npm run dev          # the editor in a browser at http://localhost:1420
-npm run tauri dev    # or as a desktop app (needs Rust)
-```
-
-Then press **?** in the editor for the keyboard shortcuts, or **Ctrl+K** to write a circuit as
-code:
+<table>
+<tr>
+<td width="46%" valign="top">
 
 ```dspec
 @name "Half adder"
@@ -66,24 +41,109 @@ X1 -> S
 G1 -> C
 ```
 
+</td>
+<td width="54%" valign="middle" align="center">
+  <img src="docs/images/half-adder.svg" alt="The half adder drawn by the compiler" width="100%">
+</td>
+</tr>
+</table>
+
+Describe a circuit in **DSpec** (Ctrl+K in the editor) and press Ctrl+Enter: the compiler places
+the parts, routes the wires, tidies the layout, and checks that the drawing connects exactly what
+the text says. Or draw it by hand with the mouse. Either way it is the same schematic, and
+**Read from schematic** turns any drawing back into code.
+
+## Features
+
+<table>
+<tr>
+<td width="33%" valign="top">
+
+**80 parametric components**<br>
+Gates, plexers, arithmetic, latches, flip-flops, registers, counters, memories, displays,
+transistors and generic blocks. Changing a property adds or removes real pins.
+
+</td>
+<td width="33%" valign="top">
+
+**Connections you can trust**<br>
+What connects to what is stored apart from the drawing. Anywhere the two disagree is marked in
+red and explained in plain words.
+
+</td>
+<td width="33%" valign="top">
+
+**Clean routing**<br>
+Wires never touch what they do not connect, and balance length, bends and crossings.
+
+</td>
+</tr>
+<tr>
+<td valign="top">
+
+**Compact layout**<br>
+Ctrl+Shift+L tightens a sprawling schematic: parts are pulled together, crowded wires push back,
+and wires relax into straight runs and even staircases.
+
+</td>
+<td valign="top">
+
+**Logic tools**<br>
+Exact boolean minimization with Karnaugh maps, a generator that draws two-level AND-OR circuits,
+and a truth-table checker for drawings.
+
+</td>
+<td valign="top">
+
+**Export**<br>
+SVG and PNG in color, monochrome for printing, or dark; and a text netlist.
+
+</td>
+</tr>
+</table>
+
+<p align="center">
+  <img src="docs/images/adder4.svg" alt="A 4-bit ripple-carry adder compiled from DSpec" width="88%">
+  <br><sub>A 4-bit ripple-carry adder, compiled from <a href="examples/adder4.dspec"><code>examples/adder4.dspec</code></a>.</sub>
+</p>
+
+## Get started
+
+**Download** the Windows app from [Releases](https://github.com/themostvexingparse/DigiSchem/releases):
+a single `DigiSchem.exe`, or an installer.
+
+**Or run it from source:**
+
+```sh
+git clone https://github.com/themostvexingparse/DigiSchem.git
+cd DigiSchem
+npm install
+npm run dev          # in a browser at http://localhost:1420
+npm run tauri dev    # as a desktop app (needs Rust)
+```
+
+In the editor, press **?** for every keyboard shortcut. The
+[Getting Started](docs/Getting-Started.md) page covers building releases and the command-line
+compiler.
+
 ## Documentation
 
-The full documentation is in the [wiki](https://github.com/themostvexingparse/DigiSchem/wiki)
-(the same pages are in [`docs/`](docs/Home.md)):
+The [wiki](https://github.com/themostvexingparse/DigiSchem/wiki) has the full documentation. The
+same pages are in [`docs/`](docs/Home.md).
 
-| Page | What it covers |
+| | |
 |---|---|
-| [Getting Started](docs/Getting-Started.md) | Installing, running, building the desktop app |
-| [Using the Editor](docs/Using-the-Editor.md) | Tools, wiring, editing, the properties panel, settings, shortcuts |
-| [Components](docs/Components.md) | The component library and how parts are configured |
-| [DSpec Language](docs/DSpec-Language.md) | Writing schematics as code, the compiler and its command line |
-| [Layout and Routing](docs/Layout-and-Routing.md) | How wires are routed, how compaction and wire tidying work |
-| [Logic Tools](docs/Logic-Tools.md) | Boolean minimization, generating schematics, checking truth tables |
-| [File Format](docs/File-Format.md) | The `.dschem` file, connections, exports |
-| [Development](docs/Development.md) | Project structure, architecture, tests, contributing |
+| [Getting Started](docs/Getting-Started.md) | Install, run, build, release |
+| [Using the Editor](docs/Using-the-Editor.md) | Tools, wiring, editing, connection checks, settings, shortcuts |
+| [Components](docs/Components.md) | The full component library |
+| [DSpec Language](docs/DSpec-Language.md) | Schematics as code: syntax, directives, compiler, command line |
+| [File Format](docs/File-Format.md) | The `.dschem` file, stored connections, exports |
+| [Layout and Routing](docs/Layout-and-Routing.md) | The router, compaction and wire relaxation, with their weights |
+| [Logic Tools](docs/Logic-Tools.md) | Minimizer, schematic generator and evaluator APIs |
+| [Development](docs/Development.md) | Project structure, architecture rules, tests, contributing |
 
 ## Status
 
-DigiSchem is a drawing tool: it does not simulate circuits (the logic tools can evaluate
-combinational drawings). The desktop app is built and tested on Windows; Tauri can also build it
-for macOS and Linux. The editor also runs in any modern browser.
+DigiSchem draws circuits; it does not simulate them (the logic tools evaluate combinational
+drawings). The desktop app is built and tested on Windows; Tauri can also build it for macOS and
+Linux, and the editor runs in any modern browser.
