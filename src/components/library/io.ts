@@ -25,7 +25,7 @@ const inputPinDef: ComponentDef = {
   geometry(props): Geometry {
     const name = propStr(props, "name", "A");
     const bitW = clampInt(props, "width", 1, 1, 32);
-    const label = bitW > 1 ? `${name}[${bitW - 1}:0]` : name;
+    const label = bitW > 1 && !/]$/.test(name) ? `${name}[${bitW - 1}:0]` : name; // a name like "SW[15:13]" already says its bits
     const bodyW = ioTextWidth(label, 30);
     const totalW = bodyW + 20;
     return {
@@ -37,7 +37,7 @@ const inputPinDef: ComponentDef = {
   symbol(props): string {
     const name = propStr(props, "name", "A");
     const bitW = clampInt(props, "width", 1, 1, 32);
-    const label = bitW > 1 ? `${name}[${bitW - 1}:0]` : name;
+    const label = bitW > 1 && !/]$/.test(name) ? `${name}[${bitW - 1}:0]` : name; // a name like "SW[15:13]" already says its bits
     const g = this.geometry(props);
     const bodyW = g.width - 20;
     const tipX = bodyW + 8;
@@ -63,7 +63,7 @@ const outputPinDef: ComponentDef = {
   geometry(props): Geometry {
     const name = propStr(props, "name", "Y");
     const bitW = clampInt(props, "width", 1, 1, 32);
-    const label = bitW > 1 ? `${name}[${bitW - 1}:0]` : name;
+    const label = bitW > 1 && !/]$/.test(name) ? `${name}[${bitW - 1}:0]` : name; // a name like "SW[15:13]" already says its bits
     const bodyW = ioTextWidth(label, 30);
     const totalW = 20 + bodyW;
     return {
@@ -75,7 +75,7 @@ const outputPinDef: ComponentDef = {
   symbol(props): string {
     const name = propStr(props, "name", "Y");
     const bitW = clampInt(props, "width", 1, 1, 32);
-    const label = bitW > 1 ? `${name}[${bitW - 1}:0]` : name;
+    const label = bitW > 1 && !/]$/.test(name) ? `${name}[${bitW - 1}:0]` : name; // a name like "SW[15:13]" already says its bits
     const g = this.geometry(props);
     const x0 = 12;
     const bodyX = 20;
@@ -245,7 +245,7 @@ const tunnelDef: ComponentDef = {
   geometry(props): Geometry {
     const name = propStr(props, "name", "NET");
     const bitW = clampInt(props, "width", 1, 1, 32);
-    const label = bitW > 1 ? `${name}[${bitW - 1}:0]` : name;
+    const label = bitW > 1 && !/]$/.test(name) ? `${name}[${bitW - 1}:0]` : name; // a name like "SW[15:13]" already says its bits
     const flagW = ioTextWidth(label, 30);
     const totalW = 10 + flagW;
     return {
@@ -257,7 +257,7 @@ const tunnelDef: ComponentDef = {
   symbol(props): string {
     const name = propStr(props, "name", "NET");
     const bitW = clampInt(props, "width", 1, 1, 32);
-    const label = bitW > 1 ? `${name}[${bitW - 1}:0]` : name;
+    const label = bitW > 1 && !/]$/.test(name) ? `${name}[${bitW - 1}:0]` : name; // a name like "SW[15:13]" already says its bits
     const g = this.geometry(props);
     // Pointed flag tip directly at (0, 10) where the wire attaches.
     const body = `<path class="ds-body" d="M0 10 L10 2 H${g.width} V18 H10 Z"/>`;

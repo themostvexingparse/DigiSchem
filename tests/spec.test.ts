@@ -148,7 +148,12 @@ net CLKNET = CK.clk, F1.clk, F2.q, F2.qn
   it("@route tunnel draws a net with net labels; connections are unchanged", () => {
     const r = compileSpec("@route tunnel\n" + HALF);
     expect(errors(r)).toEqual([]);
-    expect(r.stats.wires).toBe(0);
+    // only short stubs that move a label clear of its neighbours: each joins one pin to one label
+    for (const w of r.doc!.wires) {
+      const ends = r.doc!.links!.filter(([a, b]) => a === `w:${w.id}` || b === `w:${w.id}`).map(([a, b]) => (a === `w:${w.id}` ? b : a));
+      expect(ends.filter((t) => t.startsWith("p:T_")).length, w.id).toBe(1);
+      expect(w.points.length, w.id).toBe(2);
+    }
     expect(r.stats.tunnels).toBe(10);
     expect(groups(r.doc!, "geometric")).toEqual(groups(compileSpec(HALF).doc!, "geometric"));
   });

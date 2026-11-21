@@ -8,10 +8,10 @@
  * When a pin cannot be reached cleanly the whole net falls back to tunnels (net labels) on each
  * pin, which is always correct; "@route tunnel" asks for that up front.
  */
-import { geometryOf, localToWorld, pointOnSegment, worldPins, type WorldPin } from "../model/geometry";
+import { componentBounds, geometryOf, localToWorld, pointOnSegment, rectsIntersect, worldPins, type WorldPin } from "../model/geometry";
 import type { ComponentInstance, Point, Rotation, SchematicDocument } from "../model/types";
 import { RouteObstacles, safeRoute } from "../editor/safe-route";
-import { normalizeWirePoints, pinExitVector, routeOrthogonal } from "../editor/wire-utils";
+import { normalizeWirePoints, pinExitVector, routeOrthogonal, segmentIntersectsRect } from "../editor/wire-utils";
 
 export interface NetState {
   name: string;
@@ -195,11 +195,36 @@ function tunnelize(ctx: RouteContext, net: NetState, reason: string | null): voi
 function attachTunnel(ctx: RouteContext, net: NetState, t: string): void {
   const p = pinOf(ctx.doc, t)!;
   const id = `T_${net.name}_${net.tunnels.length + 1}`;
-  const tun = tunnelAt(id, net.tunnelName, p.inst, p.wp);
-  ctx.doc.components.push(tun);
-  net.tunnels.push(id);
-  ctx.links.push([t, `p:${id}|net`]);
-  net.attached.add(t);
+  const exit = pinExitVector(p.inst, p.wp.pin.side);
+  // Right on the pin when there is room; otherwise out on a short stub wire, so the label does
+  // not sit on top of another part, label or wire.
+  // (when no spot is clear, the label goes right on the pin: it may overlap, but touches nothing)
+  for (const k of [0, 2, 3, 4, 6, 8, -1]) {
+    const last = k === -1;
+    const at = last ? { ...p.wp.pos } : { x: p.wp.pos.x + exit.x * k * 10, y: p.wp.pos.y + exit.y * k * 10 };
+    const tun = tunnelAt(id, net.tunnelName, p.inst, { ...p.wp, pos: at });
+    const r = componentBounds(tun);
+    const clear =
+      !ctx.doc.components.some((c) => c.id !== p.inst.id && rectsIntersect(r, componentBounds(c))) &&
+      !ctx.doc.wires.some((w) => w.points.some((q, i) => i + 1 < w.points.length && segmentIntersectsRect(q, w.points[i + 1], r))) &&
+      (k <= 0 || (!ctx.doc.components.some((c) => rectsIntersect(stubRect(p.wp.pos, at), componentBounds(c)) && c.id !== p.inst.id) && !new RouteObstacles(ctx.doc).routeIsBad([p.wp.pos, at])));
+    if (!clear && !last) continue;
+    ctx.doc.components.push(tun);
+    net.tunnels.push(id);
+    if (k <= 0) ctx.links.push([t, `p:${id}|net`]);
+    else {
+      const wid = `w_${net.name}_${++net.counter}`;
+      ctx.doc.wires.push({ id: wid, points: [{ ...p.wp.pos }, at] });
+      ctx.links.push([`w:${wid}`, t], [`w:${wid}`, `p:${id}|net`]);
+      net.wires.push(wid);
+    }
+    net.attached.add(t);
+    return;
+  }
+}
+
+function stubRect(a: Point, b: Point) {
+  return { x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), w: Math.abs(a.x - b.x), h: Math.abs(a.y - b.y) };
 }
 
 /** Route the pins of `net` that are placed but not yet attached. */

@@ -562,8 +562,9 @@ export function compileSpec(source: string, opts: CompileOptions = {}): CompileR
     if (!entry || entry.decl !== decl) continue;
     const inst = entry.inst;
     const isFixed = items.find((it) => it.inst === inst)!.fixed;
-    if (!isFixed && stats.compactionsApplied > 0) {
-      // the layout was compacted since the plan was made: go next to the connected parts
+    if (!isFixed && (stats.compactionsApplied > 0 || pinned.size > 0)) {
+      // the layout was compacted since the plan was made, or this continues a drawing (pinned
+      // parts): go next to the connected parts already there
       const spot = neighborSpot(doc, inst, nets.map((n) => n.pins), decl.settings.colGap);
       if (spot) {
         inst.x = spot.x;
