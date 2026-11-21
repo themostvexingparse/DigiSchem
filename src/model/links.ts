@@ -13,7 +13,7 @@
  * warn — the connections themselves are never lost.
  */
 import type { Point, SchematicDocument } from "./types";
-import { worldPins } from "./geometry";
+import { effectiveProps, worldPins } from "./geometry";
 import { geometricContacts, pinTerm, wireTerm, type Contact, type Terminal } from "../io/netlist";
 
 export function terminalsOf(doc: SchematicDocument): Set<Terminal> {
@@ -252,7 +252,20 @@ export function connectionConflicts(doc: SchematicDocument): ConnectionConflict[
     if (!terms.has(a) || !terms.has(b)) continue;
     if (geo.find(a) !== geo.find(b)) out.push({ kind: "broken", at: near(a.startsWith("p:") ? a : b, a.startsWith("p:") ? b : a), a, b });
   }
-  // electrical rule: two outputs on one connected net
+  // electrical rule: two outputs on one connected net (tunnels of the same name are one net)
+  const tunnelFirst = new Map<string, Terminal>();
+  for (const comp of doc.components) {
+    if (comp.type !== "tunnel") continue;
+    const nm = effectiveProps(comp).name;
+    const name = typeof nm === "string" ? nm.trim() : "";
+    if (!name) continue;
+    for (const wp of worldPins(comp)) {
+      const t = pinTerm(comp.id, wp.pin.id);
+      const first = tunnelFirst.get(name);
+      if (first) logical.union(first, t);
+      else tunnelFirst.set(name, t);
+    }
+  }
   const firstDriver = new Map<string, Terminal>();
   for (const d of driverTerms(doc)) {
     const r = logical.find(d);
