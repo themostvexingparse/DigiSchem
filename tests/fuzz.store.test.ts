@@ -160,6 +160,8 @@ function runFuzz(start: SchematicDocument, seed: number, steps: number): Report 
         }
         case "rotate": {
           const ids = sel();
+          if (r() < 0.4) for (const w of doc.wires) if (r() < 0.2) ids.add(w.id);
+          if (r() < 0.1) for (const x of [...doc.components, ...doc.wires]) ids.add(x.id); // select all
           desc = `rotate ${[...ids]}`;
           s.setSelection(ids);
           rotateSelectionInStore(s);
@@ -167,6 +169,7 @@ function runFuzz(start: SchematicDocument, seed: number, steps: number): Report 
         }
         case "mirror": {
           const ids = sel();
+          if (r() < 0.4) for (const w of doc.wires) if (r() < 0.2) ids.add(w.id);
           desc = `mirror ${[...ids]}`;
           s.setSelection(ids);
           mirrorSelectionInStore(s);

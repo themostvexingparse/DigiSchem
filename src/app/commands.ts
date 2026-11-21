@@ -4,7 +4,7 @@ import { emptyDocument } from "../model/types";
 import type { Editor } from "../editor/editor";
 import { THEMES } from "../render/svg";
 import { exportNetlistText } from "../io/netlist";
-import { PROJECT_EXTENSION, parseProject, serializeProject } from "../io/project";
+import { PROJECT_EXTENSION, parseProjectWithWarnings, serializeProject } from "../io/project";
 import { exportPngBlob, exportSvgString } from "../io/export";
 import { openText, saveBinary, saveText } from "../platform/files";
 import { showShortcutsDialog } from "./dialogs";
@@ -54,10 +54,17 @@ export class AppCommands {
     try {
       const f = await openText(PROJECT_FILTER);
       if (!f) return;
-      const doc = parseProject(f.contents);
+      const { doc, warnings } = parseProjectWithWarnings(f.contents);
       this.store.replace(doc, f.path);
       this.editor.zoomToFit();
-      notify(`Opened ${baseName(f.path, "project")}`);
+      // Anything the loader had to repair or drop is worth knowing about (details in the console).
+      const serious = warnings.filter((w) => /dropped|clamped|duplicate|renamed|invalid|unsupported/i.test(w));
+      if (serious.length > 0) {
+        console.warn(`Opened ${f.path} with ${warnings.length} repair(s):\n` + warnings.join("\n"));
+        notify(`Opened ${baseName(f.path, "project")} — ${serious.length} problem${serious.length > 1 ? "s" : ""} in the file were repaired (e.g. ${serious[0]})`, true);
+      } else {
+        notify(`Opened ${baseName(f.path, "project")}`);
+      }
     } catch (e) {
       notify(`Open failed: ${(e as Error).message ?? e}`, true);
     }
@@ -66,14 +73,17 @@ export class AppCommands {
   async save(forceDialog = false) {
     try {
       const name = `${baseName(this.store.filePath, this.store.doc.name)}.${PROJECT_EXTENSION}`;
+      const saved = this.store.doc;
       const path = await saveText(
-        serializeProject(this.store.doc),
+        serializeProject(saved),
         name,
         PROJECT_FILTER,
         forceDialog ? null : this.store.filePath,
       );
       if (!path) return;
-      this.store.markSaved(path);
+      // Edits made while the dialog was open / the file was being written are NOT saved.
+      if (this.store.doc === saved) this.store.markSaved(path);
+      else this.store.filePath = path;
       notify(`Saved ${baseName(path, "project")}`);
     } catch (e) {
       notify(`Save failed: ${(e as Error).message ?? e}`, true);

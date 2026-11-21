@@ -44,6 +44,9 @@ function load(): Settings {
     for (const k of Object.keys(DEFAULT_SETTINGS) as (keyof Settings)[]) {
       if (typeof parsed[k] === typeof DEFAULT_SETTINGS[k]) (out as Record<string, unknown>)[k] = parsed[k];
     }
+    if (!Number.isFinite(out.guideSnapCells) || out.guideSnapCells < 0 || out.guideSnapCells > 20) {
+      out.guideSnapCells = DEFAULT_SETTINGS.guideSnapCells;
+    }
     return out;
   } catch {
     return { ...DEFAULT_SETTINGS };
