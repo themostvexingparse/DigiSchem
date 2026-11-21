@@ -19,6 +19,17 @@ if ($Installers) {
   Get-ChildItem "$rel\bundle" -Recurse -Include *.msi, *-setup.exe | Copy-Item -Destination $out
 }
 $latest = Join-Path $root "builds\latest"
-if (Test-Path $latest) { Remove-Item -Recurse -Force $latest }
-Copy-Item -Recurse $out $latest
+# builds\latest is in use while DigiSchem runs from it: then leave it alone (never half-delete it).
+$locked = $false
+if (Test-Path $latest) {
+  foreach ($f in Get-ChildItem $latest -File) {
+    try { $s = [System.IO.File]::Open($f.FullName, 'Open', 'ReadWrite', 'None'); $s.Close() } catch { $locked = $true }
+  }
+}
+if ($locked) {
+  Write-Warning "builds\latest is in use (DigiSchem is running from it) - not updated. Close it and re-run, or use $out"
+} else {
+  if (Test-Path $latest) { Remove-Item -Recurse -Force $latest }
+  Copy-Item -Recurse $out $latest
+}
 Write-Output "BUILD OK -> $out"
