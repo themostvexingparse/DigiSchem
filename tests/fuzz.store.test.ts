@@ -236,9 +236,25 @@ function runFuzz(start: SchematicDocument, seed: number, steps: number): Report 
           break;
         }
         case "pack": {
-          const res = packSchematic(structuredClone(doc));
-          const probs = validateCompaction(doc, res);
-          desc = `pack (${probs.length} problems)`;
+          // half the time: compact just a selection (a few parts and the wires between them)
+          let opts: { ids?: Set<string> } = {};
+          if (r() < 0.5 && comps.length > 4) {
+            const ids = new Set<string>();
+            for (let i = 0; i < 4; i++) ids.add(pick(comps).id);
+            for (const w of doc.wires) if (r() < 0.2) ids.add(w.id);
+            opts = { ids };
+          }
+          const res = packSchematic(structuredClone(doc), opts);
+          const probs = validateCompaction(doc, res, opts);
+          desc = `pack${opts.ids ? ` selection ${[...opts.ids]}` : ""} (${probs.length} problems)`;
+          if (opts.ids) {
+            // parts outside the selection must not move
+            for (const c of doc.components) {
+              if (opts.ids.has(c.id)) continue;
+              const c2 = res.doc.components.find((x) => x.id === c.id);
+              if (!c2 || c2.x !== c.x || c2.y !== c.y || c2.rotation !== c.rotation) errors.push(`step ${step} ${desc}: unselected part ${c.id} moved`);
+            }
+          }
           if (probs.length) {
             soft.packRejected++;
             packReasons.push(probs[0]);
