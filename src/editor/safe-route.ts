@@ -1801,7 +1801,8 @@ export function repairSegmentDrop(
     return;
   }
   const snapshot = doc.wires.map((w) => ({ ...w, points: w.points.map((p) => ({ ...p })) }));
-  const score = () => connectionConflicts(doc).length;
+  // a connection drawn apart is worse than an accidental contact
+  const score = () => connectionConflicts(doc).reduce((n, c) => n + (c.kind === "broken" ? 10 : 1), 0);
   // (a) followers keep following
   repairWires(doc, ids, undefined, { nets, before: new Map(branches.map((b) => [b.wireId, b.origPoints])) });
   const a = { wires: doc.wires, s: score() };
