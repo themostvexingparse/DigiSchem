@@ -5,7 +5,7 @@ import { DocumentStore } from "../src/model/store";
 import { emptyDocument, type ComponentInstance, type SchematicDocument } from "../src/model/types";
 import { buildNetlist } from "../src/io/netlist";
 import { parseProject, serializeProject } from "../src/io/project";
-import { deleteSelectionInStore, duplicateSelectionInStore, mirrorSelectionInStore, nudgeSelectionInStore, rotateSelectionInStore } from "../src/editor/doc-ops";
+import { placeComponentInStore, deleteSelectionInStore, duplicateSelectionInStore, mirrorSelectionInStore, nudgeSelectionInStore, rotateSelectionInStore } from "../src/editor/doc-ops";
 import { sprawled } from "./helpers/sprawl";
 import { mergeWireSeams } from "../src/model/merge";
 import { pathLoopCuts, pathOverlapsItself } from "../src/editor/wire-utils";
@@ -191,5 +191,16 @@ describe("store fuzz regressions", () => {
       }
     }
   });
+
+  it("a part placed on top of an identical one is not connected to it (no output short); compaction pulls them apart", () => {
+    const s = new DocumentStore();
+    placeComponentInStore(s, "and", 100, 100);
+    placeComponentInStore(s, "and", 100, 100); // accidental double click while placing
+    expect(s.doc.links).toEqual([]);
+    expect(connectionConflicts(s.doc as SchematicDocument).some((c) => c.kind === "drivers")).toBe(false);
+    const res = packSchematic(structuredClone(s.doc as SchematicDocument));
+    expect(validateCompaction(s.doc as SchematicDocument, res)).toEqual([]);
+    expect(overlappingPartPairs(res.doc).length).toBe(0);
+  }, 60_000);
 });
 

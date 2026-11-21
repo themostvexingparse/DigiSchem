@@ -13,7 +13,7 @@
  * warn — the connections themselves are never lost.
  */
 import type { Point, SchematicDocument } from "./types";
-import { effectiveProps, worldPins } from "./geometry";
+import { componentBounds, effectiveProps, worldPins } from "./geometry";
 import { geometricContacts, pinTerm, wireTerm, type Contact, type Terminal } from "../io/netlist";
 
 export function terminalsOf(doc: SchematicDocument): Set<Terminal> {
@@ -179,7 +179,15 @@ export function maintainLinks(before: SchematicDocument, draft: SchematicDocumen
     for (const [a, b] of draft.links) if ((fresh.has(a) || fresh.has(b)) && now.has(a) && now.has(b)) kept.push([a, b]);
   }
   if (fresh.size > 0 && opts.connectByTouch !== false) {
-    const touching = geometricContacts(draft).filter((c) => fresh.has(c.a) || fresh.has(c.b));
+    // A part dropped ON TOP of another (an accidental double placement) shares pin positions
+    // with it: those coinciding pins are not connections. (Pins abutting from outside are.)
+    const bodies = new Map(draft.components.map((c) => [c.id, componentBounds(c)]));
+    const stacked = (c: Contact) => {
+      if (!c.a.startsWith("p:") || !c.b.startsWith("p:")) return false;
+      const A = bodies.get(c.a.slice(2, c.a.indexOf("|"))), B = bodies.get(c.b.slice(2, c.b.indexOf("|")));
+      return !!A && !!B && A.x < B.x + B.w && B.x < A.x + A.w && A.y < B.y + B.h && B.y < A.y + A.h;
+    };
+    const touching = geometricContacts(draft).filter((c) => (fresh.has(c.a) || fresh.has(c.b)) && !stacked(c));
     draft.links = canonicalLinks(linksFromContacts(draft, touching, kept, false, fresh));
     return;
   }

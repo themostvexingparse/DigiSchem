@@ -16,6 +16,7 @@ import { buildNetlist } from "../io/netlist";
 import { keepWiresAttached } from "../editor/doc-ops";
 import { normalizeWirePoints, stretchWireStart } from "../editor/wire-utils";
 import { RouteObstacles, sameNetWires } from "../editor/safe-route";
+import { connectionConflicts } from "../model/links";
 import { layoutQuality, type QualityBreakdown, type QualityWeights } from "./quality";
 import { prepareValidationBaseline, validateAgainstBaseline, validatePacking } from "./validate";
 
@@ -55,7 +56,21 @@ function ruleProblems(violations: string[], rerouted: ReadonlySet<string>, doc: 
     }
     attachedTo.set(w.id, s);
   }
-  return violations.filter((v) => !exempt(v, rerouted, attachedTo));
+  // With stored connections, accidental pin-on-pin contacts (no stored pin-to-pin connection)
+  // may come apart, and the netlist is compared by the caller (sameConnectivity).
+  const pinPinLinked = new Set<string>();
+  for (const [a, b] of doc.links ?? []) {
+    if (a.startsWith("p:") && b.startsWith("p:")) for (const t of [a, b]) pinPinLinked.add(t.slice(2).replace("|", ":"));
+  }
+  return violations.filter((v) => {
+    if (exempt(v, rerouted, attachedTo)) return false;
+    if (doc.links) {
+      if (/^Rule 1: netlist topology changed/.test(v)) return false;
+      const m = /^Rule 4: pin (\S+) pin-to-pin abutment changed/.exec(v);
+      if (m && !pinPinLinked.has(m[1])) return false;
+    }
+    return true;
+  });
 }
 
 export interface RealignResult {
@@ -85,6 +100,26 @@ export function netSignature(doc: SchematicDocument): string {
 
 const bendsOf = (doc: SchematicDocument) => doc.wires.reduce((n, w) => n + Math.max(0, w.points.length - 2), 0);
 
+/**
+ * With stored connections, the drawing may change what TOUCHES (e.g. two stacked parts pulled
+ * apart) — as long as it does not get worse: no stored connection newly drawn apart, no new
+ * accidental contact.
+ */
+function drawingRegressed(before: SchematicDocument, after: SchematicDocument): boolean {
+  const count = (d: SchematicDocument) => {
+    const c = connectionConflicts(d);
+    return { broken: c.filter((x) => x.kind === "broken").length, unintended: c.filter((x) => x.kind === "unintended").length };
+  };
+  const a = count(before), b = count(after);
+  return b.broken > a.broken || b.unintended > a.unintended;
+}
+
+/** Same connectivity: identical drawn nets, or (with stored connections) a drawing that agrees with them no worse. */
+function sameConnectivity(before: SchematicDocument, after: SchematicDocument, sigBefore = netSignature(before)): boolean {
+  if (netSignature(after) === sigBefore) return true;
+  return !!after.links && JSON.stringify(after.links) === JSON.stringify(before.links) && !drawingRegressed(before, after);
+}
+
 /** Pairs of parts whose bodies overlap (one drawn on top of the other). */
 export function overlappingPartPairs(doc: SchematicDocument): [string, string][] {
   const bs = doc.components.map((c) => ({ id: c.id, b: componentBounds(c) }));
@@ -112,7 +147,6 @@ function separateOverlaps(
   const rerouted = new Set<string>();
   const grid = cur.grid || 10;
   const room = 2 * grid; // default componentGap
-  const sig0 = netSignature(cur);
   const baseline = prepareValidationBaseline(cur, opts.ids ? { ids: opts.ids } : {});
   const order = new Map(cur.components.map((c, i) => [c.id, i]));
   const offsets: [number, number][] = [];
@@ -160,7 +194,7 @@ function separateOverlaps(
       });
       if (!clear) continue;
       if (overlappingPartPairs(cand).length >= n0) continue;
-      if (netSignature(cand) !== sig0) continue;
+      if (!sameConnectivity(cur, cand, netSignature(cur))) continue;
       const changed = cand.wires.filter((w, i) => JSON.stringify(w.points) !== JSON.stringify(cur.wires[i]?.points)).map((w) => w.id);
       if (opts.ids && changed.some((id) => !opts.ids!.has(id))) continue;
       // a re-routed wire may not get worse (a copy's wire still lying on its original is no
@@ -192,7 +226,7 @@ export function realignProblems(
   ids?: ReadonlySet<string>,
 ): string[] {
   const out: string[] = [];
-  if (netSignature(after) !== netSignature(before)) out.push("Realign: connectivity changed");
+  if (!sameConnectivity(before, after)) out.push("Realign: connectivity changed");
   if (after.components.length !== before.components.length || after.wires.length !== before.wires.length)
     out.push("Realign: part or wire count changed");
   // (bends may only grow where parts lying on top of each other were pulled apart)
