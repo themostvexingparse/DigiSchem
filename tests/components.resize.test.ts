@@ -101,6 +101,14 @@ describe("component resizability classification", () => {
     "splitter",
     "pull-up",
     "pull-down",
+    "seven-segment",
+    "hex-display",
+    "push-button",
+    "schmitt-buffer",
+    "schmitt-inverter",
+    "nmos",
+    "pmos",
+    "transmission-gate",
   ]);
 
   it("sets resizable flags accurately on every registered component", () => {

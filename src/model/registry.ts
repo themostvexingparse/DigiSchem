@@ -19,6 +19,7 @@ export function listDefs(): ComponentDef[] {
 /** Palette category ordering. Unknown categories go last, alphabetically. */
 export const CATEGORY_ORDER = [
   "I/O",
+  "Displays",
   "Gates",
   "Plexers",
   "Arithmetic",
@@ -26,5 +27,6 @@ export const CATEGORY_ORDER = [
   "Flip-Flops",
   "Registers",
   "Memory",
+  "Transistors",
   "Misc",
 ];

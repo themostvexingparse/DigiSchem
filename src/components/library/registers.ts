@@ -308,4 +308,45 @@ const registerFileDef: ComponentDef = {
   symbol: (props) => renderBox(registerFileLayout(props)),
 };
 
-export const registerDefs: ComponentDef[] = [registerDef, shiftRegisterDef, counterDef, registerFileDef];
+function ringCounterLayout(props: Record<string, PropValue>) {
+  const bits = clampInt(props, "bits", 4, 2, 16);
+  const johnson = propStr(props, "mode", "ring") === "johnson";
+  const enable = propBool(props, "enable", false);
+  const left: PinSpec[] = [];
+  if (enable) left.push({ id: "en", name: "EN", dir: "in" });
+  left.push({ id: "clk", name: "CLK", dir: "in", clock: true });
+  const right: PinSpec[] = Array.from({ length: bits }, (_, i) => ({ id: `q${i}`, name: `Q${i}`, dir: "out" as const }));
+  const bottom: PinSpec[] = [{ id: "rst", name: "RST", dir: "in" }];
+  return layoutBox(
+    { left, right, bottom, title: johnson ? "JOHNSON" : "RING", subtitle: `${bits}-bit`, minBodyW: 80, minBodyH: 60 },
+    props,
+  );
+}
+
+const ringCounterDef: ComponentDef = {
+  type: "ring-counter",
+  name: "Ring / Johnson Counter",
+  category: "Registers",
+  labelPrefix: "CNT",
+  description:
+    "Shift-register counter: a ring counter moves a single 1 around (N states, one-hot); a Johnson counter feeds back the inverted last bit (2N states)",
+  props: [
+    { key: "bits", label: "Bits", kind: "int", min: 2, max: 16 },
+    {
+      key: "mode",
+      label: "Type",
+      kind: "enum",
+      options: [
+        { value: "ring", label: "Ring (one-hot)" },
+        { value: "johnson", label: "Johnson (twisted ring)" },
+      ],
+    },
+    { key: "enable", label: "Enable Pin (EN)", kind: "bool" },
+  ],
+  defaultProps: { bits: 4, mode: "ring", enable: false },
+  resizable: "both",
+  geometry: (props) => ringCounterLayout(props).geometry,
+  symbol: (props) => renderBox(ringCounterLayout(props)),
+};
+
+export const registerDefs: ComponentDef[] = [registerDef, shiftRegisterDef, counterDef, registerFileDef, ringCounterDef];

@@ -137,6 +137,32 @@ function makeGate(type: string, name: string, kind: GateKind, inverted: boolean)
   };
 }
 
+/**
+ * Schmitt-trigger buffer / inverter: the buffer or NOT outline with the hysteresis glyph inside.
+ * Same pins and size as the plain gate.
+ */
+function makeSchmitt(type: string, name: string, inverted: boolean): ComponentDef {
+  return {
+    type,
+    name,
+    category: "Gates",
+    labelPrefix: "U",
+    description: `${name}: switches cleanly on slow or noisy inputs (input hysteresis)`,
+    props: [],
+    defaultProps: {},
+    geometry: (props) => gateLayout("buf", props, inverted).geom,
+    symbol(props) {
+      const L = gateLayout("buf", props, inverted);
+      const cx = L.x0 + (L.x1 - L.x0) * 0.4, cy = L.bodyH / 2;
+      // two offset steps: the classic hysteresis loop
+      const glyph =
+        `<path class="ds-thin" d="M${cx - 7} ${cy + 4} H${cx + 1} V${cy - 4} H${cx + 5}"/>` +
+        `<path class="ds-thin" d="M${cx - 5} ${cy + 4} H${cx - 3} V${cy - 4} H${cx + 7}"/>`;
+      return gateSymbol("buf", props, inverted) + glyph;
+    },
+  };
+}
+
 export const gateDefs: ComponentDef[] = [
   makeGate("and", "AND", "and", false),
   makeGate("nand", "NAND", "and", true),
@@ -146,4 +172,6 @@ export const gateDefs: ComponentDef[] = [
   makeGate("xnor", "XNOR", "xor", true),
   makeGate("buf", "Buffer", "buf", false),
   makeGate("not", "NOT", "buf", true),
+  makeSchmitt("schmitt-buffer", "Schmitt-Trigger Buffer", false),
+  makeSchmitt("schmitt-inverter", "Schmitt-Trigger Inverter", true),
 ];

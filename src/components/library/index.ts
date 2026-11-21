@@ -10,17 +10,24 @@ import { flipflopDefs } from "./flipflops";
 import { registerDefs } from "./registers";
 import { memoryDefs } from "./memory";
 import { miscDefs } from "./misc";
+import { displayDefs } from "./displays";
+import { arithExtraDefs, plexerExtraDefs } from "./arith-extra";
+import { transistorDefs } from "./transistors";
 
 export const ALL_DEFS: ComponentDef[] = [
   ...ioDefs,
+  ...displayDefs,
   ...gateDefs,
   ...plexerDefs,
+  ...plexerExtraDefs,
   ...arithmeticDefs,
+  ...arithExtraDefs,
   ...latchDefs,
   ...flipflopDefs,
   ...registerDefs,
   ...memoryDefs,
   ...miscDefs,
+  ...transistorDefs,
 ];
 
 let registered = false;

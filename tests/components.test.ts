@@ -122,6 +122,7 @@ function isCountProp(def: ComponentDef, p: PropDef): boolean {
   if (p.key === "dataWidth" && (def.type === "mux" || def.type === "demux")) return false;
   if (p.key === "width" && def.type === "alu") return false;
   if (p.key === "width" && def.type === "splitter") return false;
+  if (def.type === "bit-extender") return false; // in/out widths are bus widths of single pins
   return true;
 }
 
