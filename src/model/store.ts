@@ -39,6 +39,8 @@ export class DocumentStore {
   dirty = false;
   /** Absolute path of the project file on disk, if saved/opened. */
   filePath: string | null = null;
+  /** What produced the current document: an edit, an automatic amendment, undo / redo, or a replace. */
+  lastChange: "edit" | "amend" | "undo" | "redo" | "replace" = "replace";
 
   constructor(doc: SchematicDocument = emptyDocument()) {
     this._doc = withLinks(doc);
@@ -77,6 +79,7 @@ export class DocumentStore {
     }
     this._doc = draft;
     this.dirty = true;
+    this.lastChange = "edit";
     this.pruneSelection();
     this.emit("doc");
   }
@@ -93,6 +96,7 @@ export class DocumentStore {
     maintainLinks(before, draft);
     this._doc = draft;
     this.dirty = true;
+    if (this.lastChange !== "undo" && this.lastChange !== "redo") this.lastChange = "amend";
     this.pruneSelection();
     this.emit("doc");
   }
@@ -170,6 +174,7 @@ export class DocumentStore {
     this.redoStack.push({ label: prev.label, doc: this._doc });
     this._doc = prev.doc;
     this.dirty = true;
+    this.lastChange = "undo";
     this.pruneSelection();
     this.emit("doc");
   }
@@ -181,6 +186,7 @@ export class DocumentStore {
     this.undoStack.push({ label: next.label, doc: this._doc });
     this._doc = next.doc;
     this.dirty = true;
+    this.lastChange = "redo";
     this.pruneSelection();
     this.emit("doc");
   }
@@ -194,6 +200,7 @@ export class DocumentStore {
     this._selection.clear();
     this.dirty = false;
     this.filePath = filePath;
+    this.lastChange = "replace";
     this.emit("replace");
   }
 

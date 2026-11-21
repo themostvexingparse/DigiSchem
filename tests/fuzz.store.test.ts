@@ -12,7 +12,11 @@ import { worldPins } from "../src/model/geometry";
 import { buildNetlist } from "../src/io/netlist";
 import { parseProject, serializeProject } from "../src/io/project";
 import { terminalsOf } from "../src/model/links";
+import { getDef } from "../src/model/registry";
+import { setComponentSizeInDoc } from "../src/editor/resize";
+import { packSchematic, validateCompaction } from "../src/layout/pack";
 import {
+  keepWiresAttached,
   deleteSelectionInStore,
   duplicateSelectionInStore,
   mirrorSelectionInStore,
@@ -70,7 +74,8 @@ function canon(v: unknown): string {
 }
 
 /** Cosmetic issues counted over a run (reported, not failed on). */
-const soft = { selfOverlap: 0 };
+const soft: Record<string, number> = { selfOverlap: 0, packApplied: 0, packNoGain: 0, packRejected: 0 };
+const packReasons: string[] = [];
 
 function checkDoc(doc: SchematicDocument, where: string): string[] {
   const errs: string[] = [];
@@ -93,7 +98,6 @@ function checkDoc(doc: SchematicDocument, where: string): string[] {
       const p = w.points[i], q = w.points[i + 1];
       if (p.x !== q.x && p.y !== q.y) errs.push(`${where}: wire ${w.id} diagonal segment`);
     }
-    if (pathOverlapsItself(w.points)) soft.selfOverlap++;
   }
   for (const c of doc.components) {
     if (!Number.isFinite(c.x) || !Number.isFinite(c.y)) errs.push(`${where}: comp ${c.id} non-finite`);
@@ -104,8 +108,9 @@ function checkDoc(doc: SchematicDocument, where: string): string[] {
   return errs;
 }
 
-type Op = "nudge" | "nudgeWithWires" | "rotate" | "mirror" | "delete" | "deleteWire" | "dup" | "undo" | "redo";
-const OPS: Op[] = ["nudge", "nudge", "nudge", "nudgeWithWires", "rotate", "mirror", "delete", "deleteWire", "dup", "undo", "redo"];
+type Op = "nudge" | "nudgeWithWires" | "rotate" | "mirror" | "delete" | "deleteWire" | "dup" | "undo" | "redo" | "prop" | "resize" | "pack";
+const OPS: Op[] = ["nudge", "nudge", "nudge", "nudgeWithWires", "rotate", "mirror", "delete", "deleteWire", "dup", "undo", "redo", "prop", "prop", "resize"];
+const PACK_EVERY = Number(process.env.FUZZ_PACK ?? 0); // also compact every N steps (slow)
 
 interface Report {
   errors: string[];
@@ -122,7 +127,7 @@ function runFuzz(start: SchematicDocument, seed: number, steps: number): Report 
     const doc = s.doc as SchematicDocument;
     const before = structuredClone(doc);
     const partBefore = pinPartition(before);
-    const op = doc.components.length === 0 && !["undo", "redo"].includes("x") ? "undo" : pick(OPS);
+    const op: Op = doc.components.length === 0 ? "undo" : PACK_EVERY && step % PACK_EVERY === PACK_EVERY - 1 ? "pack" : pick(OPS);
     let desc: string = op;
     let allowJoin = false;
     let allowSplit = false;
@@ -192,6 +197,49 @@ function runFuzz(start: SchematicDocument, seed: number, steps: number): Report 
           duplicateSelectionInStore(s);
           break;
         }
+        case "prop": {
+          // an int property (input count, bit width…) through the same path as the properties panel
+          const cands = comps.filter((c) => getDef(c.type)?.props.some((p) => p.kind === "int"));
+          if (!cands.length) break;
+          const c = pick(cands);
+          const pdef = pick(getDef(c.type)!.props.filter((p) => p.kind === "int"));
+          const lo = pdef.min ?? 1, hi = Math.min(pdef.max ?? 8, lo + 8);
+          const val = lo + Math.floor(r() * (hi - lo + 1));
+          desc = `set ${c.id}.${pdef.key}=${val}`;
+          allowJoin = true; // pins added by the change connect by touch
+          s.update("prop", (d) => keepWiresAttached(d, new Set([c.id]), () => {
+            const x = d.components.find((k) => k.id === c.id);
+            if (x) x.props[pdef.key] = val;
+          }));
+          break;
+        }
+        case "resize": {
+          const cands = comps.filter((c) => getDef(c.type)?.resizable);
+          if (!cands.length) break;
+          const c = pick(cands);
+          const w = 20 + Math.floor(r() * 16) * 10, h = 20 + Math.floor(r() * 16) * 10;
+          desc = `resize ${c.id} to ${w}x${h}`;
+          s.update("resize", (d) => setComponentSizeInDoc(d, c.id, { w, h }));
+          break;
+        }
+        case "pack": {
+          const res = packSchematic(structuredClone(doc));
+          const probs = validateCompaction(doc, res);
+          desc = `pack (${probs.length} problems)`;
+          if (probs.length) {
+            soft.packRejected++;
+            packReasons.push(probs[0]);
+          } else if (!(res.qualityAfter.total < res.qualityBefore.total)) soft.packNoGain++;
+          else soft.packApplied++;
+          if (probs.length === 0 && res.qualityAfter.total < res.qualityBefore.total) {
+            s.update("pack", (d) => {
+              d.components = res.doc.components;
+              d.wires = res.doc.wires;
+              d.texts = res.doc.texts;
+            });
+          }
+          break;
+        }
         case "undo": {
           allowJoin = allowSplit = true;
           const can = s.canUndo();
@@ -218,6 +266,16 @@ function runFuzz(start: SchematicDocument, seed: number, steps: number): Report 
     log.push(desc);
     const after = s.doc as SchematicDocument;
     errors.push(...checkDoc(after, `step ${step} ${desc}`));
+    // a wire must never be left running over itself by an edit (pre-existing ones aside)
+    if (op !== "undo" && op !== "redo") {
+      const was = new Set(before.wires.filter((w) => pathOverlapsItself(w.points)).map((w) => w.id));
+      for (const w of after.wires) {
+        if (!was.has(w.id) && pathOverlapsItself(w.points)) {
+          soft.selfOverlap++;
+          if (process.env.FUZZ_STRICT) errors.push(`step ${step} ${desc}: wire ${w.id} now runs over itself ${JSON.stringify(w.points.map((p) => [p.x, p.y]))}`);
+        }
+      }
+    }
     const diffs = partitionDiff(partBefore, pinPartition(after)).filter(
       (d) => !(allowJoin && d.startsWith("joined")) && !(allowSplit && d.startsWith("split")),
     );
@@ -250,7 +308,7 @@ const SEEDS = Number(process.env.FUZZ_SEEDS ?? 3);
 
 describe("store fuzz: random edits keep every invariant", () => {
   afterAll(() => {
-    if (process.env.FUZZ_STEPS) console.log("soft issues:", JSON.stringify(soft));
+    if (process.env.FUZZ_STEPS) console.log("soft issues:", JSON.stringify(soft), packReasons.slice(0, 8));
   });
   for (let seed = 1; seed <= SEEDS; seed++) {
     it(`sprawled circuit, seed ${seed}`, () => {

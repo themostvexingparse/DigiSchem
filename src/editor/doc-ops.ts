@@ -313,15 +313,29 @@ export function sweepOrphanWires(doc: SchematicDocument, seeds: readonly Point[]
   const touchesRemoved = (p: Point) => removedSegs.some(([a, b]) => pointOnSegment(p, a, b));
   // With stored connectivity: a wire still linked to two or more surviving terminals carries a
   // connection between them (even if the drawing no longer shows it) — it is never an orphan.
+  // (A connection through a pin of a deleted part counts: deleting a part keeps what was
+  // connected through its pins connected — see model/links.ts.)
+  const adj = new Map<string, string[]>();
+  for (const [a, b] of doc.links ?? []) {
+    (adj.get(a) ?? adj.set(a, []).get(a)!).push(b);
+    (adj.get(b) ?? adj.set(b, []).get(b)!).push(a);
+  }
   const linkCount = (wid: string, alive: Set<string>): number => {
     if (!doc.links) return 0;
     const me = `w:${wid}`;
-    let n = 0;
-    for (const [a, b] of doc.links) {
-      const other = a === me ? b : b === me ? a : null;
-      if (other && alive.has(other)) n++;
+    const reached = new Set<string>();
+    const seen = new Set<string>([me]);
+    const stack = [me];
+    while (stack.length) {
+      const x = stack.pop()!;
+      for (const y of adj.get(x) ?? []) {
+        if (seen.has(y)) continue;
+        seen.add(y);
+        if (alive.has(y)) reached.add(y);
+        else if (y.startsWith("p:")) stack.push(y); // a removed pin: look through it
+      }
     }
-    return n;
+    return reached.size;
   };
   for (let guard = 0; guard < 10000; guard++) {
     const alive = terminalsOf(doc);

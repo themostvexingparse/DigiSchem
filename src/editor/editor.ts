@@ -763,6 +763,8 @@ export class Editor {
   private unrouted = new Set<string>();
   /** Unclean wires as of the last check (anything unclean that is NOT new is the user's own). */
   private knownBad = new Set<string>();
+  /** The waiting wires of each document state (restored with it by undo / redo). */
+  private unroutedByDoc = new WeakMap<object, Set<string>>();
   private routeWatchQueued = false;
   private routeWatchRunning = false;
   private unroutedListeners = new Set<(added: number, total: number) => void>();
@@ -801,6 +803,17 @@ export class Editor {
     try {
       const doc = this.store.doc as SchematicDocument;
       const bad = badWireIds(doc);
+      if (this.store.lastChange === "undo" || this.store.lastChange === "redo") {
+        // Undo / redo restore a document exactly as it was: never "repair" history. The wires that
+        // were waiting in that state are waiting again (retried after the next edit); anything
+        // else unclean there is the baseline.
+        const waiting = this.unroutedByDoc.get(doc) ?? new Set<string>();
+        this.unrouted = new Set([...waiting].filter((id) => bad.has(id)));
+        this.knownBad = new Set([...bad].filter((id) => !this.unrouted.has(id)));
+        for (const fn of this.unroutedListeners) fn(0, this.unrouted.size);
+        this.renderOverlay();
+        return;
+      }
       let added = 0;
       for (const id of bad) if (!this.knownBad.has(id) && !this.unrouted.has(id)) {
         this.unrouted.add(id);
@@ -816,6 +829,7 @@ export class Editor {
       }
       this.knownBad = badWireIds(this.store.doc as SchematicDocument);
       for (const id of [...this.unrouted]) if (!this.knownBad.has(id)) this.unrouted.delete(id);
+      this.unroutedByDoc.set(this.store.doc, new Set(this.unrouted));
       for (const fn of this.unroutedListeners) fn(added, this.unrouted.size);
       this.renderOverlay();
     } finally {
