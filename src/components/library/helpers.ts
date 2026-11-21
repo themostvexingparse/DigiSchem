@@ -34,22 +34,19 @@ export function requestedSize(
 }
 
 /**
- * Evenly distribute `count` pin coordinates on the 10-unit grid across `[lo, hi]`
- * (where `lo` and `hi` are multiples of GRID). Guarantees adjacent spacing is at
- * least `minSpacing` whenever `hi - lo >= (count - 1) * minSpacing` and `minSpacing`
- * is a multiple of GRID.
+ * Spread `count` pin coordinates over `[lo, hi]` (multiples of GRID) with ONE spacing: the
+ * largest multiple of GRID that fits, the group centered in the range. (Rounding each pin to
+ * the grid separately gives gaps that alternate, e.g. 10 / 20 / 10.) Adjacent spacing is at
+ * least `minSpacing` whenever `hi - lo >= (count - 1) * minSpacing` and `minSpacing` is a
+ * multiple of GRID.
  */
 export function distributeOnGrid(count: number, lo: number, hi: number): number[] {
   if (count <= 0) return [];
   if (count === 1) return [lo + snapGrid((hi - lo) / 2)];
   const steps = Math.round((hi - lo) / GRID);
-  const denom = count - 1;
-  const out: number[] = [];
-  for (let i = 0; i < count; i++) {
-    const offsetSteps = Math.floor((2 * steps * i + denom) / (2 * denom));
-    out.push(lo + offsetSteps * GRID);
-  }
-  return out;
+  const step = Math.max(1, Math.floor(steps / (count - 1)));
+  const start = Math.floor((steps - step * (count - 1)) / 2);
+  return Array.from({ length: count }, (_, i) => lo + (start + i * step) * GRID);
 }
 
 export function clampInt(

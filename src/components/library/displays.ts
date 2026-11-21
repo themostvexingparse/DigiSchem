@@ -104,7 +104,7 @@ const hexDisplayDef: ComponentDef = {
 function ledBarLayout(props: Record<string, PropValue>): BoxLayout {
   const n = clampInt(props, "count", 8, 2, 16);
   const left: PinSpec[] = Array.from({ length: n }, (_, i) => ({ id: `in${i}`, name: String(i), dir: "in" as const }));
-  return layoutBox({ left, minBodyW: 50, minBodyH: 40 }, props);
+  return layoutBox({ left, minBodyW: 50, minBodyH: 40, sideSpacing: 20 }, props); // room for each LED
 }
 
 const ledBarDef: ComponentDef = {
@@ -164,7 +164,7 @@ const pushButtonDef: ComponentDef = {
 function dipLayout(props: Record<string, PropValue>): BoxLayout {
   const n = clampInt(props, "count", 4, 1, 16);
   const right: PinSpec[] = Array.from({ length: n }, (_, i) => ({ id: `out${i}`, name: String(i), dir: "out" as const }));
-  return layoutBox({ right, minBodyW: 50, minBodyH: 40 }, props);
+  return layoutBox({ right, minBodyW: 50, minBodyH: 40, sideSpacing: 20 }, props); // room for each switch
 }
 
 const dipSwitchDef: ComponentDef = {

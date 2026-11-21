@@ -252,11 +252,12 @@ describe("component-specific resize geometry", () => {
     const rf = getDef("register-file")!;
     const baseProps = { ...rf.defaultProps, writePorts: 2 };
     const defG = rf.geometry(baseProps);
-    const bigProps = { ...baseProps, [SIZE_W]: defG.width + 100, [SIZE_H]: defG.height + 100 };
+    // (pins keep one spacing, so they spread once there is room for the next grid step)
+    const bigProps = { ...baseProps, [SIZE_W]: defG.width + 100, [SIZE_H]: defG.height + 200 };
     const bigG = rf.geometry(bigProps);
 
     expect(bigG.width).toBe(defG.width + 100);
-    expect(bigG.height).toBe(defG.height + 100);
+    expect(bigG.height).toBe(defG.height + 200);
 
     // Top pins WE1, WE2 spread wider
     const defTop = defG.pins.filter((p) => p.side === "top");
@@ -388,4 +389,22 @@ describe("component-specific resize geometry", () => {
       }
     }
   });
+});
+
+describe("pins on one side are evenly spaced", () => {
+  const sizes = [0, 10, 30, 70, 130, 250];
+  for (const def of ALL_DEFS.filter((d) => d.resizable)) {
+    it(`${def.type}: equal gaps at every size`, () => {
+      const g0 = def.geometry(def.defaultProps);
+      for (const extra of sizes) {
+        const props = extra ? { ...def.defaultProps, [SIZE_W]: g0.width + extra, [SIZE_H]: g0.height + extra } : def.defaultProps;
+        const g = def.geometry(props);
+        for (const side of ["left", "right", "top", "bottom"] as const) {
+          const pos = g.pins.filter((p) => p.side === side).map((p) => (side === "left" || side === "right" ? p.y : p.x)).sort((a, b) => a - b);
+          const gaps = new Set(pos.slice(1).map((v, i) => v - pos[i]));
+          expect(gaps.size, `${def.type} +${extra} ${side}: gaps ${[...gaps]}`).toBeLessThanOrEqual(1);
+        }
+      }
+    });
+  }
 });
