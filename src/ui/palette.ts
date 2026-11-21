@@ -158,7 +158,7 @@ export function mountPalette(host: HTMLElement, editor: Editor): void {
           item.tabIndex = 0;
           item.className = "ds-pal-item";
           item.draggable = true;
-          item.title = def.description ? `${def.name} — ${def.description}` : def.name;
+          item.title = def.description ? `${def.name}: ${def.description}` : def.name;
           item.innerHTML = `${buildThumbnailSvg(def)}<span class="ds-pal-name"></span>`;
           item.querySelector(".ds-pal-name")!.textContent = def.name;
 

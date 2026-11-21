@@ -9,6 +9,7 @@ import { mountPalette } from "./ui/palette";
 import { mountProperties } from "./ui/properties";
 import { AppCommands, installGlobalShortcuts, notify } from "./app/commands";
 import { mountToolbar } from "./app/toolbar";
+import { summarizeConflicts } from "./editor/conflict-text";
 import { getSettings, onSettingsChange, updateSettings } from "./model/settings";
 
 registerBuiltinComponents();
@@ -28,20 +29,16 @@ const updateStatus = () => {
   const name = store.filePath ? store.filePath.split(/[\\/]/).pop() : store.doc.name;
   const nConf = editor.connectionConflicts().length;
   const nUnrouted = editor.unroutedWires().size;
-  status.textContent = `${name}${store.dirty ? " •" : ""}   |   ${store.doc.components.length} components, ${store.doc.wires.length} wires   |   ${editor.statusText()}${nConf > 0 ? `   |   ⚠ ${nConf} connection conflict${nConf > 1 ? "s" : ""} (connections kept)` : ""}${nUnrouted > 0 ? `   |   ⚠ ${nUnrouted} wire${nUnrouted > 1 ? "s" : ""} waiting for a clean route` : ""}`;
+  status.textContent = `${name}${store.dirty ? " •" : ""}   |   ${store.doc.components.length} components, ${store.doc.wires.length} wires   |   ${editor.statusText()}${nConf > 0 ? `   |   ⚠ ${nConf} connection warning${nConf > 1 ? "s" : ""} (red rings)` : ""}${nUnrouted > 0 ? `   |   ⚠ ${nUnrouted} wire${nUnrouted > 1 ? "s" : ""} waiting for a clean route` : ""}`;
   status.classList.toggle("has-conflicts", nConf > 0 || nUnrouted > 0);
   // Warn once when an edit (not each drag frame) leaves NEW conflicts.
   if (!editor.isBusy()) {
     if (nConf > lastConflicts) {
-      notify(
-        `⚠ ${nConf} place${nConf > 1 ? "s" : ""} where the drawing touches or misses differently from the circuit's connections. ` +
-          "Nothing was connected or disconnected — move the parts apart to clean up the drawing (red rings).",
-        true,
-      );
+      notify(summarizeConflicts(editor.connectionConflicts()), true);
     }
     lastConflicts = nConf;
   }
-  document.title = `${name}${store.dirty ? " •" : ""} — DigiSchem`;
+  document.title = `${name}${store.dirty ? " •" : ""} - DigiSchem`;
 };
 store.subscribe(updateStatus);
 editor.onUnroutedChange((added, total) => {

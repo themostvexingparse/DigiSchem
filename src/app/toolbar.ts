@@ -132,7 +132,7 @@ export function mountToolbar(host: HTMLElement, cmds: AppCommands, editor: Edito
     ["select", ICONS.select, "Select", "Select / move (V)"],
     ["wire", ICONS.wire, "Wire", "Draw wire (W)"],
     ["text", ICONS.text, "Text", "Add text note (T)"],
-    ["pan", ICONS.pan, "Pan", "Pan the view (H) — or Space+drag / middle-drag in any tool"],
+    ["pan", ICONS.pan, "Pan", "Pan the view (H). In any tool you can also Space+drag or middle-drag."],
   ];
   const toolBtns = toolDefs.map(([tool, icon, label, title]) => {
     const b = button({ icon, label, title, action: () => editor.setTool(tool), cls: "tool" });
@@ -176,7 +176,7 @@ export function mountToolbar(host: HTMLElement, cmds: AppCommands, editor: Edito
     zoomLabel,
     button({ icon: ICONS.zoomIn, title: "Zoom in", action: () => editor.zoomBy(1.25) }),
     button({ icon: ICONS.fit, title: "Zoom to fit (F)", action: () => editor.zoomToFit() }),
-    button({ icon: ICONS.compact, title: "Compact layout — selection, or whole schematic (Ctrl+Shift+L)", action: () => cmds.compactLayout() }),
+    button({ icon: ICONS.compact, title: "Compact layout: the selection, or the whole schematic (Ctrl+Shift+L)", action: () => cmds.compactLayout() }),
     gridBtn,
     themeSel,
     panelBtn,

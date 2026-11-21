@@ -340,6 +340,18 @@ function runFuzz(start: SchematicDocument, seed: number, steps: number): Report 
         if (process.env.FUZZ_BROKEN) errors.push(`step ${step} ${desc}: ${inc} connection(s) left detached in the drawing`);
       }
     }
+    // an edit must not draw something onto a terminal it is not connected to ("unintended"), nor
+    // put two outputs on one net ("drivers") - both look like a short in the drawing
+    if (!["undo", "redo"].includes(op)) {
+      for (const kind of ["unintended", "drivers"] as const) {
+        const n = (d: SchematicDocument) => connectionConflicts(d).filter((c) => c.kind === kind).length;
+        const inc = n(after) - n(before);
+        if (inc > 0) {
+          soft[`${kind}:${op}`] = (soft[`${kind}:${op}`] ?? 0) + 1;
+          if (process.env.FUZZ_SHORTS) errors.push(`step ${step} ${desc}: ${inc} new "${kind}" conflict(s)`);
+        }
+      }
+    }
     // a wire must never be left running over itself by an edit (pre-existing ones aside)
     if (op !== "undo" && op !== "redo") {
       const was = new Set(before.wires.filter((w) => pathOverlapsItself(w.points)).map((w) => w.id));

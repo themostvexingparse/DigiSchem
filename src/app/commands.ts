@@ -61,7 +61,7 @@ export class AppCommands {
       const serious = warnings.filter((w) => /dropped|clamped|duplicate|renamed|invalid|unsupported/i.test(w));
       if (serious.length > 0) {
         console.warn(`Opened ${f.path} with ${warnings.length} repair(s):\n` + warnings.join("\n"));
-        notify(`Opened ${baseName(f.path, "project")} — ${serious.length} problem${serious.length > 1 ? "s" : ""} in the file were repaired (e.g. ${serious[0]})`, true);
+        notify(`Opened ${baseName(f.path, "project")}. ${serious.length} problem${serious.length > 1 ? "s" : ""} in the file were repaired (e.g. ${serious[0]})`, true);
       } else {
         notify(`Opened ${baseName(f.path, "project")}`);
       }
@@ -167,7 +167,7 @@ export class AppCommands {
         // would otherwise land inside the drag and be partly undone by it
         for (let i = 0; i < 600 && (this.editor.isBusy() || this.store.inGesture()); i++) await new Promise((r) => setTimeout(r, 50));
         if (this.store.doc !== before) {
-          notify("The schematic changed while compacting — run Compact layout again.", true);
+          notify("The schematic changed while compacting. Run Compact layout again.", true);
           return;
         }
         if (problems.length > 0) {
@@ -175,7 +175,7 @@ export class AppCommands {
           return;
         }
         if (!(res.qualityAfter.total < res.qualityBefore.total)) {
-          notify("Already tidy — nothing to improve without changing wire shapes or order.");
+          notify("Already tidy. Nothing to improve without changing wire shapes or order.");
           return;
         }
         this.store.update(sel.size > 0 ? "Compact selection" : "Compact layout", (d) => {

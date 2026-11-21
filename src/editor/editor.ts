@@ -50,6 +50,7 @@ import {
   type SnapTarget,
 } from "./wire-utils";
 import { connectionConflicts, type ConnectionConflict } from "../model/links";
+import { describeConflict } from "./conflict-text";
 import { badWireIds, restoreWires } from "./safe-route";
 import { movedEndContacts, netWiresAt, RouteObstacles, repairSegmentDrop, repairWires, safeRoute, sameNetWires, trimToBranchPoints } from "./safe-route";
 import { computeGuides, guidePeers, type GuideResult } from "./guides";
@@ -361,7 +362,9 @@ export class Editor {
     if (!getDef(type)) return;
     this.closeTextEditor(true);
     this.wireDraft = null;
+    const hadInteraction = !!this.interaction;
     this.interaction = null;
+    if (hadInteraction) this.renderMarkers();
     this.placing = { type, rotation: 0, mirror: false };
     this.svg.focus({ preventScroll: true });
     this.updateCursorStyle();
@@ -690,18 +693,7 @@ export class Editor {
     }));
     this.cachedPins = doc.components.flatMap((comp) => worldPins(comp));
 
-    // Render unconnected pin markers
-    const unconn = getSettings().showUnconnectedPins ? unconnectedPins(doc) : [];
-    // Connection conflicts: where the drawing disagrees with what is connected (the connections
-    // themselves are kept — see model/links.ts). Red ring + cross at each point.
-    const conflicts = this.connectionConflicts();
-    this.unconnectedGroup.innerHTML =
-      unconn.map((p) => `<circle class="ds-unconn-pin" cx="${p.x}" cy="${p.y}" r="2.5"/>`).join("") +
-      conflicts
-        .map((c) => `<g><title>${c.kind === "unintended" ? "Touching, but not connected" : c.kind === "drivers" ? "Two outputs drive this net" : "Connected, but not touching"}</title>` +
-          `<circle class="ds-conflict" cx="${c.at.x}" cy="${c.at.y}" r="7"/>` +
-          `<path class="ds-conflict-x" d="M${c.at.x - 3} ${c.at.y - 3}L${c.at.x + 3} ${c.at.y + 3}M${c.at.x + 3} ${c.at.y - 3}L${c.at.x - 3} ${c.at.y + 3}"/></g>`)
-        .join("");
+    this.renderMarkers();
 
     if (!this.interaction && this.hasCursor) {
       this.updateHoverFromCursor();
@@ -710,6 +702,25 @@ export class Editor {
     this.renderOverlay();
   }
 
+  /**
+   * Unconnected-pin and connection-conflict markers. Also called when a gesture ends: conflicts
+   * are hidden mid-drag, and a drag that ends where it started changes nothing in the document,
+   * so no scene rebuild would bring them back.
+   */
+  private renderMarkers(): void {
+    const doc = this.store.doc as SchematicDocument;
+    const unconn = getSettings().showUnconnectedPins ? unconnectedPins(doc) : [];
+    // Connection conflicts: where the drawing disagrees with what is connected (the connections
+    // themselves are kept — see model/links.ts). Red ring + cross at each point.
+    const conflicts = this.connectionConflicts();
+    this.unconnectedGroup.innerHTML =
+      unconn.map((p) => `<circle class="ds-unconn-pin" cx="${p.x}" cy="${p.y}" r="2.5"/>`).join("") +
+      conflicts
+        .map((c) => `<g><title>${escapeXml(describeConflict(doc, c))}</title>` +
+          `<circle class="ds-conflict" cx="${c.at.x}" cy="${c.at.y}" r="7"/>` +
+          `<path class="ds-conflict-x" d="M${c.at.x - 3} ${c.at.y - 3}L${c.at.x + 3} ${c.at.y + 3}M${c.at.x + 3} ${c.at.y - 3}L${c.at.x - 3} ${c.at.y + 3}"/></g>`)
+        .join("");
+  }
 
   /** One drag frame (light) or the final drop (full repair) of a move-selection gesture. */
   private applyMoveFrame(draft: SchematicDocument, inter: Extract<Interaction, { kind: "move-selection" }>, delta: Point, light: boolean): void {
@@ -871,7 +882,7 @@ export class Editor {
     if (this.unrouted.size > 0 && !this.interaction) {
       for (const w of doc.wires) {
         if (!this.unrouted.has(w.id) || w.points.length < 2) continue;
-        parts.push(`<polyline class="ds-unrouted" points="${w.points.map((p) => `${p.x},${p.y}`).join(" ")}"><title>No clean route yet — it will be restored automatically when there is room</title></polyline>`);
+        parts.push(`<polyline class="ds-unrouted" points="${w.points.map((p) => `${p.x},${p.y}`).join(" ")}"><title>No clean route yet. It will be restored automatically when there is room</title></polyline>`);
       }
     }
 
@@ -1850,6 +1861,7 @@ export class Editor {
       }
     }
 
+    this.renderMarkers(); // conflicts were hidden during the gesture
     this.updateHoverFromCursor();
     this.updateCursorStyle();
     this.renderOverlay();
@@ -1871,6 +1883,7 @@ export class Editor {
     } else if (inter.kind === "pin-wire-drag") {
       this.wireDraft = null;
     }
+    this.renderMarkers();
     this.updateHoverFromCursor();
     this.updateCursorStyle();
     this.renderOverlay();
@@ -2145,6 +2158,7 @@ export class Editor {
         ) {
           this.store.cancelGesture();
         }
+        this.renderMarkers();
       } else if (this.tool !== "select") {
         this.tool = "select";
       } else if (this.store.selection.size > 0) {
