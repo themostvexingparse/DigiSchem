@@ -53,6 +53,14 @@ html, body { margin: 0; height: 100%; overflow: hidden; }
 #toolbar > .tb-context::-webkit-scrollbar { display: none; }
 #toolbar > .tb-context > * { flex: none; }
 #toolbar > .tb-context .tb-chip { flex: 0 1 auto; min-width: 48px; }
+/* snapped / very narrow windows: two rows of FIXED height (still never changes on selection) */
+@media (max-width: 1000px) {
+  #toolbar { flex-wrap: wrap; height: 80px; align-content: center; row-gap: 4px; }
+}
+@media (max-width: 720px) {
+  #toolbar { height: 116px; }
+  #toolbar > .tb-context { flex-basis: 100%; order: 10; }
+}
 /* narrower windows: icon buttons drop their text labels (the tooltips still say what they do) */
 @media (max-width: 1500px) {
   #toolbar .tb-btn:has(.ico) > span { display: none; }
