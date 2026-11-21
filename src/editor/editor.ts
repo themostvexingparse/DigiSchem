@@ -2079,6 +2079,14 @@ export class Editor {
     // Global app shortcuts (Ctrl+N/O/S/E) are handled by src/app/commands.ts — do not touch!
     if (mod && (k === "n" || k === "o" || k === "s" || k === "e")) return;
 
+    // While a mouse gesture is in progress (dragging, wiring from a pin, resizing, selecting a
+    // region), editing shortcuts would change the document underneath it: only Esc (cancel),
+    // Space (pan) and "/" (flip the wire's bend) apply.
+    if (this.interaction && this.interaction.kind !== "pan" && !(e.key === "Escape" || e.code === "Space" || e.key === " " || e.key === "/")) {
+      e.preventDefault();
+      return;
+    }
+
     if (mod) {
       let handled = true;
       if (k === "a") {
