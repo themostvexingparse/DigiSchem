@@ -1,7 +1,7 @@
 /** Settings and keyboard-shortcut dialogs. */
 import { getSettings, updateSettings, type Settings } from "../model/settings";
 
-function modal(title: string, body: HTMLElement, footer?: HTMLElement): HTMLDialogElement {
+export function modal(title: string, body: HTMLElement, footer?: HTMLElement): HTMLDialogElement {
   const dlg = document.createElement("dialog");
   dlg.className = "app-dialog";
   const h = document.createElement("h3");
@@ -91,6 +91,7 @@ const SHORTCUTS: [string, string][] = [
   ["Ctrl+N / O / S", "New · Open · Save (Ctrl+Shift+S: Save as)"],
   ["Ctrl+E / Ctrl+Shift+E", "Export SVG / PNG"],
   ["Ctrl+Shift+L", "Compact layout (selection, or whole schematic)"],
+  ["Ctrl+K", "Code: write or read the schematic as DSpec (Ctrl+Enter builds)"],
   ["?", "This help"],
 ];
 

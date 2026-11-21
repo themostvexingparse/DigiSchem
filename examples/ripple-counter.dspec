@@ -1,0 +1,16 @@
+# 4-bit ripple counter: each flip-flop toggles (Q' fed back to D) and clocks the next one.
+@name "4-bit ripple counter"
+part CK clock
+part F0..F3 d-ff
+part Q0..Q3 output-pin
+
+CK -> F0.clk
+F0.Q' -> F0.d, F1.clk
+F1.Q' -> F1.d, F2.clk
+F2.Q' -> F2.d, F3.clk
+F3.Q' -> F3.d
+
+F0.q -> Q0
+F1.q -> Q1
+F2.q -> Q2
+F3.q -> Q3

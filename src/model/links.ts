@@ -34,7 +34,8 @@ export function canonicalLinks(links: Iterable<readonly [string, string]>): [str
 }
 
 /** Pin terminals that DRIVE a net (outputs; tri-state outputs and pull resistors may share). */
-function driverTerms(doc: SchematicDocument): Set<Terminal> {
+/** Pins that drive their net (outputs; tristate buffers and pull resistors excepted). */
+export function driverTerms(doc: SchematicDocument): Set<Terminal> {
   const out = new Set<Terminal>();
   for (const c of doc.components) {
     if (c.type === "tristate" || c.type === "pull-up" || c.type === "pull-down") continue;
@@ -163,10 +164,20 @@ export interface MaintainOptions {
    * the edit in `draft.links`) and joins nothing it merely lands on.
    */
   connectByTouch?: boolean;
+  /**
+   * The edit sets `draft.links` to the complete, exact connections (a build from DSpec source):
+   * nothing is kept from before and nothing connects by touch.
+   */
+  exact?: boolean;
 }
 
 /** Update `draft.links` after an edit from `before` (see the module comment). */
 export function maintainLinks(before: SchematicDocument, draft: SchematicDocument, opts: MaintainOptions = {}): void {
+  if (opts.exact) {
+    const now = terminalsOf(draft);
+    draft.links = canonicalLinks((draft.links ?? []).filter(([a, b]) => now.has(a) && now.has(b)));
+    return;
+  }
   const prev = before.links ?? inferLinks(before);
   const now = terminalsOf(draft);
   const old = before.links || before.wires.length || before.components.length ? terminalsOf(before) : new Set<Terminal>();

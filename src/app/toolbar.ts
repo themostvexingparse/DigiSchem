@@ -177,6 +177,7 @@ export function mountToolbar(host: HTMLElement, cmds: AppCommands, editor: Edito
     button({ icon: ICONS.zoomIn, title: "Zoom in", action: () => editor.zoomBy(1.25) }),
     button({ icon: ICONS.fit, title: "Zoom to fit (F)", action: () => editor.zoomToFit() }),
     button({ icon: ICONS.compact, title: "Compact layout: the selection, or the whole schematic (Ctrl+Shift+L)", action: () => cmds.compactLayout() }),
+    button({ icon: ICONS.code, label: "Code", title: "Write or read the schematic as DSpec code (Ctrl+K)", action: () => cmds.showCode() }),
     gridBtn,
     themeSel,
     panelBtn,

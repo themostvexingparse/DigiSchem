@@ -168,6 +168,23 @@ dialog.app-dialog .dlg-close { border: none; background: transparent; font-size:
 .shortcut-table th { text-align: left; white-space: nowrap; padding: 5px 18px 5px 0; font-weight: 600; font-family: Consolas, monospace; font-size: 12px; }
 .shortcut-table td { padding: 5px 0; color: var(--text); }
 .shortcut-table tr + tr { border-top: 1px solid var(--panel-border); }
+dialog.app-dialog.code-dialog { max-width: min(1000px, 96vw); width: min(1000px, 96vw); }
+.code-dlg { display: flex; flex-direction: column; gap: 8px; padding: 10px 14px 14px; }
+.code-bar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.code-bar button { padding: 4px 10px; }
+.code-bar button.primary { background: var(--accent, #2f6fde); color: #fff; border-color: transparent; }
+.code-status { color: var(--muted); font-size: 12px; margin-left: 4px; }
+.code-text {
+  width: 100%; height: min(56vh, 560px); box-sizing: border-box; resize: vertical;
+  font: 13px/18px Consolas, "Cascadia Mono", monospace; tab-size: 2;
+  border: 1px solid var(--panel-border); border-radius: 6px; padding: 8px; background: var(--bg, #fff); color: var(--text);
+}
+.code-diags { list-style: none; margin: 0; padding: 0; max-height: 22vh; overflow: auto; font-size: 12px; }
+.code-diags li { padding: 3px 6px; border-radius: 4px; cursor: pointer; }
+.code-diags li:hover { background: rgba(127, 127, 127, .12); }
+.code-diags li.error { color: #c0392b; }
+.code-diags li.warning { color: #b9770e; }
+.code-diags li.note { color: var(--muted); }
 button.tb-zoom { border: none; background: transparent; padding: 0 4px; height: 30px; }
 button.tb-zoom:hover { text-decoration: underline; background: transparent; }
 .tb-btn.on { color: var(--accent); }

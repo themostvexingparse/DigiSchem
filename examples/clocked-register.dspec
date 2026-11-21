@@ -1,0 +1,19 @@
+# A 4-bit register loaded through a 2-to-1 multiplexer, shown on a hex display.
+# The clock and reset nets are drawn as net labels (@route tunnel) to keep the drawing calm.
+@name "Loadable register"
+part D input-pin width=4
+part LOAD input-pin
+part M mux dataWidth=4
+part R register width=4 enable=false
+part HEX hex-display
+part CK clock
+part RST input-pin
+
+net DIN = D, M.d1
+net FEEDBACK = R.q, M.d0, HEX.d
+LOAD -> M.s0
+M.y -> R.d
+
+@route tunnel
+net CLOCK = CK, R.clk
+net RESET = RST, R.rst

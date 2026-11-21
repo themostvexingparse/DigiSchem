@@ -1,5 +1,6 @@
 /** App-level commands: file operations, export, toolbar and global shortcuts. Owned by the shell. */
 import type { DocumentStore } from "../model/store";
+import { showCodeDialog } from "./code-dialog";
 import { emptyDocument } from "../model/types";
 import type { Editor } from "../editor/editor";
 import { THEMES } from "../render/svg";
@@ -13,6 +14,7 @@ import { worldPins } from "../model/geometry";
 import type { SchematicDocument } from "../model/types";
 
 const PROJECT_FILTER = [{ name: "DigiSchem Project", extensions: [PROJECT_EXTENSION, "json"] }];
+const OPEN_FILTER = [{ name: "DigiSchem Project or DSpec source", extensions: [PROJECT_EXTENSION, "json", "dspec"] }];
 
 function baseName(path: string | null, fallback: string): string {
   const raw = path ? (path.split(/[\\/]/).pop() ?? fallback).replace(/\.[^.]+$/, "") : fallback;
@@ -44,6 +46,10 @@ export class AppCommands {
     return !this.store.dirty || confirm("Discard unsaved changes?");
   }
 
+  showCode() {
+    showCodeDialog(this.store, this.editor);
+  }
+
   newDocument() {
     if (!this.confirmDiscard()) return;
     this.store.replace(emptyDocument());
@@ -52,8 +58,14 @@ export class AppCommands {
   async open() {
     if (!this.confirmDiscard()) return;
     try {
-      const f = await openText(PROJECT_FILTER);
+      const f = await openText(OPEN_FILTER);
       if (!f) return;
+      if (/\.dspec$/i.test(f.path)) {
+        // DSpec source: build it into a fresh document (Save then writes a .dschem)
+        this.store.replace(emptyDocument());
+        showCodeDialog(this.store, this.editor, { text: f.contents, build: true });
+        return;
+      }
       const { doc, warnings } = parseProjectWithWarnings(f.contents);
       this.store.replace(doc, f.path);
       this.editor.zoomToFit();
@@ -259,6 +271,7 @@ export function installGlobalShortcuts(cmds: AppCommands) {
     else if (k === "s") void cmds.save(e.shiftKey);
     else if (k === "e") cmds.showExportDialog(e.shiftKey ? "png" : "svg");
     else if (k === "l" && e.shiftKey) cmds.compactLayout();
+    else if (k === "k") cmds.showCode();
     else handled = false;
     if (handled) e.preventDefault();
   });

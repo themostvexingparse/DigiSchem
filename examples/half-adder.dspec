@@ -1,0 +1,11 @@
+# Half adder: S = A xor B, C = A and B
+@name "Half adder"
+part A, B input-pin
+part X1 xor
+part G1 and
+part S, C output-pin
+
+A -> X1.in0, G1.in0
+B -> X1.in1, G1.in1
+X1 -> S
+G1 -> C

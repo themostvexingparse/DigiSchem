@@ -24,6 +24,7 @@ export const ICONS = {
   help: wrap(`<circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .9-1 1.6v.6"/><circle cx="12" cy="17" r=".6" fill="currentColor"/>`),
   panelRight: wrap(`<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/>`),
   compact: wrap(`<path d="M4 4l5 5M20 4l-5 5M4 20l5-5M20 20l-5-5"/><path d="M9 5v4H5M15 5v4h4M9 19v-4H5M15 19v-4h4"/>`),
+  code: wrap(`<path d="M8 7l-5 5 5 5M16 7l5 5-5 5M14 4l-4 16"/>`),
   fit: wrap(`<path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"/>`),
   grid: wrap(`<circle cx="6" cy="6" r="1"/><circle cx="12" cy="6" r="1"/><circle cx="18" cy="6" r="1"/><circle cx="6" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="18" cy="12" r="1"/><circle cx="6" cy="18" r="1"/><circle cx="12" cy="18" r="1"/><circle cx="18" cy="18" r="1"/>`),
 };

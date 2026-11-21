@@ -1,0 +1,57 @@
+# 4-bit ripple-carry adder built from gates, one group per bit.
+@name "4-bit ripple-carry adder"
+@compact end
+
+part A0..A3, B0..B3 input-pin
+part CIN input-pin
+part S0..S3, COUT output-pin
+
+group bit0 {
+  part X0a, X0b xor
+  part N0a, N0b and
+  part R0 or
+  A0 -> X0a.in0, N0a.in0
+  B0 -> X0a.in1, N0a.in1
+  X0a -> X0b.in0, N0b.in0
+  CIN -> X0b.in1, N0b.in1
+  N0a -> R0.in0
+  N0b -> R0.in1
+  X0b -> S0
+}
+group bit1 {
+  part X1a, X1b xor
+  part N1a, N1b and
+  part R1 or
+  A1 -> X1a.in0, N1a.in0
+  B1 -> X1a.in1, N1a.in1
+  X1a -> X1b.in0, N1b.in0
+  R0 -> X1b.in1, N1b.in1
+  N1a -> R1.in0
+  N1b -> R1.in1
+  X1b -> S1
+}
+group bit2 {
+  part X2a, X2b xor
+  part N2a, N2b and
+  part R2 or
+  A2 -> X2a.in0, N2a.in0
+  B2 -> X2a.in1, N2a.in1
+  X2a -> X2b.in0, N2b.in0
+  R1 -> X2b.in1, N2b.in1
+  N2a -> R2.in0
+  N2b -> R2.in1
+  X2b -> S2
+}
+group bit3 {
+  part X3a, X3b xor
+  part N3a, N3b and
+  part R3 or
+  A3 -> X3a.in0, N3a.in0
+  B3 -> X3a.in1, N3a.in1
+  X3a -> X3b.in0, N3b.in0
+  R2 -> X3b.in1, N3b.in1
+  N3a -> R3.in0
+  N3b -> R3.in1
+  X3b -> S3
+  R3 -> COUT
+}
