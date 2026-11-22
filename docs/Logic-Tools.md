@@ -229,7 +229,10 @@ Flip-flops, latches, registers, counters and memory words start at X, so a desig
 reads X until something sets it; `new Simulator(c, { initial: "zero" })` starts them at 0 instead.
 Where an output depends on unknown inputs, it is still known when every value of the unknowns gives
 the same result (an AND with a 0 input, a priority encoder whose highest input is 1, a JK flip-flop
-with J = 1 and K = 0).
+with J = 1 and K = 0). For parts without state this is exact whenever at most four input bits are
+unknown: the part is evaluated for every way of filling them in, and an output bit is known if all
+the tries agree (so a XOR of a floating net with itself is 0). A known value is never claimed that
+some filling-in would contradict; the tests check this for every part.
 
 **Transistors** are simulated at switch level: while an nMOS, pMOS or transmission gate conducts,
 the nets on its two channel pins are one net. Supplies and inputs (VDD, ground, constants, input
@@ -293,6 +296,25 @@ through its inputs (every combination for a circuit without clocks and up to 12 
 otherwise 256 seeded random inputs, ticking the clocks after each) and returns each distinct
 contention, floating input or oscillation with how often it happened and the first input values
 that showed it.
+
+### Hazards
+
+```ts
+import { hazardScan } from "./src/logic/analyze";
+
+hazardScan(c);
+// [{ output: "F", kind: "static-1", input: "A", from: { A: 1, B: 1, C: 1 }, waveform: "101", count: 1 }]
+```
+
+The simulator normally evaluates parts in signal order, so a change never glitches. With
+`new Simulator(c, { timing: "unit" })` every part takes one gate delay instead and all of them
+switch together, so paths of unequal length make glitches appear as they would in hardware, and
+`settle()` returns each changed node's `history`. `hazardScan` uses that on a combinational
+circuit: from every input combination (up to 10 input bits) it changes each input bit once and
+reports every output that goes through more than the one expected change, as a static-1 hazard
+(should stay 1, dips to 0), a static-0 hazard, or a dynamic hazard, with the input values that
+show it. For `AB + A'C` it finds the static-1 hazard when A changes with B = C = 1; adding the
+consensus term `BC` removes it.
 
 ## Truth tables and Karnaugh maps from a drawing
 

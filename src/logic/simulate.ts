@@ -62,10 +62,12 @@ export interface SimIssue {
 }
 
 export interface SettleResult {
-  /** waves it took to settle (one wave is one gate delay) */
+  /** evaluation rounds it took to settle (with unit timing, one round is one gate delay) */
   waves: number;
   stable: boolean;
   issues: SimIssue[];
+  /** with unit timing: the values each node went through, for the nodes that changed (first is the value before) */
+  history?: Map<number, Bit[]>;
 }
 
 export interface SimOptions {
@@ -73,6 +75,13 @@ export interface SimOptions {
   initial?: "x" | "zero";
   /** waves before the circuit counts as oscillating (default 200 + 4 per part) */
   maxWaves?: number;
+  /**
+   * "zero" (default): parts are evaluated in signal order, each once its inputs are final, so a
+   * change produces no glitches. "unit": every part takes one gate delay and all of them switch
+   * together, wave by wave, so unequal paths make glitches (hazards) appear, as in hardware; the
+   * settle result then records every node's history.
+   */
+  timing?: "zero" | "unit";
 }
 
 interface DriverRef {
@@ -186,10 +195,14 @@ export class Simulator {
   private multi?: number[];
   private readonly maxWaves: number;
   readonly initial: "x" | "zero";
+  readonly timing: "zero" | "unit";
+  /** during a unit-timing settle: the values each changed node went through */
+  private history: Map<number, Bit[]> | null = null;
 
   constructor(circuit: Circuit, opts: SimOptions = {}) {
     this.circuit = circuit;
     this.initial = opts.initial ?? "x";
+    this.timing = opts.timing ?? "zero";
     this.maxWaves = opts.maxWaves ?? 200 + 4 * circuit.parts.length;
     this.maxWavesOpt = opts.maxWaves;
     circuit.parts.forEach((p, i) => {
@@ -421,6 +434,11 @@ export class Simulator {
   }
 
   private setValue(n: number, v: Bit): void {
+    if (this.history) {
+      const h = this.history.get(n);
+      if (h) h.push(v);
+      else this.history.set(n, [this.values[n], v]);
+    }
     this.values[n] = v;
     if (v === BZ && this.readers[n].length) this.zSet.add(n);
     else this.zSet.delete(n);
@@ -458,7 +476,39 @@ export class Simulator {
       }
     };
     let phases = 0;
+    if (this.timing === "unit") this.history = new Map();
     for (;;) {
+      // unit timing: every pending part, whatever its rank, switches in the same wave
+      if (this.timing === "unit") {
+        let waves = 0;
+        while (this.heap.length) {
+          const parts: number[] = [];
+          for (const r of this.heap) {
+            for (const pi of this.buckets[r]) parts.push(pi);
+            this.buckets[r].clear();
+            this.queued[r] = 0;
+          }
+          this.heap.length = 0;
+          this.wave(parts);
+          rounds++;
+          if (++waves >= this.maxWaves) {
+            // still changing: hold what keeps changing at X
+            const changing = new Set<number>();
+            for (let i = 0; i < 64 && this.heap.length; i++, rounds++) {
+              const ps: number[] = [];
+              for (const r of this.heap) {
+                for (const pi of this.buckets[r]) ps.push(pi);
+                this.buckets[r].clear();
+                this.queued[r] = 0;
+              }
+              this.heap.length = 0;
+              for (const node of this.wave(ps)) changing.add(node);
+            }
+            if (this.heap.length) hold(changing);
+            break;
+          }
+        }
+      }
       while (this.heap.length) {
         const r = this.heap[0];
         const bucket = this.buckets[r];
@@ -518,7 +568,9 @@ export class Simulator {
         message: `the circuit does not settle: ${pins.slice(0, 6).join(", ")}${pins.length > 6 ? ", ..." : ""} keep changing`,
       });
     }
-    return { waves: rounds, stable: oscillating.size === 0, issues };
+    const history = this.history ?? undefined;
+    this.history = null;
+    return { waves: rounds, stable: oscillating.size === 0, issues, ...(history ? { history } : {}) };
   }
 
   /**

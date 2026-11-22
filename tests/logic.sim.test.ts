@@ -5,7 +5,7 @@ import { DocumentStore } from "../src/model/store";
 import { circuitText, extractCircuit, structuralKey } from "../src/logic/circuit";
 import { checkCircuit } from "../src/logic/check";
 import { Simulator } from "../src/logic/simulate";
-import { compareCircuits, outputFunctions, scanCircuit, stateTable, truthTable, truthTableText } from "../src/logic/analyze";
+import { compareCircuits, hazardScan, outputFunctions, scanCircuit, stateTable, truthTable, truthTableText } from "../src/logic/analyze";
 import { watchCircuit } from "../src/logic/watch";
 import { minimize, sopToDspec, sopToString } from "../src/logic/minimize";
 import { sopToSchematic, sopsToSchematic } from "../src/logic/sop-schematic";
@@ -554,5 +554,40 @@ describe("scanning a circuit for problems that depend on values", () => {
   it("is quiet on a correct design", () => {
     const doc = sopToSchematic(minimize(3, [3, 5, 6, 7]).terms, ["cin", "b", "a"], "cout");
     expect(scanCircuit(extractCircuit(doc)).findings).toEqual([]);
+  });
+});
+
+describe("hazards", () => {
+  // F = AB + A'C, and with the consensus term BC
+  const f = (consensus: boolean) =>
+    mk(
+      [["A", "input-pin"], ["B", "input-pin"], ["C", "input-pin"], ["N", "not"], ["G1", "and"], ["G2", "and"], ["G3", "and"], ["S", "or", { inputs: consensus ? 3 : 2 }], ["F", "output-pin"]],
+      [
+        ["A.out", "N.in0", "G1.in0"], ["B.out", "G1.in1", ...(consensus ? ["G3.in0"] : [])], ["N.out", "G2.in0"], ["C.out", "G2.in1", ...(consensus ? ["G3.in1"] : [])],
+        ["G1.out", "S.in0"], ["G2.out", "S.in1"], ...(consensus ? [["G3.out", "S.in2"]] : []), ["S.out", "F.in"],
+      ],
+    );
+
+  it("finds the static-1 hazard of AB + A'C when A changes with B = C = 1", () => {
+    const hz = hazardScan(extractCircuit(f(false)));
+    expect(hz.length).toBe(1);
+    expect(hz[0]).toMatchObject({ output: "F", kind: "static-1", input: "A", count: 1 });
+    expect(hz[0].from).toMatchObject({ B: 1, C: 1 });
+    expect(hz[0].waveform).toMatch(/^10+1$/);
+  });
+
+  it("the consensus term BC removes it", () => {
+    expect(hazardScan(extractCircuit(f(true)))).toEqual([]);
+  });
+
+  it("zero-delay simulation never glitches", () => {
+    const s = new Simulator(extractCircuit(f(false)));
+    s.set("A", 1);
+    s.set("B", 1);
+    s.set("C", 1);
+    s.settle();
+    s.set("A", 0);
+    expect(s.settle().history).toBeUndefined();
+    expect(s.read("F")).toBe(1);
   });
 });

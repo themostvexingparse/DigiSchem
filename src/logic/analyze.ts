@@ -423,3 +423,84 @@ export function scanCircuit(c: Circuit, opts: { maxInputBits?: number; vectors?:
   }
   return { mode: "random", tried: n, findings: [...found.values()] };
 }
+
+export interface Hazard {
+  /** output pin name (and bit, for a bus) */
+  output: string;
+  /** static-1: should stay 1 but dips to 0; static-0: should stay 0 but pulses to 1; dynamic: changes more than once on its way to the new value */
+  kind: "static-0" | "static-1" | "dynamic";
+  /** the input that changed */
+  input: string;
+  /** input values before the change, by input name */
+  from: Record<string, number>;
+  /** the values the output went through, one gate delay apart */
+  waveform: string;
+  /** how many single-input changes showed this hazard on this output and input */
+  count: number;
+}
+
+/**
+ * Hazards (glitches) of a combinational circuit, found with unit gate delays: from every input
+ * combination (up to `maxInputBits`, default 10), every single input bit is changed, and each
+ * output that goes through more than the one expected change is reported. A two-level circuit
+ * built from a minimal sum of products has static-1 hazards wherever two adjacent groups on the
+ * Karnaugh map are not overlapped by a third (the consensus term).
+ */
+export function hazardScan(c: Circuit, opts: { maxInputBits?: number; outputs?: string[] } = {}): Hazard[] {
+  const ins = c.parts.filter((p) => p.type === "input-pin");
+  const outs = (opts.outputs ?? c.parts.filter((p) => p.type === "output-pin").map((p) => p.id)).map((r) => findPart(c, r));
+  const bitsOf = (p: CircuitPart) => p.pins.filter((x) => x.dir === "out").flatMap((x) => x.bits);
+  const inBits = ins.map((p) => bitsOf(p).length);
+  const n = inBits.reduce((s, w) => s + w, 0);
+  if (n > (opts.maxInputBits ?? 10)) throw new Error(`${n} input bits is too many to scan for hazards`);
+  const watch: { name: string; node: number }[] = [];
+  for (const p of outs) {
+    const pin = p.pins.find((x) => x.dir === "in");
+    if (!pin) continue;
+    pin.bits.forEach((node, k) => watch.push({ name: pin.bits.length > 1 ? `${p.name}[${k}]` : p.name, node }));
+  }
+  const sim = new Simulator(c, { timing: "unit", initial: "zero" });
+  const apply = (m: number) => {
+    let at = 0;
+    ins.forEach((p, i) => {
+      sim.set(p.id, (m >> at) & ((1 << inBits[i]) - 1));
+      at += inBits[i];
+    });
+  };
+  const bitName = (b: number) => {
+    let at = 0;
+    for (let i = 0; i < ins.length; i++) {
+      if (b < at + inBits[i]) return inBits[i] > 1 ? `${ins[i].name}[${b - at}]` : ins[i].name;
+      at += inBits[i];
+    }
+    return `bit${b}`;
+  };
+  const values = (m: number) => {
+    const o: Record<string, number> = {};
+    let at = 0;
+    ins.forEach((p, i) => {
+      o[p.name] = (m >> at) & ((1 << inBits[i]) - 1);
+      at += inBits[i];
+    });
+    return o;
+  };
+  const found = new Map<string, Hazard>();
+  for (let m = 0; m < 1 << n; m++)
+    for (let b = 0; b < n; b++) {
+      apply(m);
+      sim.settle();
+      apply(m ^ (1 << b));
+      const r = sim.settle();
+      for (const w of watch) {
+        const h = r.history?.get(w.node);
+        if (!h || h.length < 3 || h.some((x) => x > 1)) continue;
+        const kind = h[0] === h[h.length - 1] ? (h[0] === 1 ? "static-1" : "static-0") : h.length >= 4 ? "dynamic" : null;
+        if (!kind) continue;
+        const key = `${w.name}|${kind}|${bitName(b)}`;
+        const f = found.get(key);
+        if (f) f.count++;
+        else found.set(key, { output: w.name, kind, input: bitName(b), from: values(m), waveform: h.map((x) => "01XZ"[x]).join(""), count: 1 });
+      }
+    }
+  return [...found.values()];
+}
