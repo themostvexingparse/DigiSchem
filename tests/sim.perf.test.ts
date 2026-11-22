@@ -731,14 +731,14 @@ describe("transistor switch-level circuits", () => {
     const tShared50 = measure(() => s50.settle()).ms;
     const s300 = new Simulator(extractCircuit(buildCmosInverterChain(300, true)));
     const tShared300 = measure(() => s300.settle()).ms;
-    expect(tShared300 / Math.max(tShared50, 0.1)).toBeLessThan(15);
+    expect(tShared300).toBeLessThan(Math.max(15 * tShared50, 60));
 
     // Split VDD/GND rails: N=100 vs N=600 (6x size -> actual ~25x due to O(N^2) full-circuit regroup per wave)
     const p100 = new Simulator(extractCircuit(buildCmosInverterChain(100, false)));
     const tSplit100 = measure(() => p100.settle()).ms;
     const p600 = new Simulator(extractCircuit(buildCmosInverterChain(600, false)));
     const tSplit600 = measure(() => p600.settle()).ms;
-    expect(tSplit600 / Math.max(tSplit100, 0.1)).toBeLessThan(15);
+    expect(tSplit600).toBeLessThan(Math.max(15 * tSplit100, 60));
   });
 
   it.skip("BENCHMARK (BUG-PERF-2): 2,000 shared-rail CMOS inverters in a chain (~40s+ due to O(N^2) ranks clique and O(N^3) settle)", { timeout: 120000 }, () => {

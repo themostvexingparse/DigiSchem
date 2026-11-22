@@ -4,7 +4,7 @@
  * whatever gates it uses. Each output bit then gets its minimal sum of products (minimize.ts).
  */
 import type { Circuit, CircuitPart } from "./circuit";
-import { STATEFUL, switchClusters } from "./check";
+import { STATEFUL, checkCircuit, switchClusters } from "./check";
 import { kmapText, minimize, sopToString, type MinimizeResult } from "./minimize";
 import { MODELS } from "./models";
 import { type Bit, PASSIVE, Simulator, STIMULI, SUPPLIES, SWITCHES, bitChar, numberToBits } from "./simulate";
@@ -87,6 +87,28 @@ export function stateInCone(c: Circuit, from: readonly CircuitPart[]): CircuitPa
   return found;
 }
 
+/** Parts of combinational feedback loops that the given parts depend on. */
+export function loopsInCone(c: Circuit, from: readonly CircuitPart[]): CircuitPart[] {
+  const inLoop = new Set<string>();
+  for (const i of checkCircuit(c)) if (i.kind === "feedback") for (const n of i.pins) inLoop.add(n);
+  if (!inLoop.size) return [];
+  // walk the cone backwards, like stateInCone, collecting loop parts
+  const drivers: number[][] = Array.from({ length: c.nodes }, () => []);
+  c.parts.forEach((p, pi) => p.pins.forEach((pin) => pin.dir !== "in" && pin.bits.forEach((n) => drivers[n].push(pi))));
+  const seen = new Set<number>();
+  const found: CircuitPart[] = [];
+  const stack = from.map((p) => c.parts.indexOf(p));
+  while (stack.length) {
+    const pi = stack.pop()!;
+    if (seen.has(pi)) continue;
+    seen.add(pi);
+    const p = c.parts[pi];
+    if (inLoop.has(p.name)) found.push(p);
+    for (const pin of p.pins) if (pin.dir !== "out") for (const n of pin.bits) for (const d of drivers[n]) if (!seen.has(d)) stack.push(d);
+  }
+  return found;
+}
+
 /** Simulate every input combination. Throws for a circuit whose outputs depend on state. */
 export function truthTable(c: Circuit, opts: TruthTableOptions = {}): TruthTable {
   const ins = (opts.inputs ?? c.parts.filter((p) => p.type === "input-pin").map((p) => p.id)).map((r) => findPart(c, r));
@@ -95,6 +117,8 @@ export function truthTable(c: Circuit, opts: TruthTableOptions = {}): TruthTable
   for (const p of outs) if (!p.pins.some((x) => x.dir === "in")) throw new Error(`${p.name} has no input to read`);
   const state = stateInCone(c, outs);
   if (state.length) throw new Error(`the outputs depend on parts with state or that are not simulated: ${state.map((p) => `${p.name} (${p.type})`).join(", ")}`);
+  const loops = loopsInCone(c, outs);
+  if (loops.length) throw new Error(`the outputs depend on a feedback loop (a latch built from gates?), so they have a state: ${loops.map((p) => p.name).join(", ")}`);
   const inputs: Port[] = ins.map((p) => ({ id: p.id, name: p.name, width: width(p, "out") }));
   const outputs: Port[] = outs.map((p) => ({ id: p.id, name: p.name, width: width(p, "in") }));
   const n = inputs.reduce((s, p) => s + p.width, 0);
@@ -193,12 +217,16 @@ export function stateTable(c: Circuit, opts: { inputs?: string[]; outputs?: stri
       continue;
     }
     if (!STATE_PARTS.has(p.type)) throw new Error(`${p.name} (${p.type}) cannot be cut open for a state table`);
-    const q = p.pins.find((x) => x.id === "q");
-    if (!q) continue;
-    const pin = (id: string, dir: "in" | "out", src: typeof q) => ({ ...src, id, name: id, dir, inverted: false, clock: false });
-    const sv: CircuitPart = { id: `${p.id}__q`, name: `${p.name}_q`, type: "input-pin", props: { name: `${p.name}_q`, width: q.width }, pins: [pin("out", "out", q)] };
-    parts.push(sv);
-    state.push(sv);
+    // Q is one bus pin `q` or bit pins q0, q1, ...: either way one state variable per pin
+    const qs = p.pins.filter((x) => x.dir === "out" && /^q\d*$/.test(x.id));
+    if (!qs.length) continue;
+    const pin = (id: string, dir: "in" | "out", src: (typeof qs)[number]) => ({ ...src, id, name: id, dir, inverted: false, clock: false });
+    for (const q of qs) {
+      const sv: CircuitPart = { id: `${p.id}__${q.id}`, name: `${p.name}_${q.id}`, type: "input-pin", props: { name: `${p.name}_${q.id}`, width: q.width }, pins: [pin("out", "out", q)] };
+      parts.push(sv);
+      state.push(sv);
+    }
+    const qBits = qs.flatMap((q) => q.bits);
     const qn = p.pins.find((x) => x.id === "qn");
     if (qn)
       for (let b = 0; b < qn.width; b++)
@@ -208,7 +236,7 @@ export function stateTable(c: Circuit, opts: { inputs?: string[]; outputs?: stri
           type: "not",
           props: {},
           pins: [
-            { ...pin("in0", "in", q), width: 1, bits: [q.bits[b]] },
+            { ...pin("in0", "in", qs[0]), width: 1, bits: [qBits[b]] },
             { ...pin("out", "out", qn), width: 1, bits: [qn.bits[b]] },
           ],
         });
@@ -315,8 +343,17 @@ export function compareCircuits(a: Circuit, b: Circuit, opts: CompareOptions = {
     sa.settle();
     sb.settle();
     check(vals, t);
-    if (clocks(sa)) sa.tick();
-    if (clocks(sb)) sb.tick();
+    // a clock cycle, compared while the clock is high too: that tells the edges apart
+    const phase = (v: number) => {
+      for (const s of [sa, sb]) {
+        if (!clocks(s)) continue;
+        for (const p of s.circuit.parts) if (p.type === "clock") s.set(p.id, v);
+        s.settle();
+      }
+    };
+    phase(1);
+    check(vals, t + 0.5);
+    phase(0);
   }
   return { equal: !mismatches.length && !onlyA.length && !onlyB.length, mode: "random", tried, mismatches, onlyA, onlyB };
 }

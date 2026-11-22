@@ -18,7 +18,8 @@ export interface CheckIssue {
     | "width-mismatch"
     | "unmodelled"
     | "feedback"
-    | "unused-input";
+    | "unused-input"
+    | "no-reset";
   severity: Severity;
   /** the pins involved, as `part name.pin` */
   pins: string[];
@@ -130,7 +131,23 @@ export function checkCircuit(c: Circuit): CheckIssue[] {
     }
   }
 
-  for (const i of c.issues) issues.push({ kind: "width-mismatch", severity: "error", pins: [], message: `net ${c.nets[i.net].name}: ${i.message}` });
+  for (const i of c.issues) {
+    const pins = c.nets[i.net].pins.map((r) => `${c.parts[r.part].name}.${c.parts[r.part].pins[r.pin].id}`);
+    issues.push({ kind: "width-mismatch", severity: "error", pins, message: `net ${c.nets[i.net].name}: ${i.message}` });
+  }
+
+  // ---- parts with state that nothing can reset: they start unknown ----
+  const RESETS = /^(rst|set|clr|ld|load)$/;
+  const noReset = c.parts.filter(
+    (p) => STATEFUL.has(p.type) && !["ram", "dual-port-ram", "register-file", "rom"].includes(p.type) && !p.pins.some((x) => RESETS.test(x.id) && x.net >= 0),
+  );
+  if (noReset.length)
+    issues.push({
+      kind: "no-reset",
+      severity: "info",
+      pins: noReset.map((p) => p.name),
+      message: `${noReset.map((p) => p.name).join(", ")} ${noReset.length > 1 ? "have" : "has"} no reset connected: ${noReset.length > 1 ? "they start" : "it starts"} unknown (X) until clocked with known data`,
+    });
 
   // ---- parts the simulator does not model ----
   for (const p of c.parts)
