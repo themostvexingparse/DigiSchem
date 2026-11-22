@@ -5,7 +5,7 @@ import { DocumentStore } from "../src/model/store";
 import { circuitText, extractCircuit, structuralKey } from "../src/logic/circuit";
 import { checkCircuit } from "../src/logic/check";
 import { Simulator } from "../src/logic/simulate";
-import { compareCircuits, outputFunctions, stateTable, truthTable, truthTableText } from "../src/logic/analyze";
+import { compareCircuits, outputFunctions, scanCircuit, stateTable, truthTable, truthTableText } from "../src/logic/analyze";
 import { watchCircuit } from "../src/logic/watch";
 import { minimize, sopToDspec, sopToString } from "../src/logic/minimize";
 import { sopToSchematic, sopsToSchematic } from "../src/logic/sop-schematic";
@@ -532,5 +532,27 @@ describe("comparing circuits", () => {
     expect(r.onlyA).toEqual(["A"]);
     expect(r.onlyB).toEqual(["B"]);
     expect(r.equal).toBe(false);
+  });
+});
+
+describe("scanning a circuit for problems that depend on values", () => {
+  it("finds the input combination where two tri-state buffers fight, and when the bus floats", () => {
+    const doc = mk(
+      [["A", "input-pin"], ["B", "input-pin"], ["EA", "input-pin"], ["EB", "input-pin"], ["TA", "tristate"], ["TB", "tristate"], ["Y", "output-pin"]],
+      [["A.out", "TA.in"], ["B.out", "TB.in"], ["EA.out", "TA.en"], ["EB.out", "TB.en"], ["TA.out", "TB.out", "Y.in"]],
+    );
+    const r = scanCircuit(extractCircuit(doc));
+    expect(r).toMatchObject({ mode: "exhaustive", tried: 16 });
+    const short = r.findings.find((f) => f.kind === "contention")!;
+    expect(short.count).toBe(2); // both enabled, A != B
+    expect(short.example.EA && short.example.EB && short.example.A !== short.example.B).toBeTruthy();
+    const float = r.findings.find((f) => f.kind === "floating")!;
+    expect(float.count).toBe(4); // both disabled
+    expect([float.example.EA, float.example.EB]).toEqual([0, 0]);
+  });
+
+  it("is quiet on a correct design", () => {
+    const doc = sopToSchematic(minimize(3, [3, 5, 6, 7]).terms, ["cin", "b", "a"], "cout");
+    expect(scanCircuit(extractCircuit(doc)).findings).toEqual([]);
   });
 });

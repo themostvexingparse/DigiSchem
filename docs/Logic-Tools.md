@@ -277,6 +277,23 @@ The static check needs no input values:
 | `unmodelled` | info | a part the simulator does not model |
 | `unused-input` | info | an input connected to nothing |
 
+### Problems that depend on values
+
+```ts
+import { scanCircuit } from "./src/logic/analyze";
+
+scanCircuit(c).findings;
+// [{ kind: "contention", pins: [...], count: 2, example: { A: 1, B: 0, EA: 1, EB: 1 }, ... },
+//  { kind: "floating", ..., example: { EA: 0, EB: 0, ... } }]
+```
+
+The static check cannot see a short that only happens when two tri-state buffers are enabled
+together, or a bus that floats when every driver is released. `scanCircuit` runs the circuit
+through its inputs (every combination for a circuit without clocks and up to 12 input bits;
+otherwise 256 seeded random inputs, ticking the clocks after each) and returns each distinct
+contention, floating input or oscillation with how often it happened and the first input values
+that showed it.
+
 ## Truth tables and Karnaugh maps from a drawing
 
 ```ts

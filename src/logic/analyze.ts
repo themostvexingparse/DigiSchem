@@ -320,3 +320,69 @@ export function compareCircuits(a: Circuit, b: Circuit, opts: CompareOptions = {
   }
   return { equal: !mismatches.length && !onlyA.length && !onlyB.length, mode: "random", tried, mismatches, onlyA, onlyB };
 }
+
+export interface ScanFinding {
+  kind: "contention" | "floating" | "oscillation";
+  pins: string[];
+  message: string;
+  /** how many of the tried inputs showed it */
+  count: number;
+  /** the first input values (by input name) that showed it, and the clock cycle */
+  example: Record<string, number>;
+  cycle: number;
+}
+
+export interface ScanResult {
+  mode: "exhaustive" | "random";
+  tried: number;
+  findings: ScanFinding[];
+}
+
+/**
+ * Run a circuit through its inputs and collect the problems that only show for some values: a
+ * short that happens when two tri-state buffers are enabled together, an input that floats when
+ * a bus is released, a loop that oscillates for one input combination. Circuits without clocks
+ * with up to `maxInputBits` (default 12) input bits are tried exhaustively; others with `vectors`
+ * (default 256) seeded random inputs, ticking the clocks after each.
+ */
+export function scanCircuit(c: Circuit, opts: { maxInputBits?: number; vectors?: number; seed?: number; initial?: "x" | "zero" } = {}): ScanResult {
+  const ins = c.parts.filter((p) => STIMULI.has(p.type) && p.type !== "clock");
+  const widths = ins.map((p) => p.pins.reduce((s, x) => s + (x.dir === "out" ? x.width : 0), 0));
+  const bits = widths.reduce((s, w) => s + w, 0);
+  const clocked = c.parts.some((p) => p.type === "clock");
+  const sim = new Simulator(c, { initial: opts.initial ?? "zero" });
+  const found = new Map<string, ScanFinding>();
+  const note = (vals: number[], cycle: number, issues: { kind: string; pins: string[]; message: string }[]) => {
+    for (const i of issues) {
+      if (i.kind !== "contention" && i.kind !== "floating" && i.kind !== "oscillation") continue;
+      const key = `${i.kind}|${[...i.pins].sort().join(",")}`;
+      const f = found.get(key);
+      if (f) f.count++;
+      else found.set(key, { kind: i.kind, pins: i.pins, message: i.message, count: 1, example: Object.fromEntries(ins.map((p, k) => [p.name, vals[k]])), cycle });
+    }
+  };
+  const apply = (vals: number[]) => ins.forEach((p, k) => sim.set(p.id, numberToBits(vals[k], widths[k])));
+  if (!clocked && bits <= (opts.maxInputBits ?? 12)) {
+    for (let m = 0; m < 2 ** bits; m++) {
+      let at = 0;
+      const vals = widths.map((w) => {
+        const v = Math.floor(m / 2 ** at) % 2 ** w;
+        at += w;
+        return v;
+      });
+      apply(vals);
+      note(vals, 0, sim.settle().issues);
+    }
+    return { mode: "exhaustive", tried: 2 ** bits, findings: [...found.values()] };
+  }
+  let seed = (opts.seed ?? 1) >>> 0 || 1;
+  const rnd = () => ((seed = (Math.imul(seed, 1103515245) + 12345) >>> 0) / 2 ** 32);
+  const n = opts.vectors ?? 256;
+  for (let t = 0; t < n; t++) {
+    const vals = widths.map((w) => Math.floor(rnd() * 2 ** Math.min(w, 32)));
+    apply(vals);
+    note(vals, t, sim.settle().issues);
+    if (clocked) for (const r of sim.tick()) note(vals, t, r.issues);
+  }
+  return { mode: "random", tried: n, findings: [...found.values()] };
+}
