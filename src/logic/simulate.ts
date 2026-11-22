@@ -86,6 +86,30 @@ const TRISTATE = new Set(["tristate", "bus-transceiver"]);
 const WEAK = new Set(["pull-up", "pull-down"]);
 /** Parts set from outside (by `set`), with the pins they drive. */
 export const STIMULI = new Set(["input-pin", "clock", "push-button", "dip-switch", "keypad"]);
+/**
+ * Switches: while a transistor conducts, the nets on its two channel pins are one net (values
+ * pass both ways). Each entry is a channel and the pin that controls it; the control pin's
+ * polarity (the bubble on a pMOS gate, on EN') says when it conducts. A transmission gate is two
+ * channels in parallel, one per enable.
+ */
+export const SWITCHES: Record<string, { ends: [string, string]; gate: string }[]> = {
+  nmos: [{ ends: ["d", "s"], gate: "g" }],
+  pmos: [{ ends: ["s", "d"], gate: "g" }],
+  "transmission-gate": [
+    { ends: ["a", "b"], gate: "en" },
+    { ends: ["a", "b"], gate: "enb" },
+  ],
+};
+
+interface Switch {
+  part: number;
+  gate: number;
+  inverted: boolean;
+  a: number;
+  b: number;
+  on: Bit;
+}
+
 /** Parts that only join bits (their slices are already one node with the bus): no behaviour. */
 export const PASSIVE = new Set(["splitter"]);
 
@@ -100,6 +124,13 @@ export class Simulator {
   private state: Record<string, unknown>[];
   private stimulus: Bit[][][];
   private forcedX = new Set<number>();
+  private switches: Switch[] = [];
+  private switchesOf = new Map<number, Switch[]>();
+  /** group root of every node (nodes joined by conducting switches), and the members of each larger group */
+  private root: Int32Array;
+  private members = new Map<number, number[]>();
+  /** switches whose conduction is unknown, by the nodes they touch */
+  private unsure = new Map<number, Switch[]>();
   private pending = new Set<number>();
   private readonly maxWaves: number;
   readonly initial: "x" | "zero";
@@ -116,9 +147,26 @@ export class Simulator {
     this.state = circuit.parts.map(() => ({}));
     this.drives = circuit.parts.map((p) => p.pins.map((pin) => new Array<Bit>(pin.width).fill(BZ)));
     this.stimulus = circuit.parts.map((p) => p.pins.map((pin) => new Array<Bit>(pin.width).fill(B0)));
+    this.root = new Int32Array(n).map((_, i) => i);
+    circuit.parts.forEach((p, pi) => {
+      const sw = SWITCHES[p.type];
+      if (!sw) return;
+      const list: Switch[] = [];
+      for (const c of sw) {
+        const a = p.pins.find((x) => x.id === c.ends[0]), b = p.pins.find((x) => x.id === c.ends[1]);
+        const g = p.pins.findIndex((x) => x.id === c.gate);
+        if (!a || !b || g < 0) continue;
+        for (let i = 0; i < Math.min(a.bits.length, b.bits.length); i++)
+          list.push({ part: pi, gate: g, inverted: p.pins[g].inverted, a: a.bits[i], b: b.bits[i], on: BX });
+      }
+      this.switchesOf.set(pi, list);
+      this.switches.push(...list);
+    });
     circuit.parts.forEach((p, pi) =>
       p.pins.forEach((pin, k) => {
         if (PASSIVE.has(p.type)) return;
+        // a switch's channel pins neither drive nor read: they join nets (see SWITCHES)
+        if (SWITCHES[p.type] && pin.dir === "inout") return;
         const strength: Strength = TRISTATE.has(p.type) ? "tristate" : WEAK.has(p.type) ? "weak" : "strong";
         const drives = pin.dir === "out" || pin.dir === "inout";
         const reads = pin.dir === "in" || pin.dir === "inout";
@@ -240,7 +288,22 @@ export class Simulator {
     const parts = [...this.pending];
     this.pending.clear();
     const touched = new Set<number>();
+    let regroup = false;
     for (const pi of parts) {
+      const sws = this.switchesOf.get(pi);
+      if (sws) {
+        for (const sw of sws) {
+          const g = this.values[this.circuit.parts[pi].pins[sw.gate].bits[0]];
+          const on: Bit = g > 1 ? BX : ((sw.inverted ? 1 - g : g) as Bit);
+          if (on !== sw.on) {
+            sw.on = on;
+            regroup = true;
+            touched.add(sw.a);
+            touched.add(sw.b);
+          }
+        }
+        continue;
+      }
       const next = this.evaluate(pi);
       const cur = this.drives[pi];
       next.forEach((bits, k) => {
@@ -251,6 +314,24 @@ export class Simulator {
           }
         });
       });
+    }
+    if (regroup) this.regroup();
+    // a change anywhere in a group of joined nets is a change to all of it, and to the groups an
+    // unsure switch might join it to
+    if (this.switches.length) {
+      const more = new Set<number>();
+      const addGroup = (n: number) => {
+        for (const m of this.members.get(this.root[n]) ?? [n]) {
+          if (more.has(m)) continue;
+          more.add(m);
+          for (const sw of this.unsure.get(m) ?? []) {
+            addGroup(sw.a);
+            addGroup(sw.b);
+          }
+        }
+      };
+      for (const n of touched) addGroup(n);
+      for (const n of more) touched.add(n);
     }
     const changed: number[] = [];
     for (const n of touched) {
@@ -264,12 +345,59 @@ export class Simulator {
     return changed;
   }
 
+  /** Recompute which nodes conducting switches join. */
+  private regroup(): void {
+    const parent = this.root.map((_, i) => i);
+    const find = (x: number): number => {
+      while (parent[x] !== x) x = parent[x] = parent[parent[x]];
+      return x;
+    };
+    this.unsure.clear();
+    for (const sw of this.switches) {
+      if (sw.on === B1) {
+        const x = find(sw.a), y = find(sw.b);
+        if (x !== y) parent[x] = y;
+      } else if (sw.on === BX) {
+        for (const n of [sw.a, sw.b]) this.unsure.set(n, [...(this.unsure.get(n) ?? []), sw]);
+      }
+    }
+    this.members.clear();
+    for (let i = 0; i < parent.length; i++) {
+      const r = find(i);
+      this.root[i] = r;
+    }
+    for (let i = 0; i < parent.length; i++) {
+      const r = this.root[i];
+      if (r === i) continue;
+      const l = this.members.get(r);
+      if (l) l.push(i);
+      else this.members.set(r, [r, i]);
+    }
+  }
+
   private resolve(n: number): { value: Bit; strong: number; distinct: boolean } {
+    const r = this.resolveGroup(this.root[n]);
+    // A switch that may or may not conduct: if it would bring a different value, the value is unknown.
+    if (this.unsure.size && r.value !== BX) {
+      const group = this.members.get(this.root[n]) ?? [n];
+      for (const m of group)
+        for (const sw of this.unsure.get(m) ?? []) {
+          const other = this.root[sw.a] === this.root[n] ? sw.b : sw.a;
+          if (this.root[other] === this.root[n]) continue;
+          const o = this.resolveGroup(this.root[other]).value;
+          if (o !== BZ && o !== r.value) return { ...r, value: BX };
+        }
+    }
+    return r;
+  }
+
+  private resolveGroup(root: number): { value: Bit; strong: number; distinct: boolean } {
     let strongV: Bit | -1 = -1;
     let weakV: Bit | -1 = -1;
     let strong = 0;
     let distinct = false;
-    for (const d of this.drivers[n]) {
+    for (const m of this.members.get(root) ?? [root])
+    for (const d of this.drivers[m]) {
       const v = this.drives[d.part][d.pin][d.bit];
       if (v === BZ) continue;
       if (d.strength === "weak") {
@@ -343,6 +471,23 @@ export class Simulator {
       if (r.distinct) contended.push(n);
       if (r.value === BZ && this.readers[n].length) floating.push(n);
     }
+    // a switch that may be conducting between two nets driven to different values may be a short
+    const unsureShorts = new Set<Switch>();
+    for (const sw of this.switches) {
+      if (sw.on !== BX || this.root[sw.a] === this.root[sw.b]) continue;
+      const x = this.resolveGroup(this.root[sw.a]).value, y = this.resolveGroup(this.root[sw.b]).value;
+      if (x !== BZ && y !== BZ && (x !== y || x === BX)) unsureShorts.add(sw);
+    }
+    for (const sw of unsureShorts) {
+      const p = this.circuit.parts[sw.part];
+      const nodes = [sw.a, sw.b];
+      issues.push({
+        kind: "contention",
+        nodes,
+        pins: this.pinsOn(nodes),
+        message: `${p.name} may be conducting (its control is unknown) between nets driven to different values`,
+      });
+    }
     for (const nodes of group(contended)) {
       const drv = new Set<string>();
       for (const n of nodes)
@@ -371,7 +516,7 @@ export class Simulator {
       });
     }
     this.circuit.parts.forEach((p, i) => {
-      if (!this.models[i] && !STIMULI.has(p.type) && !PASSIVE.has(p.type) && p.pins.some((pin) => pin.dir !== "in"))
+      if (!this.models[i] && !STIMULI.has(p.type) && !PASSIVE.has(p.type) && !SWITCHES[p.type] && p.pins.some((pin) => pin.dir !== "in"))
         issues.push({ kind: "unmodelled", nodes: [], pins: [p.name], message: `${p.name} (${p.type}) is not simulated; its outputs read X` });
     });
     return issues;

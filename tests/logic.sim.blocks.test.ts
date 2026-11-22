@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { bench } from "./helpers/sim-harness";
 import { DEBOUNCE_SAMPLES } from "../src/logic/models-seq";
+import { extractCircuit } from "../src/logic/circuit";
+import { Simulator } from "../src/logic/simulate";
 
 let seed = 12345;
 const rnd = (n: number) => {
@@ -330,5 +332,72 @@ describe("ALU, shifter, carry-lookahead", () => {
       // block generate: a carry out of the block that does not depend on c0
       expect(b.get("g")).toBe(g[3] | (p[3] & (g[2] | (p[2] & (g[1] | (p[1] & g[0]))))));
     }
+  });
+});
+
+describe("transistors (switch level)", () => {
+  const cmos = (extra: [string, string, Record<string, unknown>?][], nets: string[][]) => {
+    const parts: [string, string, Record<string, unknown>?][] = [["VDD", "vcc"], ["GND", "ground"], ...extra];
+    const doc = {
+      format: "digischem" as const, version: 1 as const, name: "cmos", grid: 10, wires: [], texts: [],
+      components: parts.map(([id, type, props], i) => ({ id, type, x: i * 200, y: 0, rotation: 0 as const, props: (props ?? {}) as Record<string, string | number | boolean>, label: "" })),
+      links: nets.flatMap((net) => net.slice(1).map((r) => [`p:${net[0].replace(".", "|")}`, `p:${r.replace(".", "|")}`] as [string, string])),
+    };
+    return new Simulator(extractCircuit(doc));
+  };
+
+  it("a CMOS inverter inverts", () => {
+    const s = cmos(
+      [["A", "input-pin"], ["P", "pmos"], ["N", "nmos"], ["Y", "output-pin"]],
+      [["VDD.vcc", "P.s"], ["GND.gnd", "N.s"], ["A.out", "P.g", "N.g"], ["P.d", "N.d", "Y.in"]],
+    );
+    for (const a of [0, 1, 0]) {
+      s.set("A", a);
+      expect(s.settle().issues).toEqual([]);
+      expect(s.read("Y")).toBe(1 - a);
+    }
+  });
+
+  it("a CMOS NAND gate, and a short when both networks conduct", () => {
+    // pull-up: two pMOS in parallel; pull-down: two nMOS in series
+    const s = cmos(
+      [["A", "input-pin"], ["B", "input-pin"], ["P1", "pmos"], ["P2", "pmos"], ["N1", "nmos"], ["N2", "nmos"], ["Y", "output-pin"]],
+      [["VDD.vcc", "P1.s", "P2.s"], ["A.out", "P1.g", "N1.g"], ["B.out", "P2.g", "N2.g"], ["P1.d", "P2.d", "N1.d", "Y.in"], ["N1.s", "N2.d"], ["N2.s", "GND.gnd"]],
+    );
+    for (let m = 0; m < 4; m++) {
+      s.set("A", m & 1);
+      s.set("B", m >> 1);
+      expect(s.settle().issues).toEqual([]);
+      expect(s.read("Y")).toBe(m === 3 ? 0 : 1);
+    }
+    const bad = cmos(
+      [["A", "input-pin"], ["P", "pmos"], ["N", "nmos"], ["Y", "output-pin"]],
+      [["VDD.vcc", "P.s"], ["GND.gnd", "N.s"], ["A.out", "N.g"], ["GND.gnd", "P.g"], ["P.d", "N.d", "Y.in"]],
+    );
+    bad.set("A", 1); // both conduct: VDD shorted to ground
+    expect(bad.settle().issues.map((i) => i.kind)).toContain("contention");
+    expect(bad.read("Y")).toBe(null);
+  });
+
+  it("a transmission gate passes both ways and floats when off", () => {
+    const s = cmos(
+      [["D", "input-pin"], ["EN", "input-pin"], ["ENB", "input-pin"], ["T", "transmission-gate"], ["Y", "output-pin"]],
+      [["D.out", "T.a"], ["EN.out", "T.en"], ["ENB.out", "T.enb"], ["T.b", "Y.in"]],
+    );
+    s.set("EN", 1);
+    s.set("D", 1);
+    s.settle();
+    expect(s.read("Y")).toBe(1);
+    s.set("EN", 0);
+    s.set("ENB", 1);
+    expect(s.settle().issues.map((i) => i.kind)).toEqual(["floating"]);
+    expect(s.read("Y")).toBe(null);
+  });
+
+  it("an unknown gate on a switch makes the far side unknown", () => {
+    const s = cmos([["N", "nmos"], ["Y", "output-pin"]], [["GND.gnd", "N.s"], ["N.d", "Y.in"]]);
+    const r = s.settle(); // the gate is not connected: it may or may not conduct
+    expect(s.read("Y")).toBe(null);
+    expect(r.issues.map((i) => i.kind)).toContain("floating");
   });
 });
