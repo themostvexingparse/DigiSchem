@@ -140,6 +140,8 @@ export class Simulator {
   private forcedX = new Set<number>();
   /** a node held at 0 while probing a loop (see probeLoop), or -1 */
   private probeHold = -1;
+  /** while one wave's values are being resolved: what each unknown-switch component can bring */
+  private compCache: Map<number, { strong: Set<Bit>; weak: Set<Bit> }> | null = null;
   private switches: Switch[] = [];
   private switchesOf = new Map<number, Switch[]>();
   /** group root of every node (nodes joined by conducting switches), and the members of each larger group */
@@ -147,9 +149,27 @@ export class Simulator {
   private members = new Map<number, number[]>();
   /** switches whose conduction is unknown, by the nodes they touch */
   private unsure = new Map<number, Switch[]>();
+  /** nodes a supply or an input drives: ideal sources, never merged into a group of joined nets */
+  private supplyNode: Uint8Array;
+  /** the switches on each node */
+  private swAt: Switch[][];
   /** combinational parts waiting to be evaluated, by rank (see `ranks`) */
   private buckets: Set<number>[] = [];
-  private minRank = 0;
+  /** ranks with pending parts, as a min-heap (and whether each rank is in it) */
+  private heap: number[] = [];
+  private queued: Uint8Array = new Uint8Array(0);
+  /** waves a feedback loop may take before it counts as oscillating, by rank */
+  private loopCap: number[] = [];
+  private readonly maxWavesOpt?: number;
+  /** nodes with readers and nothing driving them (value Z): the floating candidates */
+  private zSet = new Set<number>();
+  private byId = new Map<string, number>();
+  /** pin index by id, per part (built on first evaluation) */
+  private pinIndex: Map<string, number>[] = [];
+  private byName = new Map<string, number>();
+  /** for diagnostics: the pins on each node, and the parts not simulated */
+  private pinsAt?: string[][];
+  private unmodelledParts?: number[];
   /** rank of each part (its loop's position in signal order), or -1 for a part with state */
   private rank: Int32Array;
   /** whether a rank is a feedback loop (evaluated in waves) rather than a single part */
@@ -168,6 +188,11 @@ export class Simulator {
     this.circuit = circuit;
     this.initial = opts.initial ?? "x";
     this.maxWaves = opts.maxWaves ?? 200 + 4 * circuit.parts.length;
+    this.maxWavesOpt = opts.maxWaves;
+    circuit.parts.forEach((p, i) => {
+      this.byId.set(p.id, i);
+      if (!this.byName.has(p.name)) this.byName.set(p.name, i);
+    });
     const n = circuit.nodes;
     this.values = new Array<Bit>(n).fill(BZ);
     this.drivers = Array.from({ length: n }, () => []);
@@ -199,13 +224,23 @@ export class Simulator {
         if (SWITCHES[p.type] && pin.dir === "inout") return;
         const strength: Strength = TRISTATE.has(p.type) ? "tristate" : WEAK.has(p.type) ? "weak" : "strong";
         const drives = pin.dir === "out" || pin.dir === "inout";
-        const reads = pin.dir === "in" || pin.dir === "inout";
+        // (a ground's pin is bidirectional, but a ground only drives)
+        const reads = (pin.dir === "in" || pin.dir === "inout") && p.type !== "ground";
         pin.bits.forEach((node, b) => {
           if (drives) this.drivers[node].push({ part: pi, pin: k, bit: b, strength, supply: SUPPLIES.has(p.type) });
-          if (reads && !this.readers[node].includes(pi)) this.readers[node].push(pi);
+          const rl = this.readers[node];
+          if (reads && rl[rl.length - 1] !== pi) rl.push(pi);
         });
       }),
     );
+    for (let node = 0; node < n; node++) if (this.readers[node].length) this.zSet.add(node);
+    this.supplyNode = new Uint8Array(n);
+    for (let node = 0; node < n; node++) if (this.drivers[node].some((d) => d.supply)) this.supplyNode[node] = 1;
+    this.swAt = Array.from({ length: n }, () => []);
+    for (const sw of this.switches) {
+      this.swAt[sw.a].push(sw);
+      if (sw.b !== sw.a) this.swAt[sw.b].push(sw);
+    }
     if (this.switches.length) this.regroup();
     this.rank = new Int32Array(circuit.parts.length);
     this.ranks();
@@ -226,37 +261,72 @@ export class Simulator {
       return x;
     };
     for (const sw of this.switches) {
+      if (this.supplyNode[sw.a] || this.supplyNode[sw.b]) continue; // a rail does not join what hangs off it
       const a = find(sw.a), b = find(sw.b);
       if (a !== b) ccc[a] = b;
     }
-    const readersOf = new Map<number, number[]>();
-    for (let node = 0; node < n; node++) {
-      const r = find(node);
-      const l = readersOf.get(r);
-      if (l) l.push(...this.readers[node]);
-      else readersOf.set(r, [...this.readers[node]]);
-    }
     const seq = parts.map((p) => STATEFUL.has(p.type));
-    const succ = parts.map((p, pi) => {
-      if (seq[pi]) return [] as number[];
-      const out = new Set<number>();
+    // The graph has a vertex per part and one per cluster of nets (nets that transistors can join):
+    // a part feeds the clusters it drives, a cluster feeds the parts that read it and the
+    // transistors on it. (Edges through a cluster vertex keep a bus with many drivers and readers,
+    // or a long chain of transistors, linear in size.)
+    const P = parts.length;
+    const clusterId = new Map<number, number>();
+    const vertex = (node: number) => {
+      const r = find(node);
+      let v = clusterId.get(r);
+      if (v === undefined) clusterId.set(r, (v = P + clusterId.size));
+      return v;
+    };
+    const succ: number[][] = parts.map(() => []);
+    const clusterSucc = new Map<number, Set<number>>();
+    const feed = (v: number, pi: number) => {
+      let l = clusterSucc.get(v);
+      if (!l) clusterSucc.set(v, (l = new Set()));
+      l.add(pi);
+    };
+    parts.forEach((p, pi) => {
+      const sw = this.switchesOf.get(pi);
       for (const pin of p.pins) {
-        if (pin.dir === "in") continue;
-        for (const node of pin.bits) for (const r of readersOf.get(find(node)) ?? []) if (!seq[r]) out.add(r);
+        if (sw && pin.dir === "inout") continue; // channels are handled below
+        for (const node of pin.bits) {
+          if (pin.dir !== "out" && p.type !== "ground" && !PASSIVE.has(p.type) && !seq[pi]) feed(vertex(node), pi);
+          if (pin.dir !== "in" && !seq[pi]) succ[pi].push(vertex(node));
+        }
       }
-      for (const x of this.switchesOf.get(pi) ?? []) for (const node of [x.a, x.b]) for (const r of readersOf.get(find(node)) ?? []) if (!seq[r]) out.add(r);
-      return [...out];
+      for (const x of sw ?? [])
+        for (const node of [x.a, x.b]) {
+          feed(vertex(node), pi); // what is on either side can pass through
+          if (!this.supplyNode[node]) succ[pi].push(vertex(node));
+        }
     });
-    const sccs = stronglyConnected(succ);
+    const V = P + clusterId.size;
+    const all: number[][] = new Array(V);
+    for (let i = 0; i < P; i++) all[i] = [...new Set(succ[i])];
+    for (let v = P; v < V; v++) all[v] = [...(clusterSucc.get(v) ?? [])];
+    // a part reading its own output (not a transistor beside its own channel) is a loop by itself
+    const selfLoop = (pi: number) => {
+      if (this.switchesOf.has(pi)) return false;
+      const outs = new Set<number>();
+      for (const pin of parts[pi].pins) if (pin.dir !== "in") for (const node of pin.bits) outs.add(vertex(node));
+      if (parts[pi].type === "ground" || PASSIVE.has(parts[pi].type)) return false;
+      for (const pin of parts[pi].pins) if (pin.dir !== "out") for (const node of pin.bits) if (outs.has(vertex(node))) return true;
+      return false;
+    };
+    const sccs = stronglyConnected(all)
+      .map((comp) => comp.filter((v) => v < P))
+      .filter((comp) => comp.length > 0);
     const total = sccs.length;
     sccs.forEach((comp, k) => {
       const r = total - 1 - k; // Tarjan lists the components that are fed first
       for (const pi of comp) this.rank[pi] = seq[pi] ? -1 : r;
-      this.loop[r] = comp.length > 1 || succ[comp[0]].includes(comp[0]);
+      this.loop[r] = comp.length > 1 || selfLoop(comp[0]);
       if (this.loop[r]) this.loopParts[r] = comp;
     });
     this.buckets = Array.from({ length: total }, () => new Set<number>());
-    this.minRank = total;
+    this.queued = new Uint8Array(total);
+    // a loop may take a few waves per part before it counts as oscillating
+    sccs.forEach((comp, k) => (this.loopCap[total - 1 - k] = this.maxWavesOpt ?? 64 + 8 * comp.length));
   }
 
   private enqueue(pi: number): void {
@@ -264,7 +334,10 @@ export class Simulator {
     if (r < 0) this.seqPending.add(pi);
     else {
       this.buckets[r].add(pi);
-      if (r < this.minRank) this.minRank = r;
+      if (!this.queued[r]) {
+        this.queued[r] = 1;
+        heapPush(this.heap, r);
+      }
     }
   }
 
@@ -272,12 +345,12 @@ export class Simulator {
 
   /** Find a part by id or name. */
   part(ref: string): CircuitPart | undefined {
-    return this.circuit.parts.find((p) => p.id === ref) ?? this.circuit.parts.find((p) => p.name === ref);
+    const i = this.partIndex(ref);
+    return i < 0 ? undefined : this.circuit.parts[i];
   }
 
   private partIndex(ref: string): number {
-    const i = this.circuit.parts.findIndex((p) => p.id === ref);
-    return i >= 0 ? i : this.circuit.parts.findIndex((p) => p.name === ref);
+    return this.byId.get(ref) ?? this.byName.get(ref) ?? -1;
   }
 
   /**
@@ -344,6 +417,12 @@ export class Simulator {
     return this.values[n];
   }
 
+  private setValue(n: number, v: Bit): void {
+    this.values[n] = v;
+    if (v === BZ && this.readers[n].length) this.zSet.add(n);
+    else this.zSet.delete(n);
+  }
+
   // ---- settling ---------------------------------------------------------------------------------
 
   /**
@@ -361,7 +440,7 @@ export class Simulator {
     }
     const wasForced = [...this.forcedX];
     this.forcedX.clear();
-    for (const n of wasForced) this.values[n] = this.resolve(n).value;
+    for (const n of wasForced) this.setValue(n, this.resolve(n).value);
     let rounds = 0;
     const oscillating = new Set<number>();
     const hold = (nodes: Iterable<number>) => {
@@ -370,18 +449,19 @@ export class Simulator {
         this.forcedX.add(n);
         oscillating.add(n);
         if (this.values[n] !== BX) {
-          this.values[n] = BX;
+          this.setValue(n, BX);
           for (const r of this.readers[n]) this.enqueue(r);
         }
       }
     };
     let phases = 0;
     for (;;) {
-      while (this.minRank < this.buckets.length) {
-        const r = this.minRank;
+      while (this.heap.length) {
+        const r = this.heap[0];
         const bucket = this.buckets[r];
         if (!bucket.size) {
-          this.minRank++;
+          heapPop(this.heap);
+          this.queued[r] = 0;
           continue;
         }
         if (!this.loop[r]) {
@@ -398,7 +478,7 @@ export class Simulator {
           bucket.clear();
           this.wave(parts);
           rounds++;
-          if (++waves < this.maxWaves || held) continue;
+          if (++waves < this.loopCap[r] || held) continue;
           // still changing: watch a while longer to see which nodes keep changing, then hold them at X
           const changing = new Set<number>();
           for (let i = 0; i < 64 && bucket.size; i++, rounds++) {
@@ -453,7 +533,7 @@ export class Simulator {
     const inner: number[] = [];
     const driven = new Set<number>();
     for (const pi of members) for (const pin of parts[pi].pins) if (pin.dir !== "in") for (const n of pin.bits) driven.add(n);
-    for (const sw of this.switches) if (inLoop.has(sw.part)) driven.add(sw.a), driven.add(sw.b);
+    for (const pi of members) for (const sw of this.switchesOf.get(pi) ?? []) driven.add(sw.a), driven.add(sw.b);
     for (const n of [...driven]) for (const m of this.members.get(this.root[n]) ?? []) driven.add(m);
     for (const n of driven) if (this.readers[n].some((x) => inLoop.has(x))) inner.push(n);
     const start = inner.find((n) => this.values[n] === BX && !this.forcedX.has(n));
@@ -464,7 +544,7 @@ export class Simulator {
     // save
     const values = this.values.slice();
     const drives = members.map((pi) => this.drives[pi].map((a) => a.slice()));
-    const sws = this.switches.filter((sw) => inLoop.has(sw.part)).map((sw) => [sw, sw.on] as const);
+    const sws = members.flatMap((pi) => (this.switchesOf.get(pi) ?? []).map((sw) => [sw, sw.on] as const));
     const bucket = this.buckets[r];
     // try: hold the node at 0 until the loop settles, then let go and see whether it stays
     const run = (waves: number, record?: Set<number>) => {
@@ -476,13 +556,14 @@ export class Simulator {
     };
     const cap = 4 * members.length + 32;
     this.probeHold = start;
-    this.values[start] = B0;
+    const zSaved = new Set(this.zSet);
+    this.setValue(start, B0);
     for (const x of this.readers[start]) if (inLoop.has(x)) bucket.add(x);
     run(cap);
     this.probeHold = -1;
     const released = this.resolve(start).value;
     if (released !== this.values[start]) {
-      this.values[start] = released;
+      this.setValue(start, released);
       for (const x of this.readers[start]) if (inLoop.has(x)) bucket.add(x);
     }
     run(cap);
@@ -492,6 +573,7 @@ export class Simulator {
     // put everything back
     bucket.clear();
     this.values = values;
+    this.zSet = zSaved;
     members.forEach((pi, i) => (this.drives[pi] = drives[i]));
     if (sws.length) {
       for (const [sw, on] of sws) sw.on = on;
@@ -502,8 +584,31 @@ export class Simulator {
 
   /** Evaluate parts against the current values, then apply all their outputs; returns the nodes that changed. */
   private wave(parts: readonly number[]): number[] {
+    // the common case, one ordinary part in a circuit without transistors: no bookkeeping
+    if (parts.length === 1 && !this.switches.length && this.probeHold < 0) {
+      const pi = parts[0];
+      const next = this.evaluate(pi);
+      const cur = this.drives[pi];
+      const pins = this.circuit.parts[pi].pins;
+      const changed: number[] = [];
+      for (let k = 0; k < next.length; k++) {
+        const nb = next[k], cb = cur[k];
+        for (let b = 0; b < nb.length; b++) {
+          if (cb[b] === nb[b]) continue;
+          cb[b] = nb[b];
+          const n = pins[k].bits[b];
+          const v = this.forcedX.has(n) ? BX : this.resolveGroup(n).value;
+          if (v !== this.values[n]) {
+            this.setValue(n, v);
+            changed.push(n);
+            for (const r of this.readers[n]) this.enqueue(r);
+          }
+        }
+      }
+      return changed;
+    }
     const touched = new Set<number>();
-    let regroup = false;
+    const switched: Switch[] = [];
     for (const pi of parts) {
       const sws = this.switchesOf.get(pi);
       if (sws) {
@@ -512,9 +617,10 @@ export class Simulator {
           const on: Bit = g > 1 ? BX : ((sw.inverted ? 1 - g : g) as Bit);
           if (on !== sw.on) {
             sw.on = on;
-            regroup = true;
-            touched.add(sw.a);
-            touched.add(sw.b);
+            switched.push(sw);
+            // (a rail keeps its value whatever is switched onto it)
+            if (!this.supplyNode[sw.a]) touched.add(sw.a);
+            if (!this.supplyNode[sw.b]) touched.add(sw.b);
           }
         }
         continue;
@@ -530,33 +636,58 @@ export class Simulator {
         });
       });
     }
-    if (regroup) this.regroup();
+    if (switched.length) this.regroupAround(switched);
     // a change anywhere in a group of joined nets is a change to all of it, and to the groups an
-    // unsure switch might join it to
+    // unsure switch might join it to; a rail that changes value changes every net switched onto it
     if (this.switches.length) {
       const more = new Set<number>();
+      const stack: number[] = [];
       const addGroup = (n: number) => {
+        if (more.has(n)) return;
+        if (this.supplyNode[n]) {
+          more.add(n);
+          return;
+        }
         for (const m of this.members.get(this.root[n]) ?? [n]) {
           if (more.has(m)) continue;
           more.add(m);
-          for (const sw of this.unsure.get(m) ?? []) {
-            addGroup(sw.a);
-            addGroup(sw.b);
-          }
+          stack.push(m);
         }
       };
-      for (const n of touched) addGroup(n);
+      for (const n of touched) {
+        addGroup(n);
+        if (this.supplyNode[n]) for (const sw of this.swAt[n]) if (sw.on !== B0) addGroup(sw.a === n ? sw.b : sw.a);
+      }
+      while (stack.length) {
+        const m = stack.pop()!;
+        for (const sw of this.unsure.get(m) ?? []) {
+          addGroup(sw.a);
+          addGroup(sw.b);
+        }
+      }
       for (const n of more) touched.add(n);
     }
     const changed: number[] = [];
+    // every node of a group of joined nets has the group's value: resolve each group once
+    const memo = this.switches.length ? new Map<number, Bit>() : null;
+    if (this.unsure.size) this.compCache = new Map();
     for (const n of touched) {
-      const v = n === this.probeHold ? B0 : this.forcedX.has(n) ? BX : this.resolve(n).value;
+      let v: Bit;
+      if (n === this.probeHold) v = B0;
+      else if (this.forcedX.has(n)) v = BX;
+      else if (memo) {
+        const r = this.root[n];
+        let m = memo.get(r);
+        if (m === undefined) memo.set(r, (m = this.resolve(n).value));
+        v = m;
+      } else v = this.resolve(n).value;
       if (v !== this.values[n]) {
-        this.values[n] = v;
+        this.setValue(n, v);
         changed.push(n);
         for (const r of this.readers[n]) this.enqueue(r);
       }
     }
+    this.compCache = null;
     return changed;
   }
 
@@ -570,6 +701,7 @@ export class Simulator {
     this.unsure.clear();
     for (const sw of this.switches) {
       if (sw.on === B1) {
+        if (this.supplyNode[sw.a] || this.supplyNode[sw.b]) continue; // a rail feeds the group (see resolveGroup)
         const x = find(sw.a), y = find(sw.b);
         if (x !== y) parent[x] = y;
       } else if (sw.on === BX) {
@@ -590,6 +722,50 @@ export class Simulator {
     }
   }
 
+  /**
+   * Regroup after some switches changed: only the groups at their ends are rebuilt, by following
+   * conducting switches (never through a rail), and the unknown-switch lists are updated.
+   */
+  private regroupAround(changed: readonly Switch[]): void {
+    for (const sw of changed)
+      for (const end of [sw.a, sw.b]) {
+        const l = (this.unsure.get(end) ?? []).filter((x) => x !== sw);
+        if (sw.on === BX) l.push(sw);
+        if (l.length) this.unsure.set(end, l);
+        else this.unsure.delete(end);
+      }
+    const seeds: number[] = [];
+    const seen = new Set<number>();
+    for (const sw of changed)
+      for (const end of [sw.a, sw.b]) {
+        if (this.supplyNode[end]) continue;
+        for (const m of this.members.get(this.root[end]) ?? [end])
+          if (!seen.has(m)) {
+            seen.add(m);
+            seeds.push(m);
+          }
+      }
+    for (const m of seeds) this.members.delete(this.root[m]);
+    const done = new Set<number>();
+    for (const start of seeds) {
+      if (done.has(start)) continue;
+      const comp = [start];
+      done.add(start);
+      for (let i = 0; i < comp.length; i++)
+        for (const sw of this.swAt[comp[i]]) {
+          if (sw.on !== B1) continue;
+          const o = sw.a === comp[i] ? sw.b : sw.a;
+          if (this.supplyNode[o] || done.has(o)) continue;
+          // a node from another group joins this one: that group is rebuilt here too
+          this.members.delete(this.root[o]);
+          done.add(o);
+          comp.push(o);
+        }
+      for (const m of comp) this.root[m] = start;
+      if (comp.length > 1) this.members.set(start, comp);
+    }
+  }
+
   private resolve(n: number): { value: Bit; strong: number; distinct: boolean; supply: boolean } {
     const r = this.resolveGroup(this.root[n]);
     // Switches that may or may not conduct: every group they might join this one to (through any
@@ -598,23 +774,38 @@ export class Simulator {
     // (a supply rail or an input keeps its value: at worst the switch is a short, reported as such)
     if (!this.unsure.size || r.value === BX || r.supply) return r;
     const own = this.root[n];
-    const seen = new Set<number>([own]);
-    const queue = [own];
-    while (queue.length) {
-      const g = queue.pop()!;
-      for (const m of this.members.get(g) ?? [g])
-        for (const sw of this.unsure.get(m) ?? [])
-          for (const end of [sw.a, sw.b]) {
-            const og = this.root[end];
-            if (seen.has(og)) continue;
-            seen.add(og);
-            queue.push(og);
-            const o = this.resolveGroup(og);
-            if (o.value === BZ || o.value === r.value) continue;
-            if (r.strong > 0 && o.strong === 0) continue; // a pull cannot override a driven net
-            return { ...r, value: BX };
-          }
+    // Every group reachable from this one through unknown switches shares the same set of
+    // reachable groups (a rail is reached but not passed through), so it is worked out once per
+    // such component and shared while the values do not change (one wave's resolution).
+    let info = this.compCache?.get(own);
+    if (!info) {
+      info = { strong: new Set<Bit>(), weak: new Set<Bit>() };
+      const seen = new Set<number>([own]);
+      const queue = [own];
+      const note = (g: number) => {
+        const o = this.resolveGroup(g);
+        if (o.value === BZ) return;
+        (o.strong > 0 ? info!.strong : info!.weak).add(o.value);
+      };
+      note(own);
+      while (queue.length) {
+        const g = queue.pop()!;
+        this.compCache?.set(g, info);
+        for (const m of this.members.get(g) ?? [g])
+          for (const sw of this.unsure.get(m) ?? [])
+            for (const end of [sw.a, sw.b]) {
+              const og = this.root[end];
+              if (seen.has(og)) continue;
+              seen.add(og);
+              note(og);
+              if (!this.supplyNode[end]) queue.push(og);
+            }
+      }
     }
+    // unknown if another group could bring a different strong value, or any different value
+    // when ours is only weak or nothing (a pull cannot override a driven net)
+    for (const v of info.strong) if (v !== r.value) return { ...r, value: BX };
+    if (r.strong === 0) for (const v of info.weak) if (v !== r.value) return { ...r, value: BX };
     return r;
   }
 
@@ -624,7 +815,14 @@ export class Simulator {
     let strong = 0;
     let distinct = false;
     let supply = false;
-    for (const m of this.members.get(root) ?? [root])
+    const nodes = this.members.get(root) ?? [root];
+    const sources: number[] = [];
+    if (this.switches.length && !this.supplyNode[root])
+      for (const m of nodes) for (const sw of this.swAt[m]) if (sw.on === B1) {
+        const o = sw.a === m ? sw.b : sw.a;
+        if (this.supplyNode[o] && !sources.includes(o)) sources.push(o);
+      }
+    for (const m of sources.length ? [...nodes, ...sources] : nodes)
     for (const d of this.drivers[m]) {
       const v = this.drives[d.part][d.pin][d.bit];
       if (v === BZ) continue;
@@ -662,7 +860,7 @@ export class Simulator {
       });
       return out;
     }
-    const io = new IO(part, this.values, out, this.initial);
+    const io = new IO(part, this.values, out, this.initial, (this.pinIndex[pi] ??= new Map(part.pins.map((x, k) => [x.id, k]))));
     model(io, this.state[pi]);
     return out;
   }
@@ -670,11 +868,17 @@ export class Simulator {
   // ---- diagnostics ------------------------------------------------------------------------------
 
   private pinsOn(nodes: readonly number[]): string[] {
-    const set = new Set(nodes);
-    const out: string[] = [];
-    for (const part of this.circuit.parts)
-      for (const pin of part.pins) if (pin.bits.some((b) => set.has(b))) out.push(`${part.name}.${pin.id}`);
-    return out;
+    if (!this.pinsAt) {
+      this.pinsAt = Array.from({ length: this.values.length }, () => [] as string[]);
+      for (const part of this.circuit.parts)
+        for (const pin of part.pins) {
+          const name = `${part.name}.${pin.id}`;
+          for (const b of new Set(pin.bits)) this.pinsAt[b].push(name);
+        }
+    }
+    const out = new Set<string>();
+    for (const n of nodes) for (const name of this.pinsAt[n] ?? []) out.add(name);
+    return [...out];
   }
 
   /** Contention and floating inputs in the current state, grouped by net. */
@@ -691,7 +895,7 @@ export class Simulator {
       const by = new Map<string, number[]>();
       for (const n of nodes) {
         const net = nodeNet.get(n);
-        const key = this.members.has(this.root[n]) ? `grp${this.root[n]}` : net === undefined ? `node${n}` : `net${net}`;
+        const key = this.members.has(this.root[n]) || this.swAt[n]?.length ? `grp${this.root[n]}` : net === undefined ? `node${n}` : `net${net}`;
         const l = by.get(key);
         if (l) l.push(n);
         else by.set(key, [n]);
@@ -703,9 +907,13 @@ export class Simulator {
     // only nodes with several drivers (or joined by switches) can have a short
     const seen = new Set<number>();
     for (const n of this.multi!) if (this.resolve(n).distinct) contended.push(n), seen.add(n);
-    for (const [root, members] of this.members)
-      if (this.resolveGroup(root).distinct) for (const m of members) if (!seen.has(m)) contended.push(m), seen.add(m);
-    for (let n = 0; n < this.values.length; n++) if (this.values[n] === BZ && this.readers[n].length) floating.push(n);
+    // groups joined by switches (and single nets switched onto rails)
+    const roots = new Set<number>(this.members.keys());
+    for (const sw of this.switches) if (sw.on === B1) for (const e of [sw.a, sw.b]) if (!this.supplyNode[e]) roots.add(this.root[e]);
+    for (const root of roots)
+      if (this.resolveGroup(root).distinct) for (const m of this.members.get(root) ?? [root]) if (!seen.has(m)) contended.push(m), seen.add(m);
+    for (const n of this.zSet) floating.push(n);
+    floating.sort((a, b) => a - b);
     // Switches that may be conducting (their control is unknown) between nets driven to different
     // values may be a short: nets joined through any chain of such switches form a cluster, and a
     // cluster holding two different driven values is reported once, with the switches and drivers.
@@ -757,7 +965,10 @@ export class Simulator {
     }
     for (const nodes of group(contended)) {
       const drv = new Set<string>();
-      for (const n of nodes)
+      const from = new Set(nodes);
+      // and the rails switched onto them
+      for (const n of nodes) for (const sw of this.swAt[n] ?? []) if (sw.on === B1) for (const e of [sw.a, sw.b]) if (this.supplyNode[e]) from.add(e);
+      for (const n of from)
         for (const d of this.drivers[n]) {
           const v = this.drives[d.part][d.pin][d.bit];
           if (v !== BZ && d.strength !== "weak") drv.add(`${this.circuit.parts[d.part].name}.${this.circuit.parts[d.part].pins[d.pin].id}=${bitChar(v)}`);
@@ -782,10 +993,14 @@ export class Simulator {
         message: `nothing drives ${readers.join(", ")} (it reads X)`,
       });
     }
-    this.circuit.parts.forEach((p, i) => {
-      if (!this.models[i] && !STIMULI.has(p.type) && !PASSIVE.has(p.type) && !SWITCHES[p.type] && p.pins.some((pin) => pin.dir !== "in"))
-        issues.push({ kind: "unmodelled", nodes: [], pins: [p.name], message: `${p.name} (${p.type}) is not simulated; its outputs read X` });
+    this.unmodelledParts ??= this.circuit.parts.map((_, i) => i).filter((i) => {
+      const p = this.circuit.parts[i];
+      return !this.models[i] && !STIMULI.has(p.type) && !PASSIVE.has(p.type) && !SWITCHES[p.type] && p.pins.some((pin) => pin.dir !== "in");
     });
+    for (const i of this.unmodelledParts) {
+      const p = this.circuit.parts[i];
+      issues.push({ kind: "unmodelled", nodes: [], pins: [p.name], message: `${p.name} (${p.type}) is not simulated; its outputs read X` });
+    }
     return issues;
   }
 }
@@ -797,10 +1012,11 @@ class IO implements PartIO {
     private values: Bit[],
     private out: Bit[][],
     readonly initial: "x" | "zero",
+    private index: Map<string, number>,
   ) {}
 
   private pin(id: string): number {
-    return this.part.pins.findIndex((p) => p.id === id);
+    return this.index.get(id) ?? -1;
   }
 
   has(id: string): boolean {
@@ -881,4 +1097,32 @@ function toBits(v: Drive, w: number): Bit[] {
   }
   if (typeof v === "boolean") return numberToBits(v ? 1 : 0, w);
   return numberToBits(v as number | bigint, w);
+}
+
+function heapPush(h: number[], v: number): void {
+  h.push(v);
+  for (let i = h.length - 1; i > 0; ) {
+    const p = (i - 1) >> 1;
+    if (h[p] <= h[i]) break;
+    [h[p], h[i]] = [h[i], h[p]];
+    i = p;
+  }
+}
+
+function heapPop(h: number[]): number | undefined {
+  const top = h[0];
+  const last = h.pop();
+  if (h.length && last !== undefined) {
+    h[0] = last;
+    for (let i = 0; ; ) {
+      const l = 2 * i + 1, r = l + 1;
+      let m = i;
+      if (l < h.length && h[l] < h[m]) m = l;
+      if (r < h.length && h[r] < h[m]) m = r;
+      if (m === i) break;
+      [h[m], h[i]] = [h[i], h[m]];
+      i = m;
+    }
+  }
+  return top;
 }
