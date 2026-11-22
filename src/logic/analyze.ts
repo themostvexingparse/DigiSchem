@@ -7,7 +7,7 @@ import type { Circuit, CircuitPart } from "./circuit";
 import { STATEFUL } from "./check";
 import { kmapText, minimize, sopToString, type MinimizeResult } from "./minimize";
 import { MODELS } from "./models";
-import { type Bit, PASSIVE, Simulator, STIMULI, bitChar } from "./simulate";
+import { type Bit, PASSIVE, Simulator, STIMULI, SWITCHES, bitChar } from "./simulate";
 
 export interface Port {
   /** part id */
@@ -64,7 +64,7 @@ export function stateInCone(c: Circuit, from: readonly CircuitPart[]): CircuitPa
     if (seen.has(pi)) continue;
     seen.add(pi);
     const p = c.parts[pi];
-    if (STATEFUL.has(p.type) || (!MODELS[p.type] && !STIMULI.has(p.type) && !PASSIVE.has(p.type) && !OUTPUTS.has(p.type))) found.push(p);
+    if (STATEFUL.has(p.type) || (!MODELS[p.type] && !STIMULI.has(p.type) && !PASSIVE.has(p.type) && !SWITCHES[p.type] && !OUTPUTS.has(p.type))) found.push(p);
     for (const pin of p.pins) if (pin.dir !== "out") for (const n of pin.bits) for (const d of drivers[n]) if (!seen.has(d)) stack.push(d);
   }
   return found;

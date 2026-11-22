@@ -401,3 +401,22 @@ describe("transistors (switch level)", () => {
     expect(r.issues.map((i) => i.kind)).toContain("floating");
   });
 });
+
+describe("transistor circuits in the checks and truth tables", () => {
+  it("a CMOS NOR gate gives its truth table and no unmodelled warning", async () => {
+    const { truthTable, outputFunctions } = await import("../src/logic/analyze");
+    const { checkCircuit } = await import("../src/logic/check");
+    const parts: [string, string][] = [["VDD", "vcc"], ["GND", "ground"], ["A", "input-pin"], ["B", "input-pin"], ["P1", "pmos"], ["P2", "pmos"], ["N1", "nmos"], ["N2", "nmos"], ["Y", "output-pin"]];
+    // pull-up: pMOS in series; pull-down: nMOS in parallel
+    const nets = [["VDD.vcc", "P1.s"], ["P1.d", "P2.s"], ["P2.d", "N1.d", "N2.d", "Y.in"], ["N1.s", "N2.s", "GND.gnd"], ["A.out", "P1.g", "N1.g"], ["B.out", "P2.g", "N2.g"]];
+    const doc = {
+      format: "digischem" as const, version: 1 as const, name: "nor", grid: 10, wires: [], texts: [],
+      components: parts.map(([id, type], i) => ({ id, type, x: i * 200, y: 0, rotation: 0 as const, props: {}, label: "" })),
+      links: nets.flatMap((net) => net.slice(1).map((r) => [`p:${net[0].replace(".", "|")}`, `p:${r.replace(".", "|")}`] as [string, string])),
+    };
+    const c = extractCircuit(doc);
+    expect(checkCircuit(c).filter((i) => i.kind === "unmodelled" || i.severity === "error")).toEqual([]);
+    const [f] = outputFunctions(truthTable(c));
+    expect(f.minterms).toEqual([0]);
+  });
+});

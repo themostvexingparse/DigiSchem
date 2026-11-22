@@ -5,7 +5,7 @@
  */
 import type { Circuit } from "./circuit";
 import { MODELS } from "./models";
-import { PASSIVE, STIMULI } from "./simulate";
+import { PASSIVE, STIMULI, SWITCHES } from "./simulate";
 
 export type Severity = "error" | "warning" | "info";
 
@@ -95,7 +95,7 @@ export function checkCircuit(c: Circuit): CheckIssue[] {
 
   // ---- parts the simulator does not model ----
   for (const p of c.parts)
-    if (!MODELS[p.type] && !STIMULI.has(p.type) && !PASSIVE.has(p.type) && p.pins.some((pin) => pin.dir !== "in"))
+    if (!MODELS[p.type] && !STIMULI.has(p.type) && !PASSIVE.has(p.type) && !SWITCHES[p.type] && p.pins.some((pin) => pin.dir !== "in"))
       issues.push({ kind: "unmodelled", severity: "info", pins: [p.name], message: `${p.name} (${p.type}) is not simulated; its outputs read X` });
 
   // ---- combinational loops (strongly connected parts, not through anything with state) ----
