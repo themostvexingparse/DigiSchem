@@ -13,6 +13,7 @@ import { checkCircuit } from "../src/logic/check";
 import { Simulator, STIMULI } from "../src/logic/simulate";
 import { scanCircuit, stateTable, truthTable } from "../src/logic/analyze";
 import { Rng } from "./helpers/sim-gen";
+import { invariants } from "./helpers/sim-invariants";
 
 registerBuiltinComponents();
 
@@ -64,6 +65,8 @@ describe("random documents never crash or hang the logic tools", () => {
           for (let v = 0; v < 6; v++) {
             for (const p of c.parts) if (STIMULI.has(p.type)) sim.set(p.id, rng.int(0, 255));
             sim.settle();
+            const bad = invariants(sim);
+            if (bad.length) throw new Error(`inconsistent after a settle (${timing}): ${bad.slice(0, 2).join("; ")}`);
             if (c.parts.some((p) => p.type === "clock")) sim.tick();
           }
           for (const p of c.parts) sim.read(p.id);
