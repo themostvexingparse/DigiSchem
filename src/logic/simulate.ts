@@ -705,7 +705,7 @@ export class Simulator {
         const x = find(sw.a), y = find(sw.b);
         if (x !== y) parent[x] = y;
       } else if (sw.on === BX) {
-        for (const n of [sw.a, sw.b]) this.unsure.set(n, [...(this.unsure.get(n) ?? []), sw]);
+        for (const n of new Set([sw.a, sw.b])) this.unsure.set(n, [...(this.unsure.get(n) ?? []), sw]);
       }
     }
     this.members.clear();
@@ -728,7 +728,7 @@ export class Simulator {
    */
   private regroupAround(changed: readonly Switch[]): void {
     for (const sw of changed)
-      for (const end of [sw.a, sw.b]) {
+      for (const end of new Set([sw.a, sw.b])) {
         const l = (this.unsure.get(end) ?? []).filter((x) => x !== sw);
         if (sw.on === BX) l.push(sw);
         if (l.length) this.unsure.set(end, l);
