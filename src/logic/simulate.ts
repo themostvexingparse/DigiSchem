@@ -423,18 +423,18 @@ class IO implements PartIO {
     return (this.part.pins[this.pin(id)].inverted ? 1 - v : v) as Bit;
   }
 
-  bus(prefix: string): Bit[] {
+  bus(prefix: string, sep = ""): Bit[] {
     if (this.has(prefix)) return this.bits(prefix);
     const out: Bit[] = [];
-    for (let i = 0; this.has(`${prefix}${i}`); i++) out.push(...this.bits(`${prefix}${i}`));
+    for (let i = 0; this.has(`${prefix}${sep}${i}`); i++) out.push(...this.bits(`${prefix}${sep}${i}`));
     return out;
   }
 
-  busWidth(prefix: string): number {
+  busWidth(prefix: string, sep = ""): number {
     const k = this.pin(prefix);
     if (k >= 0) return this.part.pins[k].width;
     let w = 0;
-    for (let i = 0; this.has(`${prefix}${i}`); i++) w += this.part.pins[this.pin(`${prefix}${i}`)].width;
+    for (let i = 0; this.has(`${prefix}${sep}${i}`); i++) w += this.part.pins[this.pin(`${prefix}${sep}${i}`)].width;
     return w;
   }
 
@@ -445,13 +445,13 @@ class IO implements PartIO {
     this.out[k] = toBits(v, w);
   }
 
-  driveBus(prefix: string, v: Drive): void {
+  driveBus(prefix: string, v: Drive, sep = ""): void {
     if (this.has(prefix)) return this.drive(prefix, v);
-    const w = this.busWidth(prefix);
+    const w = this.busWidth(prefix, sep);
     const bits = toBits(v, w);
     let at = 0;
-    for (let i = 0; this.has(`${prefix}${i}`); i++) {
-      const k = this.pin(`${prefix}${i}`);
+    for (let i = 0; this.has(`${prefix}${sep}${i}`); i++) {
+      const k = this.pin(`${prefix}${sep}${i}`);
       const pw = this.part.pins[k].width;
       this.out[k] = bits.slice(at, at + pw);
       at += pw;

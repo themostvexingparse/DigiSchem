@@ -8,11 +8,13 @@
  * active-low reset drawn with a bubble is active at 0; a falling-edge clock is active at 0), so
  * one model covers every polarity a part's properties can give it.
  *
- * Types without a model (memories, shifters, ALU, generic blocks, transistors...) drive X on
- * their outputs and are reported as not simulated.
+ * The larger blocks (shift registers, memories, ALU, shifter...) are in models-seq.ts. Types
+ * without a model (ROM, whose contents the library does not store, generic blocks, transistors)
+ * drive X on their outputs and are reported as not simulated.
  */
 import type { CircuitPart, CircuitPin } from "./circuit";
 import type { Bit } from "./simulate";
+import { SEQ_MODELS } from "./models-seq";
 
 const B0 = 0 as Bit, B1 = 1 as Bit, BX = 2 as Bit;
 
@@ -30,11 +32,11 @@ export interface PartIO {
   bit(pin: string): Bit;
   /** 1 when a control input is asserted (its polarity applied), `absent` when the pin does not exist */
   active(pin: string, absent?: Bit): Bit;
-  /** a bus read from one bus pin, or from its bit pins prefix0, prefix1, ... */
-  bus(prefix: string): Bit[];
-  busWidth(prefix: string): number;
+  /** a bus read from one bus pin, or from its bit pins prefix0, prefix1, ... (prefix_0, ... with sep "_") */
+  bus(prefix: string, sep?: string): Bit[];
+  busWidth(prefix: string, sep?: string): number;
   drive(pin: string, v: Drive): void;
-  driveBus(prefix: string, v: Drive): void;
+  driveBus(prefix: string, v: Drive, sep?: string): void;
 }
 
 export type Model = (io: PartIO, st: Record<string, any>) => void;
@@ -464,3 +466,5 @@ function bitsOf(v: bigint, w: number): Bit[] {
   }
   return out;
 }
+
+Object.assign(MODELS, SEQ_MODELS);
