@@ -232,9 +232,12 @@ the same result (an AND with a 0 input, a priority encoder whose highest input i
 with J = 1 and K = 0).
 
 **Transistors** are simulated at switch level: while an nMOS, pMOS or transmission gate conducts,
-the nets on its two channel pins are one net. CMOS gates built from transistors simulate and get
-truth tables; a short from VDD to ground through them is reported as contention, and a switch whose
-control is unknown between nets at different values as a possible short.
+the nets on its two channel pins are one net. Supplies and inputs (VDD, ground, constants, input
+pins) are ideal sources: a net switched onto one takes its value, the rail itself never changes,
+and two nets switched onto the same rail stay separate. A switch whose control is X may or may not
+conduct, and a net is X if it could change its value. CMOS gates built from transistors simulate
+and get truth tables; a short from VDD to ground through them is reported as contention, and
+switches with unknown controls between nets at different values as a possible short.
 
 Every part is simulated except the generic block. A ROM reads its `contents` property: hex words
 from address 0 separated by spaces or commas (`0x`, `0b` and `0d` prefixes also work, and `4*FF`
