@@ -150,7 +150,8 @@ const flipflop = (next: (io: PartIO, q: Bit) => Bit): Model => (io, st) => {
   const e = edge(io, st);
   const en = io.active("en");
   if (e !== B0) {
-    const n = [next(io, st.q[0])];
+    // an unknown present state: the next state is known if it is the same either way
+    const n = overUnknowns([st.q[0]], ([q]) => [next(io, q)], 1);
     st.q = choose(e === B1 ? en : en === B0 ? B0 : BX, n, st.q);
   }
   // async inputs (only flip-flops with asyncReset / asyncSet have these pins)
@@ -332,15 +333,18 @@ export const MODELS: Record<string, Model> = {
   },
   "bcd-7seg": (io) => {
     const low = !!io.prop("activeLow");
-    const lt = io.active("lt", B0), bi = io.active("bi", B0);
-    const v = big(io.bus("bcd"));
-    const segs = "abcdefg".split("");
-    const put = (bits: Bit[]) => segs.forEach((s, i) => io.drive(s, [low ? not(bits[i]) : bits[i]]));
-    if (bi === B1) return put(segs.map(() => B0));
-    if (lt === B1) return put(segs.map(() => B1));
-    if (v === null || lt === BX || bi === BX) return put(segs.map(() => BX));
-    const code = Number(v) < 10 ? SEGMENTS[Number(v)] : 0;
-    put(segs.map((_, i) => ((code >> (6 - i)) & 1) as Bit));
+    const bcd = io.bus("bcd");
+    // segments for known inputs [bcd bits..., LT, BI]; unknown ones are settled by trying both values
+    const f = (xs: Bit[]): Bit[] => {
+      const lt = xs[bcd.length], bi = xs[bcd.length + 1];
+      if (bi === B1) return new Array<Bit>(7).fill(B0);
+      if (lt === B1) return new Array<Bit>(7).fill(B1);
+      const v = big(xs.slice(0, bcd.length))!;
+      const code = Number(v) < 10 ? SEGMENTS[Number(v)] : 0;
+      return Array.from({ length: 7 }, (_, i) => ((code >> (6 - i)) & 1) as Bit);
+    };
+    const segs = overUnknowns([...bcd, io.active("lt", B0), io.active("bi", B0)], f, 7);
+    "abcdefg".split("").forEach((s, i) => io.drive(s, [low ? not(segs[i]) : segs[i]]));
   },
   "gray-converter": (io) => {
     const x = io.bus("in");

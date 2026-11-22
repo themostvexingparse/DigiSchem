@@ -7,7 +7,7 @@ import type { Circuit, CircuitPart } from "./circuit";
 import { STATEFUL } from "./check";
 import { kmapText, minimize, sopToString, type MinimizeResult } from "./minimize";
 import { MODELS } from "./models";
-import { type Bit, PASSIVE, Simulator, STIMULI, SWITCHES, bitChar } from "./simulate";
+import { type Bit, PASSIVE, Simulator, STIMULI, SWITCHES, bitChar, numberToBits } from "./simulate";
 
 export interface Port {
   /** part id */
@@ -39,7 +39,8 @@ export interface TruthTableOptions {
   maxInputBits?: number;
 }
 
-const OUTPUTS = new Set(["output-pin", "probe"]);
+/** Parts that only show a value: they end a cone, and their inputs can be outputs of a table. */
+const OUTPUTS = new Set(["output-pin", "probe", "seven-segment", "hex-display", "led-bar"]);
 
 function findPart(c: Circuit, ref: string): CircuitPart {
   const p = c.parts.find((x) => x.id === ref) ?? c.parts.find((x) => x.name === ref);
@@ -75,6 +76,7 @@ export function truthTable(c: Circuit, opts: TruthTableOptions = {}): TruthTable
   const ins = (opts.inputs ?? c.parts.filter((p) => p.type === "input-pin").map((p) => p.id)).map((r) => findPart(c, r));
   const outs = (opts.outputs ?? c.parts.filter((p) => p.type === "output-pin").map((p) => p.id)).map((r) => findPart(c, r));
   for (const p of ins) if (!STIMULI.has(p.type)) throw new Error(`${p.name} is not an input`);
+  for (const p of outs) if (!p.pins.some((x) => x.dir === "in")) throw new Error(`${p.name} has no input to read`);
   const state = stateInCone(c, outs);
   if (state.length) throw new Error(`the outputs depend on parts with state or that are not simulated: ${state.map((p) => `${p.name} (${p.type})`).join(", ")}`);
   const inputs: Port[] = ins.map((p) => ({ id: p.id, name: p.name, width: width(p, "out") }));
@@ -92,15 +94,13 @@ export function truthTable(c: Circuit, opts: TruthTableOptions = {}): TruthTable
   for (let m = 0; m < 1 << n; m++) {
     let at = 0;
     for (let i = inputs.length - 1; i >= 0; i--) {
-      sim.set(inputs[i].id, (m >> at) & ((1 << inputs[i].width) - 1));
+      // as raw bits, so every output bit of the input (a keypad's VALID too) takes both values
+      sim.set(inputs[i].id, numberToBits((m >> at) & ((1 << inputs[i].width) - 1), inputs[i].width));
       at += inputs[i].width;
     }
     sim.settle();
     const row: Bit[] = [];
-    for (const p of outs) {
-      const pin = p.pins.find((x) => x.dir === "in")!;
-      row.push(...sim.pinBits(p.id, pin.id));
-    }
+    for (const p of outs) for (const pin of p.pins) if (pin.dir === "in") row.push(...sim.pinBits(p.id, pin.id));
     rows.push(row);
   }
   return { inputs, outputs, vars, outBits, rows };

@@ -163,7 +163,8 @@ export class Simulator {
     this.models = circuit.parts.map((p) => MODELS[p.type] ?? null);
     this.state = circuit.parts.map(() => ({}));
     this.drives = circuit.parts.map((p) => p.pins.map((pin) => new Array<Bit>(pin.width).fill(BZ)));
-    this.stimulus = circuit.parts.map((p) => p.pins.map((pin) => new Array<Bit>(pin.width).fill(B0)));
+    // inputs start at 0, and push buttons unpressed (1 for an active-low one)
+    this.stimulus = circuit.parts.map((p) => p.pins.map((pin) => new Array<Bit>(pin.width).fill(p.type === "push-button" && p.props.activeLow ? B1 : B0)));
     this.root = new Int32Array(n).map((_, i) => i);
     circuit.parts.forEach((p, pi) => {
       const sw = SWITCHES[p.type];
@@ -283,6 +284,8 @@ export class Simulator {
       const k = part.pins.filter((p) => p.id !== "valid").reduce((s, p) => s + p.width, 0);
       bits = v < 0 ? [...numberToBits(0, k), B0] : [...numberToBits(v, k), B1];
     } else bits = numberToBits(typeof value === "boolean" ? (value ? 1 : 0) : (value as number), total);
+    // a push button is set by whether it is pressed; an active-low one outputs 0 while pressed
+    if (part.type === "push-button" && part.props.activeLow && !Array.isArray(value)) bits = bits.map((b) => (b > 1 ? b : ((1 - b) as Bit)));
     let at = 0;
     part.pins.forEach((pin, k) => {
       if (pin.dir !== "out") return;
@@ -306,6 +309,7 @@ export class Simulator {
     const part = this.part(ref);
     if (!part) throw new Error(`no part ${ref}`);
     const pin = part.pins.find((p) => p.dir === "in") ?? part.pins[0];
+    if (!pin) return null;
     return bitsToNumber(pin.bits.map((n) => this.values[n]));
   }
 

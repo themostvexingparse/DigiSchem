@@ -78,6 +78,19 @@ export interface Circuit {
 
 /** Properties that only change how a part is drawn. */
 const DRAWING_PROPS = new Set(["label", "title"]);
+/**
+ * Properties that only name things: a rename is not a structural change. (A tunnel's name is
+ * different: tunnels with the same name are connected.)
+ */
+const NAME_PROPS = new Set(["name", "inputNames", "outputNames"]);
+
+function keyProps(c: SchematicDocument["components"][number]): Record<string, PropValue> {
+  const p = semanticProps(c);
+  if (c.type === "tunnel") return p;
+  const out: Record<string, PropValue> = {};
+  for (const k of Object.keys(p)) if (!NAME_PROPS.has(k)) out[k] = p[k];
+  return out;
+}
 
 function semanticProps(c: SchematicDocument["components"][number]): Record<string, PropValue> {
   const all = effectiveProps(c);
@@ -89,7 +102,9 @@ function semanticProps(c: SchematicDocument["components"][number]): Record<strin
 /** Splitter slices (the same rule as the library's splitter). */
 export function splitterSlices(width: number, fanOut: number): { lo: number; width: number }[] {
   const out: { lo: number; width: number }[] = [];
-  const n = Math.min(fanOut, width);
+  // the library's splitter rounds and clamps its properties the same way
+  width = Math.max(2, Math.min(32, Math.round(width)));
+  const n = Math.min(Math.max(2, Math.min(32, Math.round(Number.isFinite(fanOut) ? fanOut : 4))), width);
   if (n >= width) {
     for (let i = 0; i < width; i++) out.push({ lo: i, width: 1 });
     return out;
@@ -107,13 +122,13 @@ export function splitterSlices(width: number, fanOut: number): { lo: number; wid
 /**
  * The cheap structural fingerprint: each part's id, type and meaningful properties, and the
  * groups of pins the links join (wires are only the means of joining, so a wire being split,
- * merged, re-routed or renamed does not change it). Positions, rotations, sizes and labels are
- * not part of it.
+ * merged, re-routed or renamed does not change it). Positions, rotations, sizes, labels and
+ * names (other than tunnel names, which connect) are not part of it.
  */
 export function structuralKey(doc: SchematicDocument): string {
   registerBuiltinComponents();
   const parts = doc.components
-    .map((c) => `${c.id}\u0001${c.type}\u0001${JSON.stringify(semanticProps(c))}`)
+    .map((c) => `${c.id}\u0001${c.type}\u0001${JSON.stringify(keyProps(c))}`)
     .sort();
   const groups = doc.links ? pinGroupsFromLinks(doc.links) : pinGroupsFromNetlist(doc);
   return parts.join("\u0002") + "\u0003" + groups.join("\u0002");

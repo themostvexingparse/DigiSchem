@@ -98,10 +98,18 @@ export function checkCircuit(c: Circuit): CheckIssue[] {
   const readersOf: number[][] = Array.from({ length: c.nodes }, () => []);
   // (a ground's pin is bidirectional, but a ground only drives)
   c.parts.forEach((p, pi) => p.type !== "ground" && p.pins.forEach((pin) => pin.dir !== "out" && pin.bits.forEach((n) => readersOf[n].push(pi))));
-  const succ = c.parts.map((p) => {
+  const succ = c.parts.map((p, pi) => {
     if (STATEFUL.has(p.type) || PASSIVE.has(p.type)) return [] as number[];
     const s = new Set<number>();
-    for (const pin of p.pins) if (pin.dir !== "in") for (const n of pin.bits) for (const r of readersOf[n]) if (!STATEFUL.has(c.parts[r].type)) s.add(r);
+    for (const pin of p.pins)
+      if (pin.dir !== "in")
+        for (const n of pin.bits)
+          for (const r of readersOf[n]) {
+            if (STATEFUL.has(c.parts[r].type)) continue;
+            // reading back its own bidirectional pin (a bus transceiver's side) is not a loop
+            if (r === pi && pin.dir === "inout" && !p.pins.some((q) => q !== pin && q.dir !== "out" && q.bits.includes(n))) continue;
+            s.add(r);
+          }
     return [...s];
   });
   for (const scc of stronglyConnected(succ)) {

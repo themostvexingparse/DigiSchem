@@ -28,7 +28,8 @@ export interface CircuitWatch {
 }
 
 function namesKey(doc: SchematicDocument): string {
-  return doc.components.map((c) => `${c.id}\u0001${c.label ?? ""}\u0001${c.props?.name ?? ""}`).join("\u0002") + `\u0003${doc.name}`;
+  const named = (c: SchematicDocument["components"][number]) => [c.label ?? "", c.props?.name ?? "", c.props?.inputNames ?? "", c.props?.outputNames ?? "", c.props?.title ?? ""].join("\u0001");
+  return doc.components.map((c) => `${c.id}\u0001${named(c)}`).join("\u0002") + `\u0003${doc.name}`;
 }
 
 /**
@@ -41,13 +42,15 @@ export function watchCircuit(store: DocumentStore, onChange?: (s: LogicSnapshot)
   let names = namesKey(store.doc);
   let snap: LogicSnapshot | null = null;
   let builds = 0;
+  let namesStale = false;
   const build = () => {
     builds++;
+    names = namesKey(store.doc);
+    namesStale = false;
     const circuit = extractCircuit(store.doc);
     snap = { circuit, issues: checkCircuit(circuit) };
     return snap;
   };
-  let namesStale = false;
   const unsubscribe = store.subscribe((kind) => {
     if (kind === "selection") return;
     const k = structuralKey(store.doc);
