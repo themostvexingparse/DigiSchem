@@ -150,3 +150,62 @@ export function outputFunctions(t: TruthTable): OutputFunction[] {
     return f;
   });
 }
+
+/** Parts a state table can cut open: their outputs are the present state, their inputs the next-state logic. */
+const STATE_PARTS = new Set(["d-ff", "jk-ff", "t-ff", "sr-ff", "d-latch", "sr-latch", "gated-sr-latch", "register"]);
+
+export interface StateTable extends TruthTable {
+  /** the state variables (present state), most significant first, as they appear in `inputs` */
+  state: Port[];
+}
+
+/**
+ * The state table of a synchronous circuit, for designing or checking its next-state logic:
+ * every flip-flop (and latch, register) is cut out, its Q output becomes an input of the table
+ * (the present state, named `F1_q`) and each of its other inputs except the clock becomes an
+ * output (`F1_d`, `F1_j`...); Q' is computed from Q. The table's inputs are the present state
+ * (first, most significant) followed by the circuit's inputs; its outputs are the flip-flop
+ * inputs followed by the circuit's outputs. outputFunctions() then gives the excitation equations.
+ */
+export function stateTable(c: Circuit, opts: { inputs?: string[]; outputs?: string[]; maxInputBits?: number } = {}): StateTable {
+  const parts: CircuitPart[] = [];
+  const state: CircuitPart[] = [];
+  const excite: CircuitPart[] = [];
+  for (const p of c.parts) {
+    if (!STATEFUL.has(p.type)) {
+      parts.push(p);
+      continue;
+    }
+    if (!STATE_PARTS.has(p.type)) throw new Error(`${p.name} (${p.type}) cannot be cut open for a state table`);
+    const q = p.pins.find((x) => x.id === "q");
+    if (!q) continue;
+    const pin = (id: string, dir: "in" | "out", src: typeof q) => ({ ...src, id, name: id, dir, inverted: false, clock: false });
+    const sv: CircuitPart = { id: `${p.id}__q`, name: `${p.name}_q`, type: "input-pin", props: { name: `${p.name}_q`, width: q.width }, pins: [pin("out", "out", q)] };
+    parts.push(sv);
+    state.push(sv);
+    const qn = p.pins.find((x) => x.id === "qn");
+    if (qn)
+      for (let b = 0; b < qn.width; b++)
+        parts.push({
+          id: `${p.id}__qn${b}`,
+          name: `${p.name}_qn${b}`,
+          type: "not",
+          props: {},
+          pins: [
+            { ...pin("in0", "in", q), width: 1, bits: [q.bits[b]] },
+            { ...pin("out", "out", qn), width: 1, bits: [qn.bits[b]] },
+          ],
+        });
+    for (const x of p.pins) {
+      if (x.dir !== "in" || x.clock) continue;
+      const o: CircuitPart = { id: `${p.id}__${x.id}`, name: `${p.name}_${x.id}`, type: "output-pin", props: { name: `${p.name}_${x.id}`, width: x.width }, pins: [{ ...x, id: "in", name: "in", inverted: false }] };
+      parts.push(o);
+      excite.push(o);
+    }
+  }
+  const cut: Circuit = { ...c, parts };
+  const ins = opts.inputs ?? c.parts.filter((p) => p.type === "input-pin").map((p) => p.id);
+  const outs = opts.outputs ?? c.parts.filter((p) => p.type === "output-pin").map((p) => p.id);
+  const t = truthTable(cut, { inputs: [...state.map((p) => p.id), ...ins], outputs: [...excite.map((p) => p.id), ...outs], maxInputBits: opts.maxInputBits });
+  return { ...t, state: t.inputs.slice(0, state.length) };
+}

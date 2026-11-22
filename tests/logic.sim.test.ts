@@ -5,7 +5,7 @@ import { DocumentStore } from "../src/model/store";
 import { circuitText, extractCircuit, structuralKey } from "../src/logic/circuit";
 import { checkCircuit } from "../src/logic/check";
 import { Simulator } from "../src/logic/simulate";
-import { outputFunctions, truthTable, truthTableText } from "../src/logic/analyze";
+import { outputFunctions, stateTable, truthTable, truthTableText } from "../src/logic/analyze";
 import { watchCircuit } from "../src/logic/watch";
 import { minimize, sopToString } from "../src/logic/minimize";
 import { sopToSchematic, sopsToSchematic } from "../src/logic/sop-schematic";
@@ -451,5 +451,40 @@ describe("watching the document", () => {
     expect(w.builds).toBe(1);
     expect(w.current()).toBe(s);
     expect(evaluateCombinational(store.doc, { a: true, b: true, cin: false })).toEqual({ cout: true });
+  });
+});
+
+describe("state tables", () => {
+  // a 2-bit up counter with an enable: D0 = Q0 xor EN, D1 = Q1 xor (Q0 EN)
+  const counter = () =>
+    mk(
+      [["EN", "input-pin"], ["CLK", "clock"], ["F0", "d-ff"], ["F1", "d-ff"], ["X0", "xor"], ["A", "and"], ["X1", "xor"], ["Y0", "output-pin"], ["Y1", "output-pin"]],
+      [
+        ["F0.q", "X0.in0", "A.in0", "Y0.in"], ["EN.out", "X0.in1", "A.in1"], ["X0.out", "F0.d"],
+        ["F1.q", "X1.in0", "Y1.in"], ["A.out", "X1.in1"], ["X1.out", "F1.d"], ["CLK.clk", "F0.clk", "F1.clk"],
+      ],
+    );
+
+  it("cuts the flip-flops open and gives the next-state equations", () => {
+    const t = stateTable(extractCircuit(counter()));
+    expect(t.state.map((p) => p.name)).toEqual(["F0_q", "F1_q"]);
+    expect(t.vars).toEqual(["EN", "F1_q", "F0_q"]); // LSB first: F0_q is the most significant
+    const f = outputFunctions(t);
+    expect(f.map((x) => x.name)).toEqual(["F0_d", "F1_d", "Y0", "Y1"]);
+    const eq = Object.fromEntries(f.map((x) => [x.name, x.sop]));
+    expect(eq.F0_d).toBe(sopToString(minimize(3, [1, 3, 4, 6]).terms, t.vars));
+    expect(eq.Y0).toBe("F0_q");
+  });
+
+  it("ticks the clock", () => {
+    const s = new Simulator(extractCircuit(counter()), { initial: "zero" });
+    s.set("EN", 1);
+    s.settle();
+    const seen: (number | null)[] = [];
+    for (let i = 0; i < 5; i++) {
+      seen.push((s.read("Y1") ?? 9) * 2 + (s.read("Y0") ?? 9));
+      s.tick();
+    }
+    expect(seen).toEqual([0, 1, 2, 3, 0]);
   });
 });

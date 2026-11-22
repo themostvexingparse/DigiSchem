@@ -294,6 +294,24 @@ orders them, and `outputs` picks the outputs. Rows where an output is X or Z are
 parts that are not simulated is refused, since its table would describe one state rather than a
 function.
 
+### State tables
+
+```ts
+import { stateTable, outputFunctions } from "./src/logic/analyze";
+
+const t = stateTable(c);          // present state and inputs -> flip-flop inputs and outputs
+outputFunctions(t);               // F0_d = ..., F1_d = ..., Y = ...: the next-state equations
+```
+
+For a synchronous circuit, `stateTable` cuts every flip-flop (and latch or register) open: its Q
+output becomes an input of the table, the present state (`F0_q`), and each of its other inputs
+except the clock becomes an output (`F0_d`, or `F0_j` and `F0_k`); Q' is computed from Q. The
+table's inputs are the present state, most significant first, followed by the circuit's inputs.
+`outputFunctions` then gives the minimal next-state (excitation) and output equations with their
+Karnaugh maps, which is how a finite state machine's logic is designed or checked.
+
+`sim.tick()` runs one clock cycle on every clock part (or `sim.tick("CLK")` on one).
+
 ## Checking a drawing
 
 ```ts

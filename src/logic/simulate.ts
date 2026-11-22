@@ -297,6 +297,19 @@ export class Simulator {
     this.enqueue(pi);
   }
 
+  /**
+   * One clock cycle: the clock (by id or name; every clock part when omitted) goes to 1, the
+   * circuit settles, the clock goes back to 0, and it settles again. Returns the two results.
+   */
+  tick(ref?: string): [SettleResult, SettleResult] {
+    const clocks = ref ? [ref] : this.circuit.parts.filter((p) => p.type === "clock").map((p) => p.id);
+    if (!clocks.length) throw new Error("no clock to tick");
+    for (const k of clocks) this.set(k, 1);
+    const up = this.settle();
+    for (const k of clocks) this.set(k, 0);
+    return [up, this.settle()];
+  }
+
   // ---- reading ----------------------------------------------------------------------------------
 
   /** The bits on a pin (`part`, `pin` by id), as the net resolves them. */
