@@ -21,6 +21,7 @@
  */
 import type { Circuit, CircuitPart, CircuitPin } from "./circuit";
 import { MODELS, type Drive, type Model, type PartIO } from "./models";
+import { stronglyConnected } from "./graph";
 
 export const B0 = 0, B1 = 1, BX = 2, BZ = 3;
 export type Bit = 0 | 1 | 2 | 3;
@@ -86,6 +87,14 @@ const TRISTATE = new Set(["tristate", "bus-transceiver"]);
 const WEAK = new Set(["pull-up", "pull-down"]);
 /** Parts set from outside (by `set`), with the pins they drive. */
 export const STIMULI = new Set(["input-pin", "clock", "push-button", "dip-switch", "keypad"]);
+/** Parts that remember something: a loop through one of these is not a combinational loop. */
+export const STATEFUL = new Set([
+  "sr-latch", "d-latch", "gated-sr-latch", "d-ff", "jk-ff", "t-ff", "sr-ff",
+  "register", "shift-register", "counter", "register-file", "ring-counter", "lfsr",
+  "clock-divider", "synchronizer", "edge-detector", "decade-counter", "debouncer",
+  "ram", "rom", "fifo", "dual-port-ram", "stack",
+]);
+
 /**
  * Switches: while a transistor conducts, the nets on its two channel pins are one net (values
  * pass both ways). Each entry is a channel and the pin that controls it; the control pin's
@@ -131,7 +140,15 @@ export class Simulator {
   private members = new Map<number, number[]>();
   /** switches whose conduction is unknown, by the nodes they touch */
   private unsure = new Map<number, Switch[]>();
-  private pending = new Set<number>();
+  /** combinational parts waiting to be evaluated, by rank (see `ranks`) */
+  private buckets: Set<number>[] = [];
+  private minRank = 0;
+  /** rank of each part (its loop's position in signal order), or -1 for a part with state */
+  private rank: Int32Array;
+  /** whether a rank is a feedback loop (evaluated in waves) rather than a single part */
+  private loop: boolean[] = [];
+  /** parts with state waiting to be evaluated (all together, after the logic before them settles) */
+  private seqPending = new Set<number>();
   private readonly maxWaves: number;
   readonly initial: "x" | "zero";
 
@@ -176,7 +193,64 @@ export class Simulator {
         });
       }),
     );
-    for (let i = 0; i < circuit.parts.length; i++) this.pending.add(i);
+    this.rank = new Int32Array(circuit.parts.length);
+    this.ranks();
+    for (let i = 0; i < circuit.parts.length; i++) this.enqueue(i);
+  }
+
+  /**
+   * Order the parts without state the way signals flow: each feedback loop (strongly connected
+   * parts) and each other part gets a rank, and a part only feeds parts of a higher rank or its
+   * own loop. Nets joined by transistors count as one net here, whatever the transistors do.
+   */
+  private ranks(): void {
+    const parts = this.circuit.parts;
+    const n = this.circuit.nodes;
+    const ccc = new Int32Array(n).map((_, i) => i);
+    const find = (x: number): number => {
+      while (ccc[x] !== x) x = ccc[x] = ccc[ccc[x]];
+      return x;
+    };
+    for (const sw of this.switches) {
+      const a = find(sw.a), b = find(sw.b);
+      if (a !== b) ccc[a] = b;
+    }
+    const readersOf = new Map<number, number[]>();
+    for (let node = 0; node < n; node++) {
+      const r = find(node);
+      const l = readersOf.get(r);
+      if (l) l.push(...this.readers[node]);
+      else readersOf.set(r, [...this.readers[node]]);
+    }
+    const seq = parts.map((p) => STATEFUL.has(p.type));
+    const succ = parts.map((p, pi) => {
+      if (seq[pi]) return [] as number[];
+      const out = new Set<number>();
+      for (const pin of p.pins) {
+        if (pin.dir === "in") continue;
+        for (const node of pin.bits) for (const r of readersOf.get(find(node)) ?? []) if (!seq[r]) out.add(r);
+      }
+      for (const x of this.switchesOf.get(pi) ?? []) for (const node of [x.a, x.b]) for (const r of readersOf.get(find(node)) ?? []) if (!seq[r]) out.add(r);
+      return [...out];
+    });
+    const sccs = stronglyConnected(succ);
+    const total = sccs.length;
+    sccs.forEach((comp, k) => {
+      const r = total - 1 - k; // Tarjan lists the components that are fed first
+      for (const pi of comp) this.rank[pi] = seq[pi] ? -1 : r;
+      this.loop[r] = comp.length > 1 || succ[comp[0]].includes(comp[0]);
+    });
+    this.buckets = Array.from({ length: total }, () => new Set<number>());
+    this.minRank = total;
+  }
+
+  private enqueue(pi: number): void {
+    const r = this.rank[pi];
+    if (r < 0) this.seqPending.add(pi);
+    else {
+      this.buckets[r].add(pi);
+      if (r < this.minRank) this.minRank = r;
+    }
   }
 
   // ---- stimuli ----------------------------------------------------------------------------------
@@ -214,7 +288,7 @@ export class Simulator {
       if (pin.dir !== "out") return;
       for (let b = 0; b < pin.width; b++) this.stimulus[pi][k][b] = bits[at++] ?? B0;
     });
-    this.pending.add(pi);
+    this.enqueue(pi);
   }
 
   // ---- reading ----------------------------------------------------------------------------------
@@ -241,33 +315,82 @@ export class Simulator {
 
   // ---- settling ---------------------------------------------------------------------------------
 
-  /** Propagate until nothing changes (or the circuit is found to oscillate). */
+  /**
+   * Propagate until nothing changes (or the circuit is found to oscillate). The logic is
+   * evaluated in signal order, so a part is evaluated once its inputs are final; a feedback loop
+   * runs in waves (every part of it reads the values of the wave before) until it settles; then
+   * all parts with state that saw a change are evaluated together, and so on.
+   */
   settle(): SettleResult {
     // nodes held at X by the last settle get their real value back (and their drivers another look)
     for (const n of this.forcedX) {
-      for (const d of this.drivers[n]) this.pending.add(d.part);
-      for (const r of this.readers[n]) this.pending.add(r);
+      for (const d of this.drivers[n]) this.enqueue(d.part);
+      for (const r of this.readers[n]) this.enqueue(r);
+      for (const sw of this.switches) if (sw.a === n || sw.b === n) this.enqueue(sw.part);
     }
     const wasForced = [...this.forcedX];
     this.forcedX.clear();
     for (const n of wasForced) this.values[n] = this.resolve(n).value;
-    let waves = 0;
-    while (this.pending.size && waves < this.maxWaves) {
-      this.wave();
-      waves++;
-    }
+    let rounds = 0;
     const oscillating = new Set<number>();
-    if (this.pending.size) {
-      // Still changing: watch a while longer to see which nodes keep changing, then hold them at X.
-      for (let i = 0; i < 64 && this.pending.size; i++, waves++) for (const n of this.wave()) oscillating.add(n);
-      if (this.pending.size) {
-        for (const n of oscillating) {
-          this.forcedX.add(n);
+    const hold = (nodes: Iterable<number>) => {
+      for (const n of nodes) {
+        if (this.forcedX.has(n)) continue;
+        this.forcedX.add(n);
+        oscillating.add(n);
+        if (this.values[n] !== BX) {
           this.values[n] = BX;
-          for (const r of this.readers[n]) this.pending.add(r);
+          for (const r of this.readers[n]) this.enqueue(r);
         }
-        for (let i = 0; this.pending.size && i < this.maxWaves; i++, waves++) this.wave();
-      } else oscillating.clear();
+      }
+    };
+    let phases = 0;
+    for (;;) {
+      while (this.minRank < this.buckets.length) {
+        const r = this.minRank;
+        const bucket = this.buckets[r];
+        if (!bucket.size) {
+          this.minRank++;
+          continue;
+        }
+        if (!this.loop[r]) {
+          const parts = [...bucket];
+          bucket.clear();
+          this.wave(parts);
+          rounds++;
+          continue;
+        }
+        let waves = 0;
+        let held = false;
+        while (bucket.size) {
+          const parts = [...bucket];
+          bucket.clear();
+          this.wave(parts);
+          rounds++;
+          if (++waves < this.maxWaves || held) continue;
+          // still changing: watch a while longer to see which nodes keep changing, then hold them at X
+          const changing = new Set<number>();
+          for (let i = 0; i < 64 && bucket.size; i++, rounds++) {
+            const ps = [...bucket];
+            bucket.clear();
+            for (const node of this.wave(ps)) changing.add(node);
+          }
+          if (bucket.size) {
+            hold(changing);
+            held = true;
+          }
+        }
+      }
+      if (!this.seqPending.size) break;
+      const parts = [...this.seqPending];
+      this.seqPending.clear();
+      const changed = this.wave(parts);
+      rounds++;
+      if (++phases > this.maxWaves) {
+        // a part with state that keeps re-triggering itself (an output feeding its own clock)
+        hold(changed);
+        this.seqPending.clear();
+      }
     }
     const issues = this.issues();
     if (oscillating.size) {
@@ -280,13 +403,11 @@ export class Simulator {
         message: `the circuit does not settle: ${pins.slice(0, 6).join(", ")}${pins.length > 6 ? ", ..." : ""} keep changing`,
       });
     }
-    return { waves, stable: oscillating.size === 0, issues };
+    return { waves: rounds, stable: oscillating.size === 0, issues };
   }
 
-  /** Evaluate the pending parts against the current values; returns the nodes that changed. */
-  private wave(): number[] {
-    const parts = [...this.pending];
-    this.pending.clear();
+  /** Evaluate parts against the current values, then apply all their outputs; returns the nodes that changed. */
+  private wave(parts: readonly number[]): number[] {
     const touched = new Set<number>();
     let regroup = false;
     for (const pi of parts) {
@@ -339,7 +460,7 @@ export class Simulator {
       if (v !== this.values[n]) {
         this.values[n] = v;
         changed.push(n);
-        for (const r of this.readers[n]) this.pending.add(r);
+        for (const r of this.readers[n]) this.enqueue(r);
       }
     }
     return changed;

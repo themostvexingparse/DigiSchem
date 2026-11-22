@@ -5,7 +5,8 @@
  */
 import type { Circuit } from "./circuit";
 import { MODELS } from "./models";
-import { PASSIVE, STIMULI, SWITCHES } from "./simulate";
+import { PASSIVE, STATEFUL, STIMULI, SWITCHES } from "./simulate";
+import { stronglyConnected } from "./graph";
 
 export type Severity = "error" | "warning" | "info";
 
@@ -27,13 +28,7 @@ export interface CheckIssue {
 /** Outputs that may share a net (they can stop driving it). */
 const CONDITIONAL = new Set(["tristate", "bus-transceiver", "nmos", "pmos", "transmission-gate"]);
 const WEAK = new Set(["pull-up", "pull-down"]);
-/** Parts that remember something: a loop through one of these is not a combinational loop. */
-export const STATEFUL = new Set([
-  "sr-latch", "d-latch", "gated-sr-latch", "d-ff", "jk-ff", "t-ff", "sr-ff",
-  "register", "shift-register", "counter", "register-file", "ring-counter", "lfsr",
-  "clock-divider", "synchronizer", "edge-detector", "decade-counter", "debouncer",
-  "ram", "rom", "fifo", "dual-port-ram", "stack",
-]);
+export { STATEFUL };
 
 export function checkCircuit(c: Circuit): CheckIssue[] {
   const issues: CheckIssue[] = [];
@@ -79,13 +74,14 @@ export function checkCircuit(c: Circuit): CheckIssue[] {
   // ---- several outputs on one net ----
   const seen = new Set<string>();
   for (let n = 0; n < c.nodes; n++) {
-    const parts = new Set(strong[n]);
     const key = drvPin[n].slice().sort().join(",");
     if (seen.has(key)) continue;
-    if (parts.size >= 2) {
+    // count driving pins, not parts: two outputs of one part joined are a short too
+    const strongPins = strong[n].length;
+    if (strongPins >= 2) {
       seen.add(key);
       issues.push({ kind: "multiple-drivers", severity: "error", pins: drvPin[n], message: `outputs are joined (a short whenever they differ): ${drvPin[n].join(", ")}` });
-    } else if (parts.size === 1 && cond[n].length) {
+    } else if (strongPins === 1 && cond[n].length) {
       seen.add(key);
       issues.push({ kind: "possible-contention", severity: "warning", pins: drvPin[n], message: `an output shares a net with tri-state outputs, so they clash whenever one is enabled: ${drvPin[n].join(", ")}` });
     }
@@ -100,16 +96,16 @@ export function checkCircuit(c: Circuit): CheckIssue[] {
 
   // ---- combinational loops (strongly connected parts, not through anything with state) ----
   const readersOf: number[][] = Array.from({ length: c.nodes }, () => []);
-  c.parts.forEach((p, pi) => p.pins.forEach((pin) => pin.dir !== "out" && pin.bits.forEach((n) => readersOf[n].push(pi))));
-  const succ = c.parts.map((p, pi) => {
+  // (a ground's pin is bidirectional, but a ground only drives)
+  c.parts.forEach((p, pi) => p.type !== "ground" && p.pins.forEach((pin) => pin.dir !== "out" && pin.bits.forEach((n) => readersOf[n].push(pi))));
+  const succ = c.parts.map((p) => {
     if (STATEFUL.has(p.type) || PASSIVE.has(p.type)) return [] as number[];
     const s = new Set<number>();
     for (const pin of p.pins) if (pin.dir !== "in") for (const n of pin.bits) for (const r of readersOf[n]) if (!STATEFUL.has(c.parts[r].type)) s.add(r);
-    s.delete(pi);
     return [...s];
   });
   for (const scc of stronglyConnected(succ)) {
-    if (scc.length < 2) continue;
+    if (scc.length < 2 && !succ[scc[0]].includes(scc[0])) continue;
     const names = scc.map((i) => c.parts[i].name);
     issues.push({
       kind: "feedback",
@@ -128,47 +124,4 @@ export function checkCircuit(c: Circuit): CheckIssue[] {
 
   const order: Record<Severity, number> = { error: 0, warning: 1, info: 2 };
   return issues.sort((a, b) => order[a.severity] - order[b.severity]);
-}
-
-/** Tarjan's algorithm, iterative. */
-function stronglyConnected(succ: readonly number[][]): number[][] {
-  const n = succ.length;
-  const index = new Array<number>(n).fill(-1), low = new Array<number>(n).fill(0);
-  const onStack = new Array<boolean>(n).fill(false);
-  const stack: number[] = [];
-  const out: number[][] = [];
-  let next = 0;
-  for (let root = 0; root < n; root++) {
-    if (index[root] >= 0) continue;
-    const work: [number, number][] = [[root, 0]];
-    while (work.length) {
-      const top = work[work.length - 1];
-      const [v, i] = top;
-      if (i === 0) {
-        index[v] = low[v] = next++;
-        stack.push(v);
-        onStack[v] = true;
-      }
-      if (i < succ[v].length) {
-        top[1]++;
-        const w = succ[v][i];
-        if (index[w] < 0) work.push([w, 0]);
-        else if (onStack[w]) low[v] = Math.min(low[v], index[w]);
-        continue;
-      }
-      work.pop();
-      if (work.length) low[work[work.length - 1][0]] = Math.min(low[work[work.length - 1][0]], low[v]);
-      if (low[v] === index[v]) {
-        const comp: number[] = [];
-        let w: number;
-        do {
-          w = stack.pop()!;
-          onStack[w] = false;
-          comp.push(w);
-        } while (w !== v);
-        out.push(comp);
-      }
-    }
-  }
-  return out;
 }

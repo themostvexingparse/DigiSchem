@@ -47,7 +47,6 @@ const not = (a: Bit): Bit => (a === BX ? BX : ((1 - a) as Bit));
 const and = (xs: readonly Bit[]): Bit => (xs.includes(B0) ? B0 : xs.every((x) => x === B1) ? B1 : BX);
 const or = (xs: readonly Bit[]): Bit => (xs.includes(B1) ? B1 : xs.every((x) => x === B0) ? B0 : BX);
 const xor = (xs: readonly Bit[]): Bit => (xs.includes(BX) ? BX : ((xs.reduce((s: number, x) => s + x, 0) % 2) as Bit));
-const known = (xs: readonly Bit[]) => xs.every((x) => x !== BX);
 
 /** Bits (LSB first) as an unsigned bigint; null when any bit is unknown. */
 function big(xs: readonly Bit[]): bigint | null {
@@ -84,6 +83,24 @@ function count(io: PartIO, prefix: string): number {
   let n = 0;
   while (io.has(`${prefix}${n}`)) n++;
   return n;
+}
+
+/**
+ * f over inputs some of which are unknown: f is tried with every value of the unknown inputs
+ * (up to 8 of them), and an output bit is known where all the tries agree.
+ */
+function overUnknowns(ins: readonly Bit[], f: (xs: Bit[]) => Bit[], w: number): Bit[] {
+  const unk = ins.map((b, i) => (b === BX ? i : -1)).filter((i) => i >= 0);
+  if (unk.length > 8) return new Array<Bit>(w).fill(BX);
+  let out: Bit[] | null = null;
+  for (let m = 0; m < 1 << unk.length; m++) {
+    const xs = [...ins];
+    unk.forEach((i, k) => (xs[i] = ((m >> k) & 1) as Bit));
+    const r = f(xs);
+    out = out ? out.map((b, i) => (b === r[i] ? b : BX)) : r;
+    if (out.every((b) => b === BX)) break;
+  }
+  return out!;
 }
 
 const gate = (f: (xs: Bit[]) => Bit): Model => (io) => {
@@ -264,29 +281,27 @@ export const MODELS: Record<string, Model> = {
     }
   },
   encoder: (io) => {
-    const en = io.active("en");
-    const d = Array.from({ length: count(io, "d") }, (_, i) => io.bit(`d${i}`));
+    const n = count(io, "d");
     const w = io.busWidth("y");
-    if (en === B0) {
-      io.driveBus("y", 0);
-      io.drive("v", 0);
-      return;
-    }
-    if (!known(d) || en === BX) {
-      io.driveBus("y", "X");
-      io.drive("v", [en === BX ? BX : or(d)]);
-      return;
-    }
-    let y = 0;
-    if (io.prop("priority") !== false) for (let i = d.length - 1; i >= 0; i--) {
-      if (d[i] === B1) {
-        y = i;
-        break;
-      }
-    }
-    else d.forEach((b, i) => (y |= b === B1 ? i : 0));
-    io.driveBus("y", y & ((1 << w) - 1));
-    io.drive("v", d.includes(B1) ? 1 : 0);
+    const priority = io.prop("priority") !== false;
+    // y and v for known inputs (en last); unknown inputs are settled by trying both values
+    const f = (xs: Bit[]): Bit[] => {
+      const en = xs[n];
+      if (en === B0) return new Array<Bit>(w + 1).fill(B0);
+      let y = 0;
+      if (priority) {
+        for (let i = n - 1; i >= 0; i--)
+          if (xs[i] === B1) {
+            y = i;
+            break;
+          }
+      } else xs.slice(0, n).forEach((b, i) => (y |= b === B1 ? i : 0));
+      return [...Array.from({ length: w }, (_, k) => ((y >> k) & 1) as Bit), xs.slice(0, n).includes(B1) ? B1 : B0];
+    };
+    const ins = [...Array.from({ length: n }, (_, i) => io.bit(`d${i}`)), io.active("en")];
+    const out = overUnknowns(ins, f, w + 1);
+    io.driveBus("y", out.slice(0, w));
+    io.drive("v", [out[w]]);
   },
   tristate: (io) => {
     const en = io.active("en");
