@@ -444,3 +444,76 @@ describe("ROM", () => {
     expect(outputFunctions(t)[0].minterms).toEqual([1, 2]);
   });
 });
+
+describe("transistor circuits with state", () => {
+  const build = (parts: [string, string][], nets: string[][]) =>
+    new Simulator(
+      extractCircuit({
+        format: "digischem", version: 1, name: "t", grid: 10, wires: [], texts: [],
+        components: parts.map(([id, type], i) => ({ id, type, x: i * 200, y: 0, rotation: 0 as const, props: {}, label: "" })),
+        links: nets.flatMap((net) => net.slice(1).map((r) => [`p:${net[0].replace(".", "|")}`, `p:${r.replace(".", "|")}`] as [string, string])),
+      }),
+    );
+  // CMOS inverter helper nets: P(s=VDD, d=out, g=in), N(s=GND, d=out, g=in)
+  const inv = (p: string, n: string, input: string, output: string) => [[`${p}.g`, `${n}.g`, input], [`${p}.d`, `${n}.d`, output]];
+
+  it("a transmission-gate D latch: transparent while CLK = 1, holds while CLK = 0", () => {
+    // D -TG1(CLK)- X ; X -> INV1 -> QN -> INV2 -> Q ; Q -TG2(CLK')- X (the feedback closes while CLK = 0)
+    const parts: [string, string][] = [["VDD", "vcc"], ["GND", "ground"], ["D", "input-pin"], ["CLK", "input-pin"], ["TG1", "transmission-gate"], ["TG2", "transmission-gate"],
+      ["PC", "pmos"], ["NC", "nmos"], ["P1", "pmos"], ["N1", "nmos"], ["P2", "pmos"], ["N2", "nmos"], ["Q", "output-pin"]];
+    const nets = [
+      ["VDD.vcc", "PC.s", "P1.s", "P2.s"], ["GND.gnd", "NC.s", "N1.s", "N2.s"],
+      ["CLK.out", "PC.g", "NC.g", "TG1.en", "TG2.enb"], ["PC.d", "NC.d", "TG1.enb", "TG2.en"], // CLK' from an inverter
+      ["D.out", "TG1.a"], ["TG1.b", "TG2.b", "P1.g", "N1.g"], ["P1.d", "N1.d", "P2.g", "N2.g"], ["P2.d", "N2.d", "TG2.a", "Q.in"],
+    ];
+    void inv;
+    const s = build(parts, nets);
+    s.set("CLK", 1);
+    s.set("D", 1);
+    s.settle();
+    expect(s.read("Q")).toBe(1);
+    s.set("D", 0);
+    s.settle();
+    expect(s.read("Q")).toBe(0); // transparent
+    s.set("CLK", 0);
+    s.settle();
+    s.set("D", 1);
+    const r = s.settle();
+    expect(r.issues).toEqual([]);
+    expect(s.read("Q")).toBe(0); // holds
+    s.set("CLK", 1);
+    s.settle();
+    expect(s.read("Q")).toBe(1);
+  });
+
+  it("an SR latch from two CMOS NAND gates holds, sets and resets", () => {
+    // NAND(a, b) -> y: P(a), P(b) in parallel from VDD; N(a) - N(b) in series to GND
+    const nand = (k: string, a: string, b: string, y: string) => [
+      [`${k}PA.g`, `${k}NA.g`, a], [`${k}PB.g`, `${k}NB.g`, b], [`${k}PA.d`, `${k}PB.d`, `${k}NA.d`, y], [`${k}NA.s`, `${k}NB.d`],
+    ];
+    const parts: [string, string][] = [["VDD", "vcc"], ["GND", "ground"], ["S", "input-pin"], ["R", "input-pin"], ["Q", "output-pin"], ["QN", "output-pin"]];
+    for (const k of ["X", "Y"]) parts.push([`${k}PA`, "pmos"], [`${k}PB`, "pmos"], [`${k}NA`, "nmos"], [`${k}NB`, "nmos"]);
+    const nets = [
+      ["VDD.vcc", "XPA.s", "XPB.s", "YPA.s", "YPB.s"], ["GND.gnd", "XNB.s", "YNB.s"],
+      // active-low inputs: Q = NAND(S', QN), QN = NAND(R', Q)
+      ...nand("X", "S.out", "QN.in", "Q.in"), ...nand("Y", "R.out", "Q.in", "QN.in"),
+    ];
+    const s = build(parts, nets);
+    s.set("S", 1);
+    s.set("R", 1);
+    s.settle();
+    expect(s.read("Q")).toBe(null); // never set
+    s.set("S", 0); // set (active low)
+    s.settle();
+    expect([s.read("Q"), s.read("QN")]).toEqual([1, 0]);
+    s.set("S", 1);
+    expect(s.settle().stable).toBe(true);
+    expect([s.read("Q"), s.read("QN")]).toEqual([1, 0]); // holds
+    s.set("R", 0);
+    s.settle();
+    expect([s.read("Q"), s.read("QN")]).toEqual([0, 1]);
+    s.set("R", 1);
+    s.settle();
+    expect([s.read("Q"), s.read("QN")]).toEqual([0, 1]);
+  });
+});
