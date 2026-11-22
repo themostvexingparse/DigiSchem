@@ -170,14 +170,18 @@ wire, splitting or merging wires, rotating, resizing and relabelling leave it un
 ```ts
 import { watchCircuit } from "./src/logic/watch";
 
-const watch = watchCircuit(store, (snap, why) => { /* snap.circuit, snap.issues */ });
+const watch = watchCircuit(store, (snap) => { /* snap.circuit, snap.issues */ });
 watch.current();
 ```
 
 `watchCircuit` rebuilds the circuit and its check only after a structural edit: a part added or
 deleted, a connection made or broken, a property such as a gate's input count changed, or an undo
-of one. Dragging parts or wires does nothing. A rename refreshes the names (`why` is `"names"`).
-Without a callback it rebuilds lazily, when `current()` is called.
+of one. Dragging parts or wires (including the re-routing a move causes) and renaming do
+nothing; after a rename, `current()` returns the circuit with the new names. Without a callback
+it rebuilds lazily, when `current()` is called.
+
+DSpec source goes through the compiler first (`compileSpec`). The compiler only warns about
+two outputs on one net, so a short written in DSpec still reaches the checks below.
 
 ## Simulating
 

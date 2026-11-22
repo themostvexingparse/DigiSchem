@@ -11,6 +11,11 @@ import { minimize, sopToString } from "../src/logic/minimize";
 import { sopToSchematic, sopsToSchematic } from "../src/logic/sop-schematic";
 import { evaluateCombinational } from "../src/logic/evaluate";
 import { compileSpec } from "../src/spec/compile";
+import { emptyDocument, type ComponentInstance } from "../src/model/types";
+import { worldPins } from "../src/model/geometry";
+import { nudgeSelectionInStore } from "../src/editor/doc-ops";
+import { RouteObstacles, safeRoute } from "../src/editor/safe-route";
+import { dragWireSegmentPoints } from "../src/editor/wire-utils";
 
 registerBuiltinComponents();
 
@@ -162,6 +167,16 @@ describe("simulator", () => {
     expect(r.issues[0]).toMatchObject({ kind: "contention" });
     expect(r.issues[0].message).toMatch(/N1\.out=1.*N2\.out=0/);
     expect(s.read("Y")).toBe(null);
+  });
+
+  it("finds a short written in DSpec source (the compiler only warns, the drawing is built)", () => {
+    const r = compileSpec(["part A, B input-pin", "part N1, N2 buf", "part Y output-pin", "A -> N1", "B -> N2", "net s = N1.out, N2.out, Y.in"].join("\n"));
+    expect(r.doc).not.toBeNull();
+    const c = extractCircuit(r.doc!);
+    expect(kinds(checkCircuit(c))).toContain("multiple-drivers");
+    const s = new Simulator(c);
+    s.set("A", 1);
+    expect(kinds(s.settle().issues)).toEqual(["contention"]);
   });
 
   it("resolves tri-state buffers: contention, a pull-up, and a floating bus", () => {
@@ -337,7 +352,7 @@ describe("watching the document", () => {
   it("rebuilds only when connections or parts change", () => {
     const store = new DocumentStore(base());
     const seen: string[] = [];
-    const w = watchCircuit(store, (_s, why) => seen.push(why));
+    const w = watchCircuit(store, () => seen.push("structure"));
     // moving a part and its wires, rotating, dragging a wire: nothing
     store.beginGesture();
     for (let i = 0; i < 5; i++)
@@ -365,11 +380,12 @@ describe("watching the document", () => {
       { exact: true },
     );
     expect(seen).toEqual([]);
-    // a rename refreshes names
+    // a rename does not run it; the names are fresh when the circuit is next asked for
     store.update("rename", (d) => {
       d.components.find((c) => c.type === "or")!.label = "carry";
     });
-    expect(seen).toEqual(["names"]);
+    expect(seen).toEqual([]);
+    expect(w.builds).toBe(0);
     expect(w.current().circuit.parts.some((p) => p.name === "carry")).toBe(true);
     // a property that changes pins, a deleted part, an undo: rebuilds
     store.update("inputs", (d) => {
@@ -381,8 +397,49 @@ describe("watching the document", () => {
     });
     expect(w.current().issues.some((i) => i.kind === "floating-input")).toBe(true);
     store.undo();
-    expect(seen).toEqual(["names", "structure", "structure", "structure"]);
+    expect(seen).toEqual(["structure", "structure", "structure"]);
     w.dispose();
+  });
+
+  it("does nothing while parts and wires are dragged through the editor", () => {
+    // the editor's own move path: moved parts drag their wires and re-route them
+    const store = new DocumentStore(emptyDocument());
+    const pin = (d: SchematicDocument, id: string, p: string) => worldPins(d.components.find((c) => c.id === id)!).find((q) => q.pin.id === p)!.pos;
+    store.update("setup", (d) => {
+      const C = (id: string, type: string, x: number, y: number): ComponentInstance => ({ id, type, x, y, rotation: 0, props: {} });
+      d.components.push(C("a", "input-pin", 100, 100), C("b", "input-pin", 100, 200), C("g", "and", 300, 130), C("n", "not", 300, 300), C("o", "or", 500, 180), C("y", "output-pin", 700, 190));
+      const add = (id: string, a: [string, string], b: [string, string]) => {
+        const r = safeRoute(new RouteObstacles(d), pin(d, ...a), pin(d, ...b));
+        if (r) d.wires.push({ id, points: r });
+      };
+      add("w1", ["a", "out"], ["g", "in0"]);
+      add("w2", ["b", "out"], ["g", "in1"]);
+      add("w3", ["g", "out"], ["o", "in0"]);
+      add("w4", ["n", "out"], ["o", "in1"]);
+      add("w5", ["o", "out"], ["y", "in"]);
+    });
+    let calls = 0;
+    const w = watchCircuit(store, () => calls++);
+    const before = circuitText(w.current().circuit);
+    for (const id of ["g", "o", "n"]) {
+      store.setSelection([id]);
+      for (const [dx, dy] of [[0, 80], [-120, 0], [0, -200], [300, 100], [-120, -60]]) nudgeSelectionInStore(store, dx, dy);
+    }
+    // drag the middle segment of a bent wire, as the editor does (one gesture of small steps)
+    const bent = store.doc.wires.find((x) => x.points.length >= 4);
+    expect(bent).toBeDefined();
+    if (bent) {
+      const orig = bent.points.map((p) => ({ ...p }));
+      store.beginGesture();
+      for (let k = 1; k <= 4; k++)
+        store.update("drag segment", (d) => {
+          d.wires.find((x) => x.id === bent.id)!.points = dragWireSegmentPoints(orig, 1, { x: 10 * k, y: 10 * k }, true, true);
+        });
+      store.endGesture();
+    }
+    expect(calls).toBe(0);
+    expect(w.builds).toBe(1);
+    expect(circuitText(w.current().circuit)).toBe(before);
   });
 
   it("builds lazily without a listener", () => {

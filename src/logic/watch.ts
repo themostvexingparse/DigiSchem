@@ -3,7 +3,8 @@
  * rebuilding it only after an edit that changes what is connected to what: adding or deleting
  * a part, a connection being made or broken, a property that changes pins or behaviour. Moving
  * parts, dragging or re-routing wires, rotating and resizing leave the structural key alone
- * and do nothing; a rename refreshes the names without counting as a change.
+ * and do nothing. A rename does not run it either: the names are refreshed the next time the
+ * circuit is asked for.
  *
  * Not hooked into the editor yet: call watchCircuit(store, ...) to use it.
  */
@@ -18,8 +19,6 @@ export interface LogicSnapshot {
   issues: CheckIssue[];
 }
 
-export type LogicChange = "structure" | "names";
-
 export interface CircuitWatch {
   /** the circuit of the current document */
   current(): LogicSnapshot;
@@ -33,10 +32,11 @@ function namesKey(doc: SchematicDocument): string {
 }
 
 /**
- * Watch a store. `onChange` runs after each structural change (with "structure") and after a
- * rename (with "names"); it does not run for the document the watch starts with.
+ * Watch a store. With `onChange`, the circuit is rebuilt and passed to it after each structural
+ * change (not for the document the watch starts with); without, it is rebuilt when `current()`
+ * is next called.
  */
-export function watchCircuit(store: DocumentStore, onChange?: (s: LogicSnapshot, why: LogicChange) => void): CircuitWatch {
+export function watchCircuit(store: DocumentStore, onChange?: (s: LogicSnapshot) => void): CircuitWatch {
   let key = structuralKey(store.doc);
   let names = namesKey(store.doc);
   let snap: LogicSnapshot | null = null;
@@ -47,22 +47,34 @@ export function watchCircuit(store: DocumentStore, onChange?: (s: LogicSnapshot,
     snap = { circuit, issues: checkCircuit(circuit) };
     return snap;
   };
+  let namesStale = false;
   const unsubscribe = store.subscribe((kind) => {
     if (kind === "selection") return;
     const k = structuralKey(store.doc);
-    const nk = namesKey(store.doc);
-    if (k === key && nk === names) return;
-    const why: LogicChange = k === key ? "names" : "structure";
-    key = k;
-    names = nk;
-    if (!onChange) {
-      snap = null; // rebuilt when asked for
+    if (k === key) {
+      // a rename: refresh lazily, it changes nothing about the circuit
+      const nk = namesKey(store.doc);
+      if (nk !== names) namesStale = true;
       return;
     }
-    onChange(build(), why);
+    key = k;
+    names = namesKey(store.doc);
+    namesStale = false;
+    snap = null;
+    if (onChange) onChange(build());
   });
+  const current = () => {
+    if (snap && namesStale) {
+      const fresh = extractCircuit(store.doc);
+      snap = { circuit: fresh, issues: checkCircuit(fresh) };
+      names = namesKey(store.doc);
+      namesStale = false;
+      return snap;
+    }
+    return snap ?? build();
+  };
   return {
-    current: () => snap ?? build(),
+    current,
     get builds() {
       return builds;
     },
