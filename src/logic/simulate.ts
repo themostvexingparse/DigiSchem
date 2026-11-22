@@ -10,14 +10,23 @@
  *  - with no strong driver, a pull resistor sets the value;
  *  - with no driver at all the node is Z, and an input that reads it is FLOATING (it reads X).
  *
- * Settling runs in waves: in each wave every part whose inputs changed is evaluated against the
- * node values of the previous wave, then all their outputs are applied together. One wave is one
- * gate delay, so flip-flops on the same clock all sample their inputs before any of them
- * changes, as in hardware. A circuit that has not settled after many waves is OSCILLATING (a
- * ring of inverters, or a latch released from S = R = 1); the nodes still changing are set to X.
+ * Transistors (SWITCHES) join the nets on their channel pins while they conduct; supplies and
+ * inputs are ideal sources that a switch never changes, and a switch whose control is unknown may
+ * or may not conduct (a net it could change becomes X, and a possible short is reported).
  *
- * Flip-flops, latches, registers and counters keep state between settles. It starts as X (or 0,
- * with `initial: "zero"`): a design without a reset reads X until something sets it.
+ * Settling (see `settle`): parts without state are evaluated in signal order (ranked by their
+ * strongly connected components), each once its inputs are final; a feedback loop runs in waves,
+ * every part of it reading the previous wave's values, and one that keeps changing is
+ * OSCILLATING (its changing nodes are held at X); a loop left at X with known inputs is probed
+ * to tell an unset latch from an oscillator. Parts with state are then evaluated all together,
+ * so flip-flops on one clock sample their inputs before any of them changes, as in hardware.
+ * With `timing: "unit"` every part instead takes one gate delay and all switch together, which
+ * shows glitches (hazards).
+ *
+ * Flip-flops, latches, registers, counters and memories keep state between settles. It starts as
+ * X (or 0, with `initial: "zero"`): a design without a reset reads X until something sets it.
+ * An output whose inputs are partly unknown is still known where every way of filling them in
+ * agrees (exactly so for parts without state and up to EXACT_UNKNOWNS unknown bits).
  */
 import type { Circuit, CircuitPart, CircuitPin } from "./circuit";
 import { MODELS, type Drive, type Model, type PartIO } from "./models";
