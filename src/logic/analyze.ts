@@ -247,7 +247,8 @@ export function stateTable(c: Circuit, opts: { inputs?: string[]; outputs?: stri
       excite.push(o);
     }
   }
-  const cut: Circuit = { ...c, parts };
+  // (the parts are renumbered: the build issues, which point at parts by index, do not carry over)
+  const cut: Circuit = { ...c, parts, issues: [] };
   const ins = opts.inputs ?? c.parts.filter((p) => p.type === "input-pin").map((p) => p.id);
   const outs = opts.outputs ?? c.parts.filter((p) => p.type === "output-pin").map((p) => p.id);
   const t = truthTable(cut, { inputs: [...state.map((p) => p.id), ...ins], outputs: [...excite.map((p) => p.id), ...outs], maxInputBits: opts.maxInputBits });
