@@ -747,6 +747,7 @@ export class Simulator {
       }
     for (const m of seeds) this.members.delete(this.root[m]);
     const done = new Set<number>();
+    const isSeed = new Set(seeds);
     for (const start of seeds) {
       if (done.has(start)) continue;
       const comp = [start];
@@ -756,8 +757,9 @@ export class Simulator {
           if (sw.on !== B1) continue;
           const o = sw.a === comp[i] ? sw.b : sw.a;
           if (this.supplyNode[o] || done.has(o)) continue;
-          // a node from another group joins this one: that group is rebuilt here too
-          this.members.delete(this.root[o]);
+          // a node of a group outside the seeds joins this one: that group is rebuilt here too
+          // (a seed not reached yet still carries its old root, which may be a new group's id)
+          if (!isSeed.has(o)) this.members.delete(this.root[o]);
           done.add(o);
           comp.push(o);
         }
@@ -772,7 +774,8 @@ export class Simulator {
     // number of them) could bring its value. The value is unknown if one could change it: a
     // strong value different from ours, or any value when ours is only weak or nothing.
     // (a supply rail or an input keeps its value: at worst the switch is a short, reported as such)
-    if (!this.unsure.size || r.value === BX || r.supply) return r;
+    // (only the rail itself: a net switched onto a rail can still be shorted elsewhere)
+    if (!this.unsure.size || r.value === BX || this.supplyNode[n]) return r;
     const own = this.root[n];
     // Every group reachable from this one through unknown switches shares the same set of
     // reachable groups (a rail is reached but not passed through), so it is worked out once per
@@ -895,7 +898,9 @@ export class Simulator {
       const by = new Map<string, number[]>();
       for (const n of nodes) {
         const net = nodeNet.get(n);
-        const key = this.members.has(this.root[n]) || this.swAt[n]?.length ? `grp${this.root[n]}` : net === undefined ? `node${n}` : `net${net}`;
+        // (rails shorted by one switch are one problem: key them by the switch's first end)
+        const rail = this.supplyNode[n] ? this.swAt[n].find((sw) => sw.on === B1 && this.supplyNode[sw.a] && this.supplyNode[sw.b]) : undefined;
+        const key = rail ? `rail${rail.a}` : this.members.has(this.root[n]) || this.swAt[n]?.length ? `grp${this.root[n]}` : net === undefined ? `node${n}` : `net${net}`;
         const l = by.get(key);
         if (l) l.push(n);
         else by.set(key, [n]);
@@ -907,6 +912,10 @@ export class Simulator {
     // only nodes with several drivers (or joined by switches) can have a short
     const seen = new Set<number>();
     for (const n of this.multi!) if (this.resolve(n).distinct) contended.push(n), seen.add(n);
+    // a conducting switch straight between two rails at different values is a short
+    for (const sw of this.switches)
+      if (sw.on === B1 && this.supplyNode[sw.a] && this.supplyNode[sw.b] && this.values[sw.a] !== this.values[sw.b])
+        for (const n of [sw.a, sw.b]) if (!seen.has(n)) contended.push(n), seen.add(n);
     // groups joined by switches (and single nets switched onto rails)
     const roots = new Set<number>(this.members.keys());
     for (const sw of this.switches) if (sw.on === B1) for (const e of [sw.a, sw.b]) if (!this.supplyNode[e]) roots.add(this.root[e]);
