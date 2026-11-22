@@ -591,3 +591,40 @@ describe("hazards", () => {
     expect(s.read("F")).toBe(1);
   });
 });
+
+describe("watching builds from code", () => {
+  const apply = (store: DocumentStore, source: string) => {
+    const r = compileSpec(source, { previous: store.doc });
+    expect(r.doc).not.toBeNull();
+    // as the code dialog applies a build
+    store.update(
+      "Build from code",
+      (d) => {
+        d.name = r.doc!.name;
+        d.grid = r.doc!.grid;
+        d.components = r.doc!.components;
+        d.wires = r.doc!.wires;
+        d.texts = r.doc!.texts;
+        d.links = r.doc!.links;
+      },
+      { exact: true },
+    );
+  };
+  const src = (gate: string, extra = "") => `part A, B input-pin\npart G ${gate}\npart Y output-pin\nA -> G.in0\nB -> G.in1\nG -> Y\n${extra}`;
+
+  it("rebuilding the same code (even laid out again) is not a structural change; a changed connection is", () => {
+    const store = new DocumentStore();
+    apply(store, src("and"));
+    let calls = 0;
+    const w = watchCircuit(store, () => calls++);
+    apply(store, src("and"));
+    apply(store, `@layout grid\n${src("and")}`);
+    expect(calls).toBe(0);
+    apply(store, src("or"));
+    expect(calls).toBe(1);
+    expect(w.current().circuit.parts.find((p) => p.name === "G")!.type).toBe("or");
+    apply(store, src("or", "part C input-pin\n"));
+    expect(calls).toBe(2);
+    expect(w.current().issues.some((i) => i.kind === "unused-input")).toBe(true);
+  });
+});
