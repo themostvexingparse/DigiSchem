@@ -163,3 +163,58 @@ describe("simulator invariants after every settle", () => {
     expect(sim.read("Y")).toBe(1);
   });
 });
+
+describe("unit-delay timing", () => {
+  it("settles to the same values as zero-delay timing on circuits without feedback", { timeout: 60000 }, () => {
+    for (let seed = 1; seed <= 25; seed++) {
+      const gen = generateRandomCombDag({ seed: seed + 900, gateCount: 80, inputCount: 5, outputCount: 5 });
+      const c = extractCircuit(gen.doc);
+      const z = new Simulator(c), u = new Simulator(c, { timing: "unit" });
+      const rng = new Rng(seed);
+      for (let v = 0; v < 10; v++) {
+        for (const id of gen.inputIds) {
+          const x = rng.int(0, 1);
+          z.set(id, x);
+          u.set(id, x);
+        }
+        z.settle();
+        const r = u.settle();
+        expect(r.stable).toBe(true);
+        expect(r.history).toBeDefined();
+        for (const id of gen.outputIds) expect(u.read(id), `seed ${seed} ${id}`).toBe(z.read(id));
+      }
+    }
+  });
+
+  it("keeps its invariants on transistor networks and on networks with feedback", { timeout: 60000 }, () => {
+    const bad: string[] = [];
+    for (let seed = 1; seed <= 150 && bad.length < 5; seed++) {
+      const gen = generateRandomXrefCircuit(seed);
+      const sim = new Simulator(extractCircuit(gen.doc), { timing: "unit" });
+      const rng = new Rng(seed * 17);
+      for (let v = 0; v < 6; v++) {
+        for (const id of gen.inputIds) sim.set(id, [rng.bool(0.1) ? BX : rng.bool(0.5) ? 1 : 0] as Bit[]);
+        sim.settle();
+        const p = invariants(sim);
+        if (p.length) bad.push(`seed ${seed}: ${p.slice(0, 2).join("; ")}`);
+      }
+    }
+    expect(bad).toEqual([]);
+  });
+
+  it("an odd ring oscillates and is held at X, then recovers", () => {
+    const c = extractCircuit({
+      format: "digischem", version: 1, name: "ring", grid: 10, wires: [], texts: [],
+      components: [["EN", "input-pin"], ["G1", "nand"], ["G2", "not"], ["G3", "not"], ["Y", "output-pin"]].map(([id, type], i) => ({ id, type, x: i * 200, y: 0, rotation: 0 as const, props: {}, label: "" })),
+      links: [["p:EN|out", "p:G1|in0"], ["p:G1|out", "p:G2|in0"], ["p:G2|out", "p:G3|in0"], ["p:G3|out", "p:G1|in1"], ["p:G3|out", "p:Y|in"]],
+    });
+    const s = new Simulator(c, { timing: "unit" });
+    s.set("EN", 0);
+    expect(s.settle().stable).toBe(true);
+    s.set("EN", 1);
+    expect(s.settle().stable).toBe(false);
+    s.set("EN", 0);
+    expect(s.settle().stable).toBe(true);
+    expect(s.read("Y")).toBe(1); // NAND = 1, two inverters
+  });
+});
