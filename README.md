@@ -139,7 +139,7 @@ same pages are in [`docs/`](docs/Home.md).
 | [DSpec Language](docs/DSpec-Language.md) | Schematics as code: syntax, directives, compiler, command line |
 | [File Format](docs/File-Format.md) | The `.dschem` file, stored connections, exports |
 | [Layout and Routing](docs/Layout-and-Routing.md) | The router, compaction and wire relaxation, with their weights |
-| [Logic Tools](docs/Logic-Tools.md) | Minimizer, schematic generator and evaluator APIs |
+| [Logic Tools](docs/Logic-Tools.md) | Minimizer, schematic generator, simulator, circuit checks and truth tables |
 | [Development](docs/Development.md) | Project structure, architecture rules, tests, contributing |
 
 ## Status

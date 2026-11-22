@@ -1,13 +1,20 @@
 # Logic Tools
 
-`src/logic/` holds three TypeScript modules for combinational logic. They have no dependencies on
-the editor, so they can be used from tests, scripts, or new features.
+`src/logic/` holds TypeScript modules for working with the logic of a circuit. They do not depend
+on the editor's user interface, so they can be used from tests, scripts, or new features.
 
 | Module | What it does |
 |---|---|
 | `minimize.ts` | Exact two-level boolean minimization, with Karnaugh map text |
 | `sop-schematic.ts` | Draws a sum of products as a two-level AND-OR schematic |
+| `circuit.ts` | Reduces a drawing to its stripped circuit: parts and connections, nothing about the layout |
+| `simulate.ts`, `models.ts` | A four-valued (0, 1, X, Z) simulator that finds shorts, floating inputs and oscillation |
+| `check.ts` | Static checks on the stripped circuit |
+| `analyze.ts` | Truth tables and Karnaugh maps read off a circuit by simulating it |
+| `watch.ts` | Keeps the stripped circuit up to date with the document, rebuilding only on structural edits |
 | `evaluate.ts` | Computes what a combinational drawing outputs, for checking it against a truth table |
+
+The simulator and the checks are not shown in the editor yet; they are the base for that.
 
 ![cout = b·cin + a·cin + a·b, drawn by sopToSchematic](images/majority.svg)
 
@@ -116,6 +123,143 @@ down a vertical lane of its own and branches off to every OR gate that uses it. 
 usual way to draw a decoder, such as a hexadecimal to seven-segment decoder, where neighbouring
 segments share products.
 
+## The stripped circuit
+
+```ts
+import { extractCircuit, circuitText } from "./src/logic/circuit";
+
+const c = extractCircuit(doc);
+circuitText(c);
+```
+
+```
+# cout = bcin + acin + ab: parts and connections only
+part a input-pin
+part b input-pin
+part cin input-pin
+part bcin and
+part acin and
+part ab and
+part SUM or inputs=3
+part cout output-pin
+
+net SUM_out = SUM.out, cout.in
+net a_out = a.out, acin.in0, ab.in0
+net ab_out = ab.out, SUM.in2
+...
+```
+
+A drawing carries positions, rotations, sizes, wire routes and labels, and DSpec source carries
+compiler directives. None of that changes what the circuit does. `extractCircuit` keeps only:
+
+- the parts, with their type and the properties that change pins or behaviour;
+- the nets, read from the stored connections (not from where wires happen to lie);
+- a node for every **bit**: tunnels are dissolved into the nets they join, and a splitter's
+  slices are joined bit by bit to its bus, so a bus and the wires split off it share nodes.
+
+`circuitText` prints it in DSpec syntax with no `at=`, `rot=` or `@` lines. Building that text
+with the compiler gives a drawing with the same connections. Pins of different widths on one net
+are reported in `c.issues`.
+
+`structuralKey(doc)` is the cheap fingerprint behind all this: the parts (id, type, meaningful
+properties) and the groups of pins the connections join. Moving a part, dragging or re-routing a
+wire, splitting or merging wires, rotating, resizing and relabelling leave it unchanged.
+
+### Following the document
+
+```ts
+import { watchCircuit } from "./src/logic/watch";
+
+const watch = watchCircuit(store, (snap, why) => { /* snap.circuit, snap.issues */ });
+watch.current();
+```
+
+`watchCircuit` rebuilds the circuit and its check only after a structural edit: a part added or
+deleted, a connection made or broken, a property such as a gate's input count changed, or an undo
+of one. Dragging parts or wires does nothing. A rename refreshes the names (`why` is `"names"`).
+Without a callback it rebuilds lazily, when `current()` is called.
+
+## Simulating
+
+```ts
+import { Simulator } from "./src/logic/simulate";
+
+const sim = new Simulator(c);
+sim.set("a", 1);
+const r = sim.settle();   // { waves, stable, issues }
+sim.read("cout");         // 1, or null when X or Z
+```
+
+Every bit holds 0, 1, X (unknown) or Z (undriven). Part outputs drive strongly, tri-state
+outputs drive Z when disabled, and pull-up and pull-down resistors drive weakly. A net takes its
+strong drivers' value, else the pull's, else Z. The issues `settle` reports:
+
+| Issue | When |
+|---|---|
+| `contention` | outputs on one net drive different values (a short); the net reads X |
+| `floating` | an input reads a net nothing drives; it reads X |
+| `oscillation` | the circuit does not settle (a ring of inverters, a latch released from S = R = 1); the nodes still changing are held at X |
+| `unmodelled` | a part the simulator has no model for; its outputs read X |
+
+Settling runs in waves of one gate delay, and every part evaluated in a wave reads the values of
+the wave before. So flip-flops on one clock all sample their inputs before any of them changes,
+as in hardware, and a latch built from two NOR gates holds its state.
+
+Inputs are set by part id or name: input pins, clocks, push buttons, DIP switches and keypads.
+A clock cycle is `set("CLK", 1); settle(); set("CLK", 0); settle()`.
+
+Flip-flops, latches, registers and counters start at X, so a design without a reset reads X until
+something sets it; `new Simulator(c, { initial: "zero" })` starts them at 0 instead. Register and
+counter resets are synchronous, flip-flop set and reset are asynchronous, and a control pin drawn
+with a bubble is active low.
+
+Simulated: gates and compound gates, plexers, decoders and encoders, tri-state buffers and bus
+transceivers, the BCD to 7-segment decoder, adders, subtractors, comparators, multipliers,
+dividers and the other arithmetic parts, latches, flip-flops, registers and counters. Not yet:
+memories, shift registers and the other sequential blocks, the ALU, the shifter, generic blocks
+and transistors.
+
+## Checking a circuit
+
+```ts
+import { checkCircuit } from "./src/logic/check";
+
+checkCircuit(c); // [{ kind, severity, pins, message }, ...]
+```
+
+The static check needs no input values:
+
+| Kind | Severity | Meaning |
+|---|---|---|
+| `floating-input` | error | an input pin that is not connected, or whose net nothing drives |
+| `multiple-drivers` | error | two outputs on one net (shorted whenever they differ) |
+| `width-mismatch` | error | pins of different widths joined |
+| `possible-contention` | warning | an output shares a net with tri-state outputs |
+| `feedback` | info | a combinational loop (normal for a latch built from gates) |
+| `unmodelled` | info | a part the simulator does not model |
+| `unused-input` | info | an input connected to nothing |
+
+## Truth tables and Karnaugh maps from a drawing
+
+```ts
+import { truthTable, outputFunctions, truthTableText } from "./src/logic/analyze";
+
+const t = truthTable(c);              // every input combination, simulated
+for (const f of outputFunctions(t)) {
+  f.minterms;                         // [3, 5, 6, 7]
+  f.sop;                              // "bcin + acin + ab"
+  f.kmap;                             // Karnaugh map text (2 to 4 inputs)
+}
+```
+
+The table comes from simulating every combination of the input pins, so it is what the drawing
+computes, whatever parts it uses. By default the inputs are the input pins in document order,
+the first being the most significant; `truthTable(c, { inputs: ["a", "b", "cin"] })` picks and
+orders them, and `outputs` picks the outputs. Rows where an output is X or Z are listed in
+`unknown` and shown as `x` on the map. A circuit whose outputs depend on flip-flops, latches or
+parts that are not simulated is refused, since its table would describe one state rather than a
+function.
+
 ## Checking a drawing
 
 ```ts
@@ -124,8 +268,7 @@ import { evaluateCombinational } from "./src/logic/evaluate";
 evaluateCombinational(doc, { a: true, b: true, cin: false }); // { cout: true }
 ```
 
-The evaluator reads the drawing's netlist and computes every gate (`and`, `nand`, `or`, `nor`,
-`xor`, `xnor`, `not`, `buf`) from the input pins and constants. It returns the value of each
-output pin by part id, or `undefined` for an output that depends on something it does not model
-(sequential parts, feedback loops, an undriven net). Looping over every input combination checks
-a schematic against its truth table.
+A shortcut over the simulator: it returns the value of each output pin by part id for the given
+input pins, or `undefined` for an output that is X or Z (it depends on state never set, on a part
+that is not simulated, on a floating net or a short) or that oscillates. Looping over every input
+combination checks a schematic against its truth table.

@@ -23,7 +23,7 @@ routed and checked.
 | | |
 |---|---|
 | **[Layout and Routing](Layout-and-Routing.md)** | The router's cost model, layout compaction, and wire relaxation |
-| **[Logic Tools](Logic-Tools.md)** | Boolean minimization, two-level schematic generation, truth-table checks |
+| **[Logic Tools](Logic-Tools.md)** | Boolean minimization, schematic generation, simulation, contention and floating-input checks, truth tables |
 | **[Development](Development.md)** | Project structure, architecture rules, tests, contributing |
 
 ## A first circuit

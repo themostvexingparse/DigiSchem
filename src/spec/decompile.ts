@@ -17,7 +17,11 @@ function fmt(v: PropValue): string {
   return /^[A-Za-z0-9_.+]+$/.test(v) && !/^(true|false|on|off|yes|no)$/i.test(v) ? v : JSON.stringify(v);
 }
 
-export function decompileDoc(doc: SchematicDocument): string {
+/**
+ * A readable, unique DSpec name for every part (by component id): its label, else its terminal
+ * name, else its id if a person chose it, else the type's label prefix and a number.
+ */
+export function partNames(doc: SchematicDocument): Map<string, string> {
   registerBuiltinComponents();
   const used = new Set<string>();
   const nameOf = new Map<string, string>();
@@ -42,6 +46,11 @@ export function decompileDoc(doc: SchematicDocument): string {
     }
     nameOf.set(c.id, n);
   }
+  return nameOf;
+}
+
+export function decompileDoc(doc: SchematicDocument): string {
+  const nameOf = partNames(doc);
   const lines: string[] = [];
   lines.push(`# Read from "${doc.name}". Positions are kept; wires are re-routed from the nets.`);
   lines.push(`@name ${JSON.stringify(doc.name)}`);
