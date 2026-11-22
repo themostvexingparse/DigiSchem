@@ -102,26 +102,27 @@ function memRead(io: PartIO, mem: Memory, addr: readonly Bit[], w: number): Bit[
   return [...(mem.get(Number(a)) ?? initState(io, w))];
 }
 
-function memWrite(mem: Memory, addr: readonly Bit[], data: readonly Bit[], we: Bit, w: number): void {
+function memWrite(mem: Memory, addr: readonly Bit[], data: readonly Bit[], we: Bit, w: number, init: Bit[] = allX(w)): void {
   if (we === B0) return;
   const a = big(addr);
   if (a === null) {
     // unknown address: any word might have been written; those already known become unsure
-    for (const [k, v] of mem) mem.set(k, v.map((b, i) => (b === data[i] && we === B1 ? b : BX)));
-    mem.set(-1, allX(w)); // marks "every unwritten word is unknown too"
+    for (const [k, v] of mem) if (k >= 0) mem.set(k, v.map((b, i) => (b === data[i] ? b : BX)));
+    // every unwritten word could have been written too: it keeps the bits the data agrees with
+    mem.set(-1, (mem.get(-1) ?? init).map((b, i) => (b === data[i] ? b : BX)));
     return;
   }
   const k = Number(a);
   if (we === B1) mem.set(k, [...data]);
   else {
-    const cur = mem.get(k) ?? allX(w);
+    const cur = mem.get(k) ?? mem.get(-1) ?? init;
     mem.set(k, cur.map((b, i) => (b === data[i] ? b : BX)));
   }
 }
 
 function memReadAny(io: PartIO, mem: Memory, addr: readonly Bit[], w: number): Bit[] {
   const a = big(addr);
-  if (a !== null && !mem.has(Number(a)) && mem.has(-1)) return allX(w);
+  if (a !== null && !mem.has(Number(a)) && mem.has(-1)) return [...mem.get(-1)!];
   return memRead(io, mem, addr, w);
 }
 
@@ -250,7 +251,11 @@ export const SEQ_MODELS: Record<string, Model> = {
       st.run = d === st.last && d !== BX ? st.run + 1 : 1;
       st.last = d;
       if (d !== BX && st.run >= DEBOUNCE_SAMPLES) st.out = [d];
-    } else if (e === BX) st.out = [BX];
+    } else if (e === BX) {
+      st.out = [BX];
+      st.run = 0;
+      st.last = BX;
+    }
     io.drive("out", st.out);
   },
 
@@ -295,7 +300,7 @@ export const SEQ_MODELS: Record<string, Model> = {
     const e = edge(io, st);
     if (e !== B0) {
       const data = shared ? io.bus("dq") : io.bus("wd");
-      memWrite(st.mem, addr, data, and([e, io.active("we", B0), cs]), w);
+      memWrite(st.mem, addr, data, and([e, io.active("we", B0), cs]), w, initState(io, w));
     }
     const word = memReadAny(io, st.mem, addr, w);
     if (shared) {
@@ -309,7 +314,7 @@ export const SEQ_MODELS: Record<string, Model> = {
     const w = io.busWidth("douta");
     st.mem ??= new Map<number, Bit[]>();
     const e = edge(io, st);
-    if (e !== B0) memWrite(st.mem, io.bus("addra"), io.bus("dina"), and([e, io.active("wea", B0)]), w);
+    if (e !== B0) memWrite(st.mem, io.bus("addra"), io.bus("dina"), and([e, io.active("wea", B0)]), w, initState(io, w));
     io.driveBus("douta", memReadAny(io, st.mem, io.bus("addra"), w));
     io.driveBus("doutb", memReadAny(io, st.mem, io.bus("addrb"), w));
   },
@@ -323,7 +328,7 @@ export const SEQ_MODELS: Record<string, Model> = {
     st.mem ??= new Map<number, Bit[]>();
     const e = edge(io, st);
     if (e !== B0)
-      for (let j = 1; j <= wp; j++) memWrite(st.mem, io.bus(`wa${j}`, "_"), io.bus(`wd${j}`, "_"), and([e, io.active(`we${j}`, B0)]), w);
+      for (let j = 1; j <= wp; j++) memWrite(st.mem, io.bus(`wa${j}`, "_"), io.bus(`wd${j}`, "_"), and([e, io.active(`we${j}`, B0)]), w, initState(io, w));
     for (let i = 1; i <= rp; i++) {
       const a = io.bus(`ra${i}`, "_");
       const v = big(a);
@@ -340,7 +345,10 @@ export const SEQ_MODELS: Record<string, Model> = {
     const e = edge(io, st);
     if (e !== B0) {
       const rst = io.active("rst", B0), wr = io.active("wr", B0), rd = io.active("rd", B0);
-      if (e === BX || rst === BX || wr === BX || rd === BX) st.unsure = true;
+      if (e === B1 && rst === B1) {
+        st.items = [];
+        st.unsure = false;
+      } else if (e === BX || rst === BX || wr === BX || rd === BX) st.unsure = true;
       else if (rst === B1) {
         st.items = [];
         st.unsure = false;
@@ -366,7 +374,10 @@ export const SEQ_MODELS: Record<string, Model> = {
     const e = edge(io, st);
     if (e !== B0) {
       const rst = io.active("rst", B0), push = io.active("push", B0), pop = io.active("pop", B0);
-      if (e === BX || rst === BX || push === BX || pop === BX) st.unsure = true;
+      if (e === B1 && rst === B1) {
+        st.items = [];
+        st.unsure = false;
+      } else if (e === BX || rst === BX || push === BX || pop === BX) st.unsure = true;
       else if (rst === B1) {
         st.items = [];
         st.unsure = false;

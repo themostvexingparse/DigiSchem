@@ -80,7 +80,12 @@ interface DriverRef {
   pin: number;
   bit: number;
   strength: Strength;
+  /** a supply or an input: a switch that may or may not conduct cannot change its net */
+  supply: boolean;
 }
+
+/** Parts whose outputs are ideal sources for switch-level purposes (rails, constants, inputs). */
+export const SUPPLIES = new Set(["vcc", "ground", "constant", "input-pin", "clock", "push-button", "dip-switch", "keypad"]);
 
 /** Part types whose outputs are switched off (Z) rather than driven when disabled. */
 const TRISTATE = new Set(["tristate", "bus-transceiver"]);
@@ -133,6 +138,8 @@ export class Simulator {
   private state: Record<string, unknown>[];
   private stimulus: Bit[][][];
   private forcedX = new Set<number>();
+  /** a node held at 0 while probing a loop (see probeLoop), or -1 */
+  private probeHold = -1;
   private switches: Switch[] = [];
   private switchesOf = new Map<number, Switch[]>();
   /** group root of every node (nodes joined by conducting switches), and the members of each larger group */
@@ -194,11 +201,12 @@ export class Simulator {
         const drives = pin.dir === "out" || pin.dir === "inout";
         const reads = pin.dir === "in" || pin.dir === "inout";
         pin.bits.forEach((node, b) => {
-          if (drives) this.drivers[node].push({ part: pi, pin: k, bit: b, strength });
+          if (drives) this.drivers[node].push({ part: pi, pin: k, bit: b, strength, supply: SUPPLIES.has(p.type) });
           if (reads && !this.readers[node].includes(pi)) this.readers[node].push(pi);
         });
       }),
     );
+    if (this.switches.length) this.regroup();
     this.rank = new Int32Array(circuit.parts.length);
     this.ranks();
     for (let i = 0; i < circuit.parts.length; i++) this.enqueue(i);
@@ -446,6 +454,7 @@ export class Simulator {
     const driven = new Set<number>();
     for (const pi of members) for (const pin of parts[pi].pins) if (pin.dir !== "in") for (const n of pin.bits) driven.add(n);
     for (const sw of this.switches) if (inLoop.has(sw.part)) driven.add(sw.a), driven.add(sw.b);
+    for (const n of [...driven]) for (const m of this.members.get(this.root[n]) ?? []) driven.add(m);
     for (const n of driven) if (this.readers[n].some((x) => inLoop.has(x))) inner.push(n);
     const start = inner.find((n) => this.values[n] === BX && !this.forcedX.has(n));
     if (start === undefined) return [];
@@ -457,21 +466,28 @@ export class Simulator {
     const drives = members.map((pi) => this.drives[pi].map((a) => a.slice()));
     const sws = this.switches.filter((sw) => inLoop.has(sw.part)).map((sw) => [sw, sw.on] as const);
     const bucket = this.buckets[r];
-    // try
+    // try: hold the node at 0 until the loop settles, then let go and see whether it stays
+    const run = (waves: number, record?: Set<number>) => {
+      for (let w = 0; bucket.size && w < waves; w++) {
+        const ps = [...bucket];
+        bucket.clear();
+        for (const n of this.wave(ps)) if (record && driven.has(n)) record.add(n);
+      }
+    };
+    const cap = 4 * members.length + 32;
+    this.probeHold = start;
     this.values[start] = B0;
     for (const x of this.readers[start]) if (inLoop.has(x)) bucket.add(x);
-    const cap = 4 * members.length + 32;
-    for (let w = 0; bucket.size && w < cap; w++) {
-      const ps = [...bucket];
-      bucket.clear();
-      this.wave(ps);
+    run(cap);
+    this.probeHold = -1;
+    const released = this.resolve(start).value;
+    if (released !== this.values[start]) {
+      this.values[start] = released;
+      for (const x of this.readers[start]) if (inLoop.has(x)) bucket.add(x);
     }
+    run(cap);
     const changing = new Set<number>();
-    for (let w = 0; bucket.size && w < 16; w++) {
-      const ps = [...bucket];
-      bucket.clear();
-      for (const n of this.wave(ps)) if (driven.has(n)) changing.add(n);
-    }
+    run(16, changing);
     const oscillates = bucket.size > 0;
     // put everything back
     bucket.clear();
@@ -534,7 +550,7 @@ export class Simulator {
     }
     const changed: number[] = [];
     for (const n of touched) {
-      const v = this.forcedX.has(n) ? BX : this.resolve(n).value;
+      const v = n === this.probeHold ? B0 : this.forcedX.has(n) ? BX : this.resolve(n).value;
       if (v !== this.values[n]) {
         this.values[n] = v;
         changed.push(n);
@@ -574,27 +590,40 @@ export class Simulator {
     }
   }
 
-  private resolve(n: number): { value: Bit; strong: number; distinct: boolean } {
+  private resolve(n: number): { value: Bit; strong: number; distinct: boolean; supply: boolean } {
     const r = this.resolveGroup(this.root[n]);
-    // A switch that may or may not conduct: if it would bring a different value, the value is unknown.
-    if (this.unsure.size && r.value !== BX) {
-      const group = this.members.get(this.root[n]) ?? [n];
-      for (const m of group)
-        for (const sw of this.unsure.get(m) ?? []) {
-          const other = this.root[sw.a] === this.root[n] ? sw.b : sw.a;
-          if (this.root[other] === this.root[n]) continue;
-          const o = this.resolveGroup(this.root[other]).value;
-          if (o !== BZ && o !== r.value) return { ...r, value: BX };
-        }
+    // Switches that may or may not conduct: every group they might join this one to (through any
+    // number of them) could bring its value. The value is unknown if one could change it: a
+    // strong value different from ours, or any value when ours is only weak or nothing.
+    // (a supply rail or an input keeps its value: at worst the switch is a short, reported as such)
+    if (!this.unsure.size || r.value === BX || r.supply) return r;
+    const own = this.root[n];
+    const seen = new Set<number>([own]);
+    const queue = [own];
+    while (queue.length) {
+      const g = queue.pop()!;
+      for (const m of this.members.get(g) ?? [g])
+        for (const sw of this.unsure.get(m) ?? [])
+          for (const end of [sw.a, sw.b]) {
+            const og = this.root[end];
+            if (seen.has(og)) continue;
+            seen.add(og);
+            queue.push(og);
+            const o = this.resolveGroup(og);
+            if (o.value === BZ || o.value === r.value) continue;
+            if (r.strong > 0 && o.strong === 0) continue; // a pull cannot override a driven net
+            return { ...r, value: BX };
+          }
     }
     return r;
   }
 
-  private resolveGroup(root: number): { value: Bit; strong: number; distinct: boolean } {
+  private resolveGroup(root: number): { value: Bit; strong: number; distinct: boolean; supply: boolean } {
     let strongV: Bit | -1 = -1;
     let weakV: Bit | -1 = -1;
     let strong = 0;
     let distinct = false;
+    let supply = false;
     for (const m of this.members.get(root) ?? [root])
     for (const d of this.drivers[m]) {
       const v = this.drives[d.part][d.pin][d.bit];
@@ -604,15 +633,16 @@ export class Simulator {
         continue;
       }
       strong++;
+      if (d.supply) supply = true;
       if (strongV === -1) strongV = v;
       else if (strongV !== v) {
         distinct = true;
         strongV = BX;
       }
     }
-    if (strongV !== -1) return { value: strongV, strong, distinct };
-    if (weakV !== -1) return { value: weakV, strong, distinct };
-    return { value: BZ, strong, distinct };
+    if (strongV !== -1) return { value: strongV, strong, distinct, supply };
+    if (weakV !== -1) return { value: weakV, strong, distinct, supply };
+    return { value: BZ, strong, distinct, supply };
   }
 
   private evaluate(pi: number): Bit[][] {
@@ -661,7 +691,7 @@ export class Simulator {
       const by = new Map<string, number[]>();
       for (const n of nodes) {
         const net = nodeNet.get(n);
-        const key = net === undefined ? `node${n}` : `net${net}`;
+        const key = this.members.has(this.root[n]) ? `grp${this.root[n]}` : net === undefined ? `node${n}` : `net${net}`;
         const l = by.get(key);
         if (l) l.push(n);
         else by.set(key, [n]);
@@ -676,22 +706,54 @@ export class Simulator {
     for (const [root, members] of this.members)
       if (this.resolveGroup(root).distinct) for (const m of members) if (!seen.has(m)) contended.push(m), seen.add(m);
     for (let n = 0; n < this.values.length; n++) if (this.values[n] === BZ && this.readers[n].length) floating.push(n);
-    // a switch that may be conducting between two nets driven to different values may be a short
-    const unsureShorts = new Set<Switch>();
-    for (const sw of this.switches) {
-      if (sw.on !== BX || this.root[sw.a] === this.root[sw.b]) continue;
-      const x = this.resolveGroup(this.root[sw.a]).value, y = this.resolveGroup(this.root[sw.b]).value;
-      if (x !== BZ && y !== BZ && (x !== y || x === BX)) unsureShorts.add(sw);
-    }
-    for (const sw of unsureShorts) {
-      const p = this.circuit.parts[sw.part];
-      const nodes = [sw.a, sw.b];
-      issues.push({
-        kind: "contention",
-        nodes,
-        pins: this.pinsOn(nodes),
-        message: `${p.name} may be conducting (its control is unknown) between nets driven to different values`,
-      });
+    // Switches that may be conducting (their control is unknown) between nets driven to different
+    // values may be a short: nets joined through any chain of such switches form a cluster, and a
+    // cluster holding two different driven values is reported once, with the switches and drivers.
+    if (this.unsure.size) {
+      const parent = new Map<number, number>();
+      const find = (x: number): number => {
+        while (parent.has(x) && parent.get(x) !== x) x = parent.get(x)!;
+        return x;
+      };
+      const unsureSw = this.switches.filter((sw) => sw.on === BX && this.root[sw.a] !== this.root[sw.b]);
+      for (const sw of unsureSw) {
+        const x = find(this.root[sw.a]), y = find(this.root[sw.b]);
+        if (!parent.has(x)) parent.set(x, x);
+        if (!parent.has(y)) parent.set(y, y);
+        if (x !== y) parent.set(x, y);
+      }
+      const clusters = new Map<number, { groups: Set<number>; sws: Switch[] }>();
+      for (const sw of unsureSw) {
+        const c = find(this.root[sw.a]);
+        const e = clusters.get(c) ?? { groups: new Set<number>(), sws: [] };
+        e.groups.add(this.root[sw.a]);
+        e.groups.add(this.root[sw.b]);
+        e.sws.push(sw);
+        clusters.set(c, e);
+      }
+      for (const { groups, sws } of clusters.values()) {
+        const vals = new Set<Bit>();
+        for (const g of groups) {
+          const r = this.resolveGroup(g);
+          if (r.strong > 0 && r.value !== BZ) vals.add(r.value);
+        }
+        if (vals.size < 2) continue;
+        const nodes = [...new Set(sws.flatMap((sw) => [sw.a, sw.b]))];
+        const drv = new Set<string>();
+        for (const g of groups)
+          for (const m of this.members.get(g) ?? [g])
+            for (const d of this.drivers[m]) {
+              const v = this.drives[d.part][d.pin][d.bit];
+              if (v !== BZ && d.strength !== "weak") drv.add(`${this.circuit.parts[d.part].name}.${this.circuit.parts[d.part].pins[d.pin].id}=${bitChar(v)}`);
+            }
+        const names = [...new Set(sws.map((sw) => this.circuit.parts[sw.part].name))];
+        issues.push({
+          kind: "contention",
+          nodes,
+          pins: this.pinsOn(nodes),
+          message: `${names.join(", ")} may be conducting (control unknown) between nets driven to different values (${[...drv].join(", ")})`,
+        });
+      }
     }
     for (const nodes of group(contended)) {
       const drv = new Set<string>();

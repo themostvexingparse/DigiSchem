@@ -4,10 +4,10 @@
  * whatever gates it uses. Each output bit then gets its minimal sum of products (minimize.ts).
  */
 import type { Circuit, CircuitPart } from "./circuit";
-import { STATEFUL } from "./check";
+import { STATEFUL, switchClusters } from "./check";
 import { kmapText, minimize, sopToString, type MinimizeResult } from "./minimize";
 import { MODELS } from "./models";
-import { type Bit, PASSIVE, Simulator, STIMULI, SWITCHES, bitChar, numberToBits } from "./simulate";
+import { type Bit, PASSIVE, Simulator, STIMULI, SUPPLIES, SWITCHES, bitChar, numberToBits } from "./simulate";
 
 export interface Port {
   /** part id */
@@ -55,8 +55,24 @@ const width = (p: CircuitPart, dir: "in" | "out") => p.pins.filter((x) => x.dir 
  * that depends on them would describe one state, not the function.
  */
 export function stateInCone(c: Circuit, from: readonly CircuitPart[]): CircuitPart[] {
-  const drivers: number[][] = Array.from({ length: c.nodes }, () => []);
-  c.parts.forEach((p, pi) => p.pins.forEach((pin) => pin.dir !== "in" && pin.bits.forEach((n) => drivers[n].push(pi))));
+  // the parts that can set each node: its drivers, and the transistors (and their drivers)
+  // that can connect it to other nets, though not back through a supply rail
+  const local = switchClusters(c, false);
+  const rail = new Set<number>();
+  for (const p of c.parts) if (SUPPLIES.has(p.type)) for (const pin of p.pins) if (pin.dir !== "in") for (const n of pin.bits) rail.add(n);
+  const byCluster = new Map<number, number[]>();
+  c.parts.forEach((p, pi) =>
+    p.pins.forEach((pin) => {
+      if (pin.dir === "in") return;
+      for (const n of pin.bits) {
+        if (SWITCHES[p.type] && rail.has(n)) continue; // a transistor on a rail does not set the rail
+        const l = byCluster.get(local[n]);
+        if (l) l.push(pi);
+        else byCluster.set(local[n], [pi]);
+      }
+    }),
+  );
+  const drivers: number[][] = Array.from({ length: c.nodes }, (_, n) => byCluster.get(local[n]) ?? []);
   const seen = new Set<number>();
   const found: CircuitPart[] = [];
   const stack = from.map((p) => c.parts.indexOf(p));
