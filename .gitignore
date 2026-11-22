@@ -31,3 +31,6 @@ dist-cli
 
 # local material that stays out of the repository
 test_samples/
+
+# simulator bug reports written by delegate agents (read from their worktrees, not committed)
+.sim-reports/
