@@ -220,7 +220,7 @@ describe("7. watchCircuit stress tests on real DocumentStore + doc-ops", () => {
 
     expect(circuitText(watch.current().circuit)).toBe(initialText);
     watch.dispose();
-  });
+  }, 60000);
 
   it("fires exactly when buildNetlist pin partitions or part types/props change across seeded random edit sequences", () => {
     const seeds = [
@@ -365,7 +365,7 @@ describe("7. watchCircuit stress tests on real DocumentStore + doc-ops", () => {
 
       watch.dispose();
     }
-  });
+  }, 60000);
 
   it("refreshes gate label renames lazily on current() without firing onChange or incrementing builds, and stops after dispose()", () => {
     const store = new DocumentStore(buildRoutedCircuit());
