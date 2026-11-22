@@ -88,7 +88,11 @@ function compareState(
   const simHasCont = simCont.size > 0;
   const refHasCont = refCont.size > 0;
   // (with an island too large for the reference's brute force, it cannot rule a short out)
-  if (simHasCont !== refHasCont && !(simHasCont && refRes.skippedNodes.size > 0)) {
+  // The simulator must never miss a short the reference finds. It may report one the reference
+  // rules out where an output is unknown (an X beside a known output counts as a possible short),
+  // or where the reference could not decide (an island too large for its brute force).
+  const simOnlyBecauseX = simHasCont && !refHasCont && simRes.issues.some((i) => i.kind === "contention" && i.message.includes("=X"));
+  if (simHasCont !== refHasCont && !(simHasCont && refRes.skippedNodes.size > 0) && !simOnlyBecauseX) {
     diffs.push({
       kind: "contention",
       detail: `hasContention mismatch: sim=[${[...simCont].sort((a, b) => a - b)}] ref=[${[...refCont].sort((a, b) => a - b)}] (simIssues=${simRes.issues.filter((i) => i.kind === "contention").map((i) => i.message).join(" | ")})`,
@@ -195,7 +199,43 @@ describe("differential fuzzing: Simulator vs RefSimulator (diagnostic)", () => {
         const sr = sim.settle();
         const rr = ref.settle();
         if (rr.skippedNodes.size > 0) totalSkipped++;
-        const diffs = compareState(circuit, sim, ref, sr, rr);
+        let diffs = compareState(circuit, sim, ref, sr, rr);
+        // The reference evaluates gates with plain three-valued logic; the simulator is exact over
+        // a few unknown inputs of each gate, so it may know an output the reference leaves at X.
+        // That is right only if every way of filling in the unknown inputs gives that value:
+        // check it with the reference, input by input.
+        const unknownIn = gen.inputIds.map((id, i) => (vec[i] === RX ? i : -1)).filter((i) => i >= 0);
+        // (with every input known, an X in the reference comes from a floating net, which the
+        // simulator also fills in both ways at each gate it reaches: the model soundness tests
+        // cover that, so such an output is not compared)
+        if (!unknownIn.length && rr.floatingNodes.size)
+          diffs = diffs.filter(
+            (d) =>
+              !(d.kind === "output-value" && /sim=[01Z] ref=X$/.test(d.detail)) &&
+              !(d.kind === "floating" && /refVal=X\)$/.test(d.detail)) &&
+              // (a short the reference only suspects through an X it got from a floating net)
+              !(d.kind === "contention" && /sim=\[\] ref=/.test(d.detail)),
+          );
+        // With unknown inputs, a disagreement is settled by running the reference on every way of
+        // filling them in: it is a simulator bug only if one of those contradicts the simulator.
+        if (unknownIn.length && unknownIn.length <= 8 && diffs.length) {
+          const runs = Array.from({ length: 1 << unknownIn.length }, (_, k) => {
+            const r2 = new RefSimulator(circuit);
+            gen.inputIds.forEach((id, i) => r2.set(id, [unknownIn.includes(i) ? (((k >> unknownIn.indexOf(i)) & 1) as RefBit) : vec[i]]));
+            return r2.settle();
+          });
+          diffs = diffs.filter((d) => {
+            const ov = /^(\S+)\[0\] \(node (\d+)\): sim=([01Z]) ref=X$/.exec(d.detail);
+            if (d.kind === "output-value" && ov) {
+              const want = "01XZ".indexOf(ov[3]);
+              return runs.some((res) => res.values[Number(ov[2])] !== want && res.values[Number(ov[2])] !== RX);
+            }
+            const fl = /^node (\d+): simFloating=true refFloating=false \(simVal=Z, refVal=X\)$/.exec(d.detail);
+            if (d.kind === "floating" && fl) return runs.some((res) => res.values[Number(fl[1])] !== RZ && res.values[Number(fl[1])] !== RX);
+            if (d.kind === "contention" && /sim=\[\] ref=/.test(d.detail)) return runs.some((res) => res.contentionNodes.size > 0);
+            return true;
+          });
+        }
         for (const d of diffs) {
           const entry = byKind.get(d.kind) ?? { count: 0, samples: [] };
           entry.count++;

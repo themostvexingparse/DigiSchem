@@ -121,3 +121,48 @@ describe("unknown inputs on a clock step never give a wrong known output", () =>
     });
   }
 });
+
+describe("with a few unknown inputs, a part without state is exact", () => {
+  for (const [type, props] of CASES) {
+    it(`${type} ${JSON.stringify(props)}`, () => {
+      const def = getDef(type)!;
+      const pins = def.geometry({ ...def.defaultProps, ...props }).pins;
+      const ins = pins.filter((p) => p.dir === "in");
+      const outs = pins.filter((p) => p.dir === "out");
+      const b = bench(type, props);
+      const rng = new Rng(type.length * 313 + JSON.stringify(props).length);
+      const bad: string[] = [];
+      const apply = (vals: Bit[][]) => ins.forEach((p, i) => b.sim.set(`T_${p.id}`, vals[i]));
+      const read = () => outs.map((p) => b.sim.pinBits(`T_${p.id}`, "in"));
+      for (let t = 0; t < 80 && bad.length < 3; t++) {
+        const vals: Bit[][] = ins.map((p) => Array.from({ length: p.width ?? 1 }, () => rng.int(0, 1) as Bit));
+        // one to four unknown bits
+        const unknown: [number, number][] = [];
+        for (let k = rng.int(1, 4); k > 0; k--) {
+          const i = rng.int(0, ins.length - 1), j = rng.int(0, (ins[i].width ?? 1) - 1);
+          if (vals[i][j] !== 2) unknown.push([i, j]);
+          vals[i][j] = 2;
+        }
+        apply(vals);
+        b.settle();
+        const withX = read();
+        let agree: Bit[][] | null = null;
+        for (let m = 0; m < 2 ** unknown.length; m++) {
+          const r = vals.map((v) => [...v]);
+          unknown.forEach(([i, j], q) => (r[i][j] = ((m >> q) & 1) as Bit));
+          apply(r);
+          b.settle();
+          const got = read();
+          agree = agree ? agree.map((bits, o) => bits.map((x, j) => (x === got[o][j] ? x : 2))) as Bit[][] : got;
+        }
+        withX.forEach((bits, o) =>
+          bits.forEach((x, j) => {
+            const a = agree![o][j];
+            if (a <= 1 && x !== a) bad.push(`${outs[o].id}[${j}] is ${"01XZ"[x]} with ${JSON.stringify(vals)}, though every way of filling the X's gives ${a}`);
+          }),
+        );
+      }
+      expect(bad).toEqual([]);
+    });
+  }
+});

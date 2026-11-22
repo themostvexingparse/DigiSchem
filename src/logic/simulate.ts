@@ -124,6 +124,9 @@ interface Switch {
   on: Bit;
 }
 
+/** Up to how many unknown input bits a part without state is evaluated exactly (2^n tries). */
+const EXACT_UNKNOWNS = 4;
+
 /** Parts that only join bits (their slices are already one node with the bus): no behaviour. */
 export const PASSIVE = new Set(["splitter"]);
 
@@ -837,6 +840,7 @@ export class Simulator {
       if (d.supply) supply = true;
       if (strongV === -1) strongV = v;
       else if (strongV !== v) {
+        // two outputs that differ, or an unknown one beside another: a short, or a possible one
         distinct = true;
         strongV = BX;
       }
@@ -863,9 +867,28 @@ export class Simulator {
       });
       return out;
     }
-    const io = new IO(part, this.values, out, this.initial, (this.pinIndex[pi] ??= new Map(part.pins.map((x, k) => [x.id, k]))));
-    model(io, this.state[pi]);
-    return out;
+    const index = (this.pinIndex[pi] ??= new Map(part.pins.map((x, k) => [x.id, k])));
+    model(new IO(part, this.values, out, this.initial, index), this.state[pi]);
+    if (this.rank[pi] < 0 || !out.some((bits) => bits.includes(BX))) return out;
+    // A part without state whose output came out unknown: if only a few input bits are unknown,
+    // try every way of filling them in and keep what all the tries agree on. This makes every
+    // such model exact (an AND with an unknown input and a 0 is 0 whatever the model does).
+    const unknown: number[] = [];
+    for (const pin of part.pins) {
+      if (pin.dir === "out") continue;
+      for (const n of pin.bits) if (this.values[n] > 1 && !unknown.includes(n)) unknown.push(n);
+    }
+    if (!unknown.length || unknown.length > EXACT_UNKNOWNS) return out;
+    let merged: Bit[][] | null = null;
+    const override = new Map<number, Bit>();
+    for (let m = 0; m < 1 << unknown.length; m++) {
+      unknown.forEach((n, i) => override.set(n, ((m >> i) & 1) as Bit));
+      const o: Bit[][] = part.pins.map((pin) => new Array<Bit>(pin.width).fill(BZ));
+      model(new IO(part, this.values, o, this.initial, index, override), {});
+      merged = merged ? merged.map((bits, k) => bits.map((b, j) => (b === o[k][j] ? b : BX))) : o;
+    }
+    // (only unknown bits are refined: the model's known bits stand)
+    return out.map((bits, k) => bits.map((b, j) => (b === BX ? merged![k][j] : b)));
   }
 
   // ---- diagnostics ------------------------------------------------------------------------------
@@ -1022,6 +1045,8 @@ class IO implements PartIO {
     private out: Bit[][],
     readonly initial: "x" | "zero",
     private index: Map<string, number>,
+    /** values to read instead of the circuit's, for some nodes (see evaluate) */
+    private override?: Map<number, Bit>,
   ) {}
 
   private pin(id: string): number {
@@ -1044,7 +1069,7 @@ class IO implements PartIO {
     const k = this.pin(id);
     if (k < 0) return [];
     return this.part.pins[k].bits.map((n) => {
-      const v = this.values[n];
+      const v = this.override?.get(n) ?? this.values[n];
       return v === BZ ? BX : v;
     });
   }

@@ -861,8 +861,20 @@ describe("3. X propagation and dominance rules", () => {
         const settled = sim.settle();
         expect(settled.stable).toBe(true);
         const expected = dag.evaluateRef(vec);
+        // The reference is plain three-valued logic, gate by gate; the simulator is exact over a
+        // few unknown inputs of each part, so it may know more. Where the reference knows, they
+        // must agree; where only the simulator knows, every way of filling in the unknown inputs
+        // must give its value.
+        const unknown = dag.inputIds.filter((id) => vec[id] === RX);
         for (const oid of dag.outputIds) {
-          expect(sim.pinBits(oid, "in")[0], `seed=${seed} vec=${v} out=${oid}`).toBe(expected[oid]);
+          const got = sim.pinBits(oid, "in")[0];
+          if (expected[oid] !== RX) expect(got, `seed=${seed} vec=${v} out=${oid}`).toBe(expected[oid]);
+          else if (got !== RX && unknown.length <= 12)
+            for (let m = 0; m < 1 << unknown.length; m++) {
+              const r = { ...vec };
+              unknown.forEach((id, i) => (r[id] = ((m >> i) & 1) as RefBit));
+              expect(dag.evaluateRef(r)[oid], `seed=${seed} vec=${v} out=${oid}: the simulator says ${got}`).toBe(got);
+            }
         }
       }
     }
