@@ -205,23 +205,53 @@ strong drivers' value, else the pull's, else Z. The issues `settle` reports:
 | `oscillation` | the circuit does not settle (a ring of inverters, a latch released from S = R = 1); the nodes still changing are held at X |
 | `unmodelled` | a part the simulator has no model for; its outputs read X |
 
-Settling runs in waves of one gate delay, and every part evaluated in a wave reads the values of
-the wave before. So flip-flops on one clock all sample their inputs before any of them changes,
-as in hardware, and a latch built from two NOR gates holds its state.
+How a change settles:
 
-Inputs are set by part id or name: input pins, clocks, push buttons, DIP switches and keypads.
-A clock cycle is `set("CLK", 1); settle(); set("CLK", 0); settle()`.
+- Parts without state are evaluated **in signal order**, so each one is evaluated once its inputs
+  are final (a change to one input of a 5,000-gate circuit costs about one evaluation per
+  affected gate).
+- A **feedback loop** (parts that feed each other, such as a latch built from two NOR gates) runs
+  in waves: every part of the loop reads the values of the wave before. A loop that keeps changing
+  is reported as oscillating and the nodes still changing are held at X. A loop left at X while
+  everything feeding it is known is tried once from a set value, which tells a latch that was
+  never set (it stays X) from a ring of inverters with no stable state (reported as oscillating).
+- **Parts with state** (flip-flops, latches, registers, counters, memories) that saw a change are
+  evaluated all together once the logic before them has settled. So flip-flops on one clock all
+  sample their inputs before any of them changes, as in hardware, and a flip-flop clocked by
+  another's output (a ripple counter) sees its edge in the next step.
 
-Flip-flops, latches, registers and counters start at X, so a design without a reset reads X until
-something sets it; `new Simulator(c, { initial: "zero" })` starts them at 0 instead. Register and
-counter resets are synchronous, flip-flop set and reset are asynchronous, and a control pin drawn
-with a bubble is active low.
+Inputs are set by part id or name: input pins, clocks, push buttons (1 = pressed; an active-low
+button outputs 0 while pressed), DIP switches and keypads. A clock cycle is
+`set("CLK", 1); settle(); set("CLK", 0); settle()`. A clock whose net has never had a value has no
+edge, so nothing is clocked by power-up.
 
-Simulated: gates and compound gates, plexers, decoders and encoders, tri-state buffers and bus
-transceivers, the BCD to 7-segment decoder, adders, subtractors, comparators, multipliers,
-dividers and the other arithmetic parts, latches, flip-flops, registers and counters. Not yet:
-memories, shift registers and the other sequential blocks, the ALU, the shifter, generic blocks
-and transistors.
+Flip-flops, latches, registers, counters and memory words start at X, so a design without a reset
+reads X until something sets it; `new Simulator(c, { initial: "zero" })` starts them at 0 instead.
+Where an output depends on unknown inputs, it is still known when every value of the unknowns gives
+the same result (an AND with a 0 input, a priority encoder whose highest input is 1, a JK flip-flop
+with J = 1 and K = 0).
+
+**Transistors** are simulated at switch level: while an nMOS, pMOS or transmission gate conducts,
+the nets on its two channel pins are one net. CMOS gates built from transistors simulate and get
+truth tables; a short from VDD to ground through them is reported as contention, and a switch whose
+control is unknown between nets at different values as a possible short.
+
+Every part is simulated except the ROM (the library stores no contents for it) and the generic
+block. Where the library does not fix a behaviour, the simulator chooses:
+
+| Part | Behaviour |
+|---|---|
+| register, counter, shift register, ring and Johnson counter, LFSR, decade counter, clock divider | reset is synchronous (flip-flop set and reset are asynchronous) |
+| shift register | `right` moves bits toward bit 0, SI entering at the top bit; bidirectional: DIR = 1 shifts right with SIL, DIR = 0 left with SIR; reset, then load, then shift |
+| ring counter / Johnson | reset loads 0...01 / 0...0 |
+| LFSR | Fibonacci, XOR feedback, maximal-length taps; reset loads 1 |
+| decade counter | counts 0 to 9; TC = (Q = 9) AND EN |
+| clock divider | OUT is high for the later floor(N/2) of every N input clocks |
+| synchronizer, edge detector, debouncer | Q is D after `stages` clocks; P pulses for one clock; OUT follows IN after 4 equal samples |
+| RAM, dual-port RAM, register file | read combinationally, write on the clock edge; register 0 of the register file reads 0 |
+| FIFO, stack | start empty; DOUT / TOP read X when empty |
+| ALU | Harris and Harris codes: F = 000 AND, 001 OR, 010 ADD, 100 A AND NOT B, 101 A OR NOT B, 110 SUB, 111 SLT; with 2 op bits ADD, SUB, AND, OR; flags N, Z, and C and V from the adder |
+| shifter | universal mode: DIR = 0 left, DIR = 1 right, AR = 1 arithmetic |
 
 ## Checking a circuit
 
