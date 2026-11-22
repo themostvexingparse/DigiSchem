@@ -151,6 +151,9 @@ export class Simulator {
   private loopParts: number[][] = [];
   /** parts with state waiting to be evaluated (all together, after the logic before them settles) */
   private seqPending = new Set<number>();
+  /** for diagnostics: the net of each node, and the nodes with more than one driver */
+  private nodeNet?: Map<number, number>;
+  private multi?: number[];
   private readonly maxWaves: number;
   readonly initial: "x" | "zero";
 
@@ -647,8 +650,13 @@ export class Simulator {
   /** Contention and floating inputs in the current state, grouped by net. */
   issues(): SimIssue[] {
     const issues: SimIssue[] = [];
-    const nodeNet = new Map<number, number>();
-    for (const part of this.circuit.parts) for (const pin of part.pins) if (pin.net >= 0) pin.bits.forEach((b) => nodeNet.set(b, pin.net));
+    if (!this.nodeNet) {
+      this.nodeNet = new Map<number, number>();
+      for (const part of this.circuit.parts) for (const pin of part.pins) if (pin.net >= 0) pin.bits.forEach((b) => this.nodeNet!.set(b, pin.net));
+      this.multi = [];
+      for (let n = 0; n < this.drivers.length; n++) if (this.drivers[n].length > 1) this.multi.push(n);
+    }
+    const nodeNet = this.nodeNet;
     const group = (nodes: number[]) => {
       const by = new Map<string, number[]>();
       for (const n of nodes) {
@@ -662,11 +670,12 @@ export class Simulator {
     };
     const contended: number[] = [];
     const floating: number[] = [];
-    for (let n = 0; n < this.values.length; n++) {
-      const r = this.resolve(n);
-      if (r.distinct) contended.push(n);
-      if (r.value === BZ && this.readers[n].length) floating.push(n);
-    }
+    // only nodes with several drivers (or joined by switches) can have a short
+    const seen = new Set<number>();
+    for (const n of this.multi!) if (this.resolve(n).distinct) contended.push(n), seen.add(n);
+    for (const [root, members] of this.members)
+      if (this.resolveGroup(root).distinct) for (const m of members) if (!seen.has(m)) contended.push(m), seen.add(m);
+    for (let n = 0; n < this.values.length; n++) if (this.values[n] === BZ && this.readers[n].length) floating.push(n);
     // a switch that may be conducting between two nets driven to different values may be a short
     const unsureShorts = new Set<Switch>();
     for (const sw of this.switches) {
