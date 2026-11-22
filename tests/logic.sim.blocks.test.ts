@@ -517,3 +517,27 @@ describe("transistor circuits with state", () => {
     expect([s.read("Q"), s.read("QN")]).toEqual([0, 1]);
   });
 });
+
+describe("ROM contents through DSpec", () => {
+  it("compiles, prints as stripped text and builds back with the same contents", async () => {
+    const { compileSpec } = await import("../src/spec/compile");
+    const { circuitText } = await import("../src/logic/circuit");
+    const src = 'part A input-pin width=2\npart R rom addressBits=2 dataWidth=4 contents="3 0xA 0b1 2*F"\npart D output-pin width=4\nA -> R.a\nR.d -> D\n';
+    const r = compileSpec(src);
+    expect(r.diagnostics.filter((d) => d.severity === "error")).toEqual([]);
+    const run = (c: ReturnType<typeof extractCircuit>) => {
+      const s = new Simulator(c);
+      return [0, 1, 2, 3].map((a) => {
+        s.set("A", a);
+        s.settle();
+        return s.read("D");
+      });
+    };
+    const c = extractCircuit(r.doc!);
+    expect(run(c)).toEqual([3, 10, 1, 15]);
+    const text = circuitText(c);
+    expect(text).toContain('contents="3 0xA 0b1 2*F"');
+    const again = compileSpec(text);
+    expect(run(extractCircuit(again.doc!))).toEqual([3, 10, 1, 15]);
+  });
+});
