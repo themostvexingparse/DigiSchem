@@ -64,7 +64,7 @@ The new component then appears in the palette, in DSpec, and in `dspec reference
 
 ## Tests
 
-The suite has about 580 tests:
+The suite has about 960 tests:
 
 | Area | Files |
 |---|---|
@@ -73,7 +73,10 @@ The suite has about 580 tests:
 | Files, export, netlist | `io*`, `fuzz.project` |
 | Layout | `layout.pack`, `layout.quality`, `layout.realign`, `layout.beam`, `layout.relax` |
 | DSpec | `spec` (including a fuzzer) |
-| Logic tools | `logic.minimize` |
+| Logic tools | `logic.minimize`, `logic.sim`, `logic.sim.blocks` |
+| Simulator, by comparison | `sim.stress.comb`, `sim.stress.seq`, `sim.fuzz.diff` (sequential and DSpec end to end), `sim.xref` (an independent switch-level reference) |
+| Simulator, by property | `sim.xsound` (unknown values are sound and, for a few unknowns, exact), `sim.invariants` (internal consistency after every settle), `sim.robust` (random documents never crash) |
+| Simulator, other | `sim.blocks.fuzz` (memories, ALU, shifter), `sim.apps` (course circuits), `sim.text` (stripped text round trip), `sim.perf`, `sim.stress.watch`, `hunt.sim`, `hunt2.sim` |
 | Store | `fuzz.store` |
 | Regressions | `audit.regressions`, `hunt.regressions` |
 
