@@ -122,8 +122,13 @@ function initState(io: PartIO, w: number): Bit[] {
 function edge(io: PartIO, st: Record<string, any>, pin = "clk"): Bit {
   const now = io.active(pin, B0);
   const prev: Bit | undefined = st.prevClk;
+  // a clock that has never had a value (its net still undriven at power-up) has no edges yet
+  if (prev === undefined) {
+    if (now !== BX) st.prevClk = now;
+    return B0;
+  }
   st.prevClk = now;
-  if (prev === undefined || prev === now) return B0;
+  if (prev === now) return B0;
   if (prev === B0 && now === B1) return B1;
   if ((prev === BX && now === B1) || (prev === B0 && now === BX)) return BX;
   return B0;

@@ -147,6 +147,8 @@ export class Simulator {
   private rank: Int32Array;
   /** whether a rank is a feedback loop (evaluated in waves) rather than a single part */
   private loop: boolean[] = [];
+  /** the parts of each feedback loop, by rank */
+  private loopParts: number[][] = [];
   /** parts with state waiting to be evaluated (all together, after the logic before them settles) */
   private seqPending = new Set<number>();
   private readonly maxWaves: number;
@@ -240,6 +242,7 @@ export class Simulator {
       const r = total - 1 - k; // Tarjan lists the components that are fed first
       for (const pi of comp) this.rank[pi] = seq[pi] ? -1 : r;
       this.loop[r] = comp.length > 1 || succ[comp[0]].includes(comp[0]);
+      if (this.loop[r]) this.loopParts[r] = comp;
     });
     this.buckets = Array.from({ length: total }, () => new Set<number>());
     this.minRank = total;
@@ -384,6 +387,7 @@ export class Simulator {
             held = true;
           }
         }
+        if (!held) hold(this.probeLoop(r));
       }
       if (!this.seqPending.size) break;
       const parts = [...this.seqPending];
@@ -408,6 +412,60 @@ export class Simulator {
       });
     }
     return { waves: rounds, stable: oscillating.size === 0, issues };
+  }
+
+  /**
+   * A feedback loop that settled with unknown values although everything feeding it is known
+   * either holds a state nothing has set yet (a latch never set: X is right) or has no stable
+   * state at all (a ring of inverters). Tell them apart by trying: set one of its unknown nodes
+   * to 0 and run the loop. Everything is put back afterwards; returns the nodes that kept
+   * changing (none for a latch).
+   */
+  private probeLoop(r: number): number[] {
+    const members = this.loopParts[r];
+    if (!members) return [];
+    const parts = this.circuit.parts;
+    const inLoop = new Set(members);
+    const inner: number[] = [];
+    const driven = new Set<number>();
+    for (const pi of members) for (const pin of parts[pi].pins) if (pin.dir !== "in") for (const n of pin.bits) driven.add(n);
+    for (const sw of this.switches) if (inLoop.has(sw.part)) driven.add(sw.a), driven.add(sw.b);
+    for (const n of driven) if (this.readers[n].some((x) => inLoop.has(x))) inner.push(n);
+    const start = inner.find((n) => this.values[n] === BX && !this.forcedX.has(n));
+    if (start === undefined) return [];
+    for (const pi of members)
+      for (const pin of parts[pi].pins)
+        if (pin.dir === "in") for (const n of pin.bits) if (!driven.has(n) && this.values[n] > 1) return []; // unknown inputs: X is expected
+    // save
+    const values = this.values.slice();
+    const drives = members.map((pi) => this.drives[pi].map((a) => a.slice()));
+    const sws = this.switches.filter((sw) => inLoop.has(sw.part)).map((sw) => [sw, sw.on] as const);
+    const bucket = this.buckets[r];
+    // try
+    this.values[start] = B0;
+    for (const x of this.readers[start]) if (inLoop.has(x)) bucket.add(x);
+    const cap = 4 * members.length + 32;
+    for (let w = 0; bucket.size && w < cap; w++) {
+      const ps = [...bucket];
+      bucket.clear();
+      this.wave(ps);
+    }
+    const changing = new Set<number>();
+    for (let w = 0; bucket.size && w < 16; w++) {
+      const ps = [...bucket];
+      bucket.clear();
+      for (const n of this.wave(ps)) if (driven.has(n)) changing.add(n);
+    }
+    const oscillates = bucket.size > 0;
+    // put everything back
+    bucket.clear();
+    this.values = values;
+    members.forEach((pi, i) => (this.drives[pi] = drives[i]));
+    if (sws.length) {
+      for (const [sw, on] of sws) sw.on = on;
+      this.regroup();
+    }
+    return oscillates ? [...changing] : [];
   }
 
   /** Evaluate parts against the current values, then apply all their outputs; returns the nodes that changed. */
