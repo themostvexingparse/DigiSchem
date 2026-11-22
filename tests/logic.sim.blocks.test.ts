@@ -420,3 +420,27 @@ describe("transistor circuits in the checks and truth tables", () => {
     expect(f.minterms).toEqual([0]);
   });
 });
+
+describe("ROM", () => {
+  it("reads its contents list, with repeats, and 0 past the end", () => {
+    const b = bench("rom", { addressBits: 4, dataWidth: 8, contents: "12 0x34, 0b101 0d200 3*AB" });
+    const got: (number | null)[] = [];
+    for (let a = 0; a < 9; a++) {
+      b.set("a", a);
+      b.settle();
+      got.push(b.get("d"));
+    }
+    expect(got).toEqual([0x12, 0x34, 5, 200, 0xab, 0xab, 0xab, 0, 0]);
+    const bad = bench("rom", { addressBits: 2, dataWidth: 4, contents: "zz" });
+    bad.settle();
+    expect(bad.get("d")).toBe(null);
+  });
+
+  it("a ROM used as a truth table gives that function", async () => {
+    const { truthTable, outputFunctions } = await import("../src/logic/analyze");
+    // 2-input XOR in a 4 x 1 ROM
+    const b = bench("rom", { addressBits: 2, dataWidth: 1, pinMode: "bits", contents: "0 1 1 0" });
+    const t = truthTable(b.sim.circuit, { inputs: ["T_a1", "T_a0"], outputs: ["T_d0"] });
+    expect(outputFunctions(t)[0].minterms).toEqual([1, 2]);
+  });
+});

@@ -125,6 +125,32 @@ function memReadAny(io: PartIO, mem: Memory, addr: readonly Bit[], w: number): B
   return memRead(io, mem, addr, w);
 }
 
+/**
+ * ROM contents: words separated by spaces, commas or new lines, from address 0. A word is hex
+ * (`FF`), or `0x..`, `0b..`, `0d..` (decimal); `N*word` repeats it N times (N in decimal). Words
+ * past the list read 0. Returns null when a word cannot be read.
+ */
+export function parseRomContents(text: string): bigint[] | null {
+  const out: bigint[] = [];
+  for (const tok of text.split(/[\s,;]+/).filter(Boolean)) {
+    const m = /^(?:(\d+)\*)?(.+)$/.exec(tok)!;
+    const n = m[1] ? Number(m[1]) : 1;
+    const w = m[2];
+    let v: bigint;
+    try {
+      if (/^0[xX][0-9a-fA-F]+$/.test(w) || /^0[bB][01]+$/.test(w)) v = BigInt(w);
+      else if (/^0[dD]\d+$/.test(w)) v = BigInt(w.slice(2));
+      else if (/^[0-9a-fA-F]+$/.test(w)) v = BigInt(`0x${w}`);
+      else return null;
+    } catch {
+      return null;
+    }
+    if (n > 1 << 16) return null;
+    for (let i = 0; i < n; i++) out.push(v);
+  }
+  return out;
+}
+
 export const SEQ_MODELS: Record<string, Model> = {
   /**
    * Shift register. "right" moves bits toward bit 0 and SI enters at the top bit, SO is bit 0;
@@ -242,6 +268,21 @@ export const SEQ_MODELS: Record<string, Model> = {
     const v = big(st.q);
     io.driveBus("q", st.q);
     io.drive("tc", [and([v === null ? BX : v === 9n ? B1 : B0, io.active("en")])]);
+  },
+
+  /** ROM: D shows the word at A from the `contents` list (X if the list cannot be read); CS low disconnects D. */
+  rom: (io, st) => {
+    const w = io.busWidth("d");
+    const text = String(io.prop("contents") ?? "");
+    if (st.text !== text) {
+      st.text = text;
+      st.words = parseRomContents(text);
+    }
+    const cs = io.active("cs");
+    const a = big(io.bus("a"));
+    const words: bigint[] | null = st.words;
+    const word = words === null || a === null ? allX(w) : bitsOf(words[Number(a)] ?? 0n, w);
+    io.driveBus("d", cs === B1 ? word : cs === B0 ? "Z" : "X");
   },
 
   /** RAM: reads follow the address; WE (and CS) write WD (or the shared D bus) on the clock edge. Shared port: D is driven when OE (and CS) and not WE. */

@@ -150,7 +150,7 @@ Ranges are the allowed values of a numeric property; lists are the options of a 
 | Type | Name | Description | Properties |
 |---|---|---|---|
 | `ram` | RAM | Synchronous Random-Access Memory with separate or shared bidirectional data port | addressBits (1..16), dataWidth (1..32), dataPortMode (separate, shared), pinMode (bus, bits), chipSelect |
-| `rom` | ROM | Read-Only Memory block with configurable address width and data width | addressBits (1..16), dataWidth (1..32), pinMode (bus, bits), chipSelect |
+| `rom` | ROM | Read-Only Memory block with configurable address width and data width; its contents are a list of hex words from address 0 | addressBits (1..16), dataWidth (1..32), pinMode (bus, bits), chipSelect, contents |
 | `fifo` | FIFO Queue | First-in first-out buffer: WR stores DIN, RD removes the oldest word; FULL and EMPTY flags | depth (2..4096), width (1..32), edge (rising, falling) |
 | `dual-port-ram` | Dual-Port RAM | Memory with two independent ports: port A reads and writes, port B reads at the same time | addressBits (1..24), dataWidth (1..32), edge (rising, falling) |
 | `stack` | Stack (LIFO) | Last-in first-out memory: PUSH stores DIN on top, POP removes the top word; TOP shows it | depth (2..4096), width (1..32), edge (rising, falling) |

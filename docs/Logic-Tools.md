@@ -236,8 +236,9 @@ the nets on its two channel pins are one net. CMOS gates built from transistors 
 truth tables; a short from VDD to ground through them is reported as contention, and a switch whose
 control is unknown between nets at different values as a possible short.
 
-Every part is simulated except the ROM (the library stores no contents for it) and the generic
-block. Where the library does not fix a behaviour, the simulator chooses:
+Every part is simulated except the generic block. A ROM reads its `contents` property: hex words
+from address 0 separated by spaces or commas (`0x`, `0b` and `0d` prefixes also work, and `4*FF`
+repeats a word); addresses past the list read 0. Where the library does not fix a behaviour, the simulator chooses:
 
 | Part | Behaviour |
 |---|---|

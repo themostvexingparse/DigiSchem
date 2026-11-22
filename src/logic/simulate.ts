@@ -92,7 +92,7 @@ export const STATEFUL = new Set([
   "sr-latch", "d-latch", "gated-sr-latch", "d-ff", "jk-ff", "t-ff", "sr-ff",
   "register", "shift-register", "counter", "register-file", "ring-counter", "lfsr",
   "clock-divider", "synchronizer", "edge-detector", "decade-counter", "debouncer",
-  "ram", "rom", "fifo", "dual-port-ram", "stack",
+  "ram", "fifo", "dual-port-ram", "stack",
 ]);
 
 /**

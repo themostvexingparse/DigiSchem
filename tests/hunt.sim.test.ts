@@ -813,8 +813,8 @@ describe("latches, flip-flops, registers, counters", () => {
 });
 
 describe("unmodelled components reporting", () => {
-  // (ROM has no contents to simulate; a generic block has no behaviour)
-  const UNMODELLED = ["rom", "generic-block"];
+  // (a generic block has no behaviour)
+  const UNMODELLED = ["generic-block"];
 
   it("reports every unmodelled component type and drives X on out / Z on inout", () => {
     for (const type of UNMODELLED) {
