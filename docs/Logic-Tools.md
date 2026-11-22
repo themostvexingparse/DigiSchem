@@ -313,6 +313,23 @@ Karnaugh maps, which is how a finite state machine's logic is designed or checke
 
 `sim.tick()` runs one clock cycle on every clock part (or `sim.tick("CLK")` on one).
 
+### Comparing two circuits
+
+```ts
+import { compareCircuits } from "./src/logic/analyze";
+
+const r = compareCircuits(extractCircuit(drawing), extractCircuit(compileSpec(source).doc!));
+r.equal;          // true when they compute the same thing
+r.mismatches;     // [{ inputs: { a: 1, b: 1, cin: 0 }, output: "cout", a: 0, b: 1, cycle: 0 }, ...]
+```
+
+Checks a drawing against a reference (another drawing, or the DSpec it should implement). Inputs
+and outputs are matched by name, and names only one side has are listed in `onlyA` and `onlyB`.
+Circuits without state are compared on every input combination (up to `maxInputBits`, 16 by
+default); circuits with state are run side by side from 0 on seeded random inputs for `cycles`
+clock cycles (500 by default), with the inputs named in `resets` held at 1 for the first two.
+Each mismatch is a counterexample: the inputs, the output and both values.
+
 ## Checking a drawing
 
 ```ts

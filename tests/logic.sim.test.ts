@@ -5,9 +5,9 @@ import { DocumentStore } from "../src/model/store";
 import { circuitText, extractCircuit, structuralKey } from "../src/logic/circuit";
 import { checkCircuit } from "../src/logic/check";
 import { Simulator } from "../src/logic/simulate";
-import { outputFunctions, stateTable, truthTable, truthTableText } from "../src/logic/analyze";
+import { compareCircuits, outputFunctions, stateTable, truthTable, truthTableText } from "../src/logic/analyze";
 import { watchCircuit } from "../src/logic/watch";
-import { minimize, sopToString } from "../src/logic/minimize";
+import { minimize, sopToDspec, sopToString } from "../src/logic/minimize";
 import { sopToSchematic, sopsToSchematic } from "../src/logic/sop-schematic";
 import { evaluateCombinational } from "../src/logic/evaluate";
 import { compileSpec } from "../src/spec/compile";
@@ -486,5 +486,51 @@ describe("state tables", () => {
       s.tick();
     }
     expect(seen).toEqual([0, 1, 2, 3, 0]);
+  });
+});
+
+describe("comparing circuits", () => {
+  it("a drawing equals the DSpec it should implement, and a wrong gate is caught with a counterexample", () => {
+    const names = ["cin", "b", "a"];
+    const terms = minimize(3, [3, 5, 6, 7]).terms;
+    const drawing = sopToSchematic(terms, names, "cout");
+    const built = compileSpec(sopToDspec(terms, names, "cout"));
+    expect(built.doc).not.toBeNull();
+    const r = compareCircuits(extractCircuit(drawing), extractCircuit(built.doc!));
+    expect(r).toMatchObject({ equal: true, mode: "exhaustive", tried: 8, mismatches: [] });
+    const wrong = structuredClone(drawing);
+    // (not OR -> XOR: ab xor ac xor bc is the majority function too)
+    wrong.components.find((c) => c.type === "or")!.type = "and";
+    const w = compareCircuits(extractCircuit(wrong), extractCircuit(built.doc!));
+    expect(w.equal).toBe(false);
+    expect(w.mismatches.length).toBeGreaterThan(0);
+    const m = w.mismatches[0];
+    expect(m.output).toBe("cout");
+    expect([m.a, m.b]).toEqual([0, 1]);
+  });
+
+  it("compares circuits with state over random cycles", () => {
+    const counter = (bug: boolean) =>
+      mk(
+        [["EN", "input-pin"], ["CLK", "clock"], ["F0", "d-ff"], ["F1", "d-ff"], ["X0", "xor"], ["A", bug ? "or" : "and"], ["X1", "xor"], ["Y0", "output-pin"], ["Y1", "output-pin"]],
+        [
+          ["F0.q", "X0.in0", "A.in0", "Y0.in"], ["EN.out", "X0.in1", "A.in1"], ["X0.out", "F0.d"],
+          ["F1.q", "X1.in0", "Y1.in"], ["A.out", "X1.in1"], ["X1.out", "F1.d"], ["CLK.clk", "F0.clk", "F1.clk"],
+        ],
+      );
+    const ok = compareCircuits(extractCircuit(counter(false)), extractCircuit(counter(false)), { cycles: 100 });
+    expect(ok).toMatchObject({ equal: true, mode: "random", tried: 100 });
+    const bad = compareCircuits(extractCircuit(counter(false)), extractCircuit(counter(true)), { cycles: 100 });
+    expect(bad.equal).toBe(false);
+    expect(bad.mismatches[0].output).toBe("Y1");
+  });
+
+  it("lists inputs and outputs only one side has", () => {
+    const a = mk([["A", "input-pin"], ["Y", "output-pin"]], [["A.out", "Y.in"]]);
+    const b = mk([["B", "input-pin"], ["Y", "output-pin"]], [["B.out", "Y.in"]]);
+    const r = compareCircuits(extractCircuit(a), extractCircuit(b));
+    expect(r.onlyA).toEqual(["A"]);
+    expect(r.onlyB).toEqual(["B"]);
+    expect(r.equal).toBe(false);
   });
 });
